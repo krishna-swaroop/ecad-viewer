@@ -86,6 +86,11 @@ export abstract class KCViewerElement<
         this.canvas = html`<canvas></canvas>` as HTMLCanvasElement;
 
         this.canvas.addEventListener("mousedown", (e: MouseEvent) => {
+            // Left-drag is reserved for rubber-band area comments while
+            // comment mode is enabled; do not start a pan gesture.
+            if (this.viewer?.comment_mode && e.button === 0) {
+                return;
+            }
             this.mouse_press_pos = new Vec2(e.clientX, e.clientY);
         });
 
@@ -99,6 +104,7 @@ export abstract class KCViewerElement<
 
         this.canvas.addEventListener("mousemove", (e: MouseEvent) => {
             if (!this.mouse_press_pos) return;
+            if (this.viewer?.comment_mode) return;
 
             const delta = new Vec2(
                 this.mouse_press_pos.x - e.clientX,

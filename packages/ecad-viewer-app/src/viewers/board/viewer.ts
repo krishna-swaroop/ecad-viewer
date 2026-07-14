@@ -264,6 +264,15 @@ export class BoardViewer extends DocumentViewer<
         this.#highlighted_track = val;
     }
 
+    /**
+     * Returns the bounding box for an interactive board item by uuid/tstamp,
+     * as captured while loading the board. Useful for host adapters that
+     * need to enrich selection or overlay data with world-space bounds.
+     */
+    public overlay_item_bounds(uuid: string): BBox | undefined {
+        return this.#overlay_item_bounds.get(uuid);
+    }
+
     public get_host_view_state() {
         const layers = this.layers as LayerSet;
         const first_opacity = (items: Generator<ViewLayer>) =>

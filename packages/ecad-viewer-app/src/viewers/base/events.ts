@@ -73,6 +73,27 @@ export class EcadOverlayLeaveEvent extends KiCanvasEvent<OverlayHit> {
     }
 }
 
+export interface EcadCommentAreaEventDetail {
+    context: "SCH" | "PCB";
+    x: number;
+    y: number;
+    bounds: [number, number, number, number];
+    page?: string;
+    layer?: string;
+}
+
+/**
+ * Dispatched when a user finishes drawing a rubber-band area while a
+ * viewer's comment mode is enabled (see `Viewer.set_comment_mode`).
+ */
+export class EcadCommentAreaEvent extends KiCanvasEvent<EcadCommentAreaEventDetail> {
+    static readonly type = "ecad-viewer:comment-area";
+
+    constructor(detail: EcadCommentAreaEventDetail) {
+        super(EcadCommentAreaEvent.type, detail, true);
+    }
+}
+
 interface FitterSelections {
     items: unknown[];
 }
@@ -398,6 +419,7 @@ export interface KiCanvasEventMap {
     [EcadOverlayClickEvent.type]: EcadOverlayClickEvent;
     [EcadOverlayHoverEvent.type]: EcadOverlayHoverEvent;
     [EcadOverlayLeaveEvent.type]: EcadOverlayLeaveEvent;
+    [EcadCommentAreaEvent.type]: EcadCommentAreaEvent;
     [KiCanvasAiSelectEvent.type]: KiCanvasAiSelectEvent;
     [KiCanvasMouseMoveEvent.type]: KiCanvasMouseMoveEvent;
     [KicadSyncHoverEvent.type]: KicadSyncHoverEvent;
@@ -458,5 +480,9 @@ declare global {
         [BoardContentReady.type]: BoardContentReady;
         [ComponentERCResultEvent.type]: ComponentERCResultEvent;
         [ProjectERCResultEvent.type]: ProjectERCResultEvent;
+        [EcadOverlayClickEvent.type]: EcadOverlayClickEvent;
+        [EcadOverlayHoverEvent.type]: EcadOverlayHoverEvent;
+        [EcadOverlayLeaveEvent.type]: EcadOverlayLeaveEvent;
+        [EcadCommentAreaEvent.type]: EcadCommentAreaEvent;
     }
 }

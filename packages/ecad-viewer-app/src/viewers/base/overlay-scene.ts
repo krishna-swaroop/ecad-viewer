@@ -39,6 +39,12 @@ type OverlayPrimitiveBase = EcadOverlayStyle & {
 export type MarkerPrimitive = OverlayPrimitiveBase & {
     kind: "marker";
     radius?: number;
+    /**
+     * Visual glyph used to render the marker. Defaults to "circle" for
+     * backward compatibility. "comment" paints a translucent sticky-note
+     * icon (no text/ID drawn) suitable for comment/annotation pins.
+     */
+    glyph?: "circle" | "comment";
 };
 export type BBoxPrimitive = OverlayPrimitiveBase & {
     kind: "bbox";
@@ -218,15 +224,23 @@ export class OverlaySceneManager {
         const scale = primitive.sizing === "screen" ? 1 / zoom : 1;
         const opacity = primitive.opacity ?? 1;
         const stroke = Color.from_css(
-            primitive.stroke ?? "#3388ffff",
+            primitive.stroke && primitive.stroke.trim()
+                ? primitive.stroke
+                : "#3388ffff",
         ).with_alpha(opacity);
-        const fill = Color.from_css(primitive.fill ?? "#3388ff33").with_alpha(
-            opacity,
-        );
+        const fill = Color.from_css(
+            primitive.fill && primitive.fill.trim()
+                ? primitive.fill
+                : "#3388ff33",
+        ).with_alpha(opacity);
         const width = (primitive.strokeWidth ?? 0.25) * scale;
         if (primitive.kind === "marker") {
             const radius = (primitive.radius ?? 4) * scale;
-            this.renderer.circle(anchor.point, radius, fill);
+            if (primitive.glyph === "comment") {
+                this.#paint_comment_glyph(anchor.point, radius, primitive, opacity);
+            } else {
+                this.renderer.circle(anchor.point, radius, fill);
+            }
             return new BBox(
                 anchor.point.x - radius,
                 anchor.point.y - radius,
@@ -239,9 +253,19 @@ export class OverlaySceneManager {
             const bounds = (
                 anchor.bounds ?? new BBox(anchor.point.x, anchor.point.y, 0, 0)
             ).grow(padding);
-            if ((primitive.fill ?? "") !== "")
+            if (primitive.fill && primitive.fill.trim()) {
                 this.renderer.polygon(Polygon.from_BBox(bounds, fill));
-            this.renderer.line(Polyline.from_BBox(bounds, width, stroke));
+            }
+            if (primitive.dash && primitive.dash.length) {
+                this.#paint_dashed_rect(
+                    bounds,
+                    primitive.dash.map((segment) => Math.max(segment * scale, 0.01)),
+                    width,
+                    stroke,
+                );
+            } else {
+                this.renderer.line(Polyline.from_BBox(bounds, width, stroke));
+            }
             return bounds.grow(width);
         }
         if (primitive.kind === "polyline") {
@@ -279,6 +303,129 @@ export class OverlaySceneManager {
             size * Math.max(2, primitive.text.length),
             size * 2,
         );
+    }
+
+    /**
+     * Paints a rectangular outline as a dashed stroke by drawing short
+     * solid polyline segments following the given on/off dash pattern
+     * continuously around the perimeter (corners included).
+     */
+    #paint_dashed_rect(
+        bounds: BBox,
+        dash: number[],
+        width: number,
+        color: Color,
+    ) {
+        const corners = [
+            bounds.top_left,
+            bounds.top_right,
+            bounds.bottom_right,
+            bounds.bottom_left,
+            bounds.top_left,
+        ];
+        const pattern = dash.length ? dash : [width * 4, width * 2];
+        let pattern_index = 0;
+        let remaining = pattern[0] ?? 1;
+        let drawing = true;
+        for (let i = 0; i < corners.length - 1; i++) {
+            const start = corners[i]!;
+            const end = corners[i + 1]!;
+            const segment = end.sub(start);
+            const segment_length = segment.magnitude;
+            if (segment_length === 0) continue;
+            const direction = segment.multiply(1 / segment_length);
+            let travelled = 0;
+            while (travelled < segment_length) {
+                const step = Math.min(remaining, segment_length - travelled);
+                if (drawing && step > 0) {
+                    const seg_start = start.add(direction.multiply(travelled));
+                    const seg_end = start.add(
+                        direction.multiply(travelled + step),
+                    );
+                    this.renderer.line(
+                        new Polyline([seg_start, seg_end], width, color),
+                    );
+                }
+                travelled += step;
+                remaining -= step;
+                if (remaining <= 1e-6) {
+                    pattern_index = (pattern_index + 1) % pattern.length;
+                    remaining = pattern[pattern_index] ?? 1;
+                    drawing = !drawing;
+                }
+            }
+        }
+    }
+
+    /**
+     * Paints a translucent sticky-note style icon: a rounded body with a
+     * folded top-right corner and 2-3 horizontal "text" lines. Intentionally
+     * never renders any text/ID inside the glyph.
+     */
+    #paint_comment_glyph(
+        center: Vec2,
+        size: number,
+        primitive: MarkerPrimitive,
+        opacity: number,
+    ) {
+        const fill = Color.from_css(primitive.fill ?? "#facc1580");
+        fill.a *= opacity;
+        const stroke = Color.from_css(primitive.stroke ?? "#ca8a04");
+        stroke.a *= opacity;
+
+        const half_w = size;
+        const half_h = size * 0.85;
+        const fold = size * 0.45;
+        const line_width = Math.max(size * 0.08, 0.05);
+
+        const top_left = new Vec2(center.x - half_w, center.y - half_h);
+        const top_right = new Vec2(center.x + half_w, center.y - half_h);
+        const bottom_right = new Vec2(center.x + half_w, center.y + half_h);
+        const bottom_left = new Vec2(center.x - half_w, center.y + half_h);
+
+        const fold_top = new Vec2(top_right.x - fold, top_right.y);
+        const fold_side = new Vec2(top_right.x, top_right.y + fold);
+
+        const body_points = [
+            top_left,
+            fold_top,
+            fold_side,
+            bottom_right,
+            bottom_left,
+        ];
+
+        this.renderer.polygon(new Polygon(body_points, fill));
+        this.renderer.line(
+            new Polyline([...body_points, top_left], line_width, stroke),
+        );
+
+        // Folded corner flap.
+        this.renderer.polygon(
+            new Polygon(
+                [fold_top, top_right, fold_side],
+                stroke.with_alpha(stroke.a * 0.35),
+            ),
+        );
+        this.renderer.line(
+            new Polyline([fold_top, fold_side], line_width, stroke),
+        );
+
+        // 2-3 horizontal "text" lines. No actual text/ID is drawn.
+        const line_count = 3;
+        const inner_left = center.x - half_w * 0.55;
+        const inner_right = center.x + half_w * 0.55;
+        const top_y = center.y - half_h * 0.25;
+        const spacing = half_h * 0.4;
+        for (let i = 0; i < line_count; i++) {
+            const y = top_y + i * spacing;
+            this.renderer.line(
+                new Polyline(
+                    [new Vec2(inner_left, y), new Vec2(inner_right, y)],
+                    line_width * 0.8,
+                    stroke,
+                ),
+            );
+        }
     }
 
     #grid_key(point: Vec2) {

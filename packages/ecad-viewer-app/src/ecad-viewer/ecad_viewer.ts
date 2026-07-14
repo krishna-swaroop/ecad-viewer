@@ -1,6 +1,6 @@
 import { later } from "../base/async";
 import { listen } from "../base/events";
-import { Vec2 } from "../base/math";
+import { BBox, Vec2 } from "../base/math";
 import {
     CSS,
     CustomElement,
@@ -20,6 +20,10 @@ import { KicadSch } from "../kicad";
 import { is_3d_model, is_kicad, TabHeaderElement } from "./tab_header";
 import {
     BoardContentReady,
+    EcadCommentAreaEvent,
+    EcadOverlayClickEvent,
+    EcadOverlayHoverEvent,
+    EcadOverlayLeaveEvent,
     ImageExportRequestEvent,
     ImageExportResultEvent,
     KiCanvasSelectEvent,
@@ -39,6 +43,7 @@ import {
     normalize_board_selection,
     normalize_schematic_selection,
     type EcadCrossProbeRequest,
+    type EcadSemanticSelectionDetail,
     type EcadSourceUpdate,
 } from "./host-adapter";
 
@@ -268,6 +273,22 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     public setActive(active: boolean): void {
         this.#host_active = active;
         this.#apply_viewer_activity();
+    }
+
+    /**
+     * Enable or disable comment mode on both the schematic and board
+     * viewers. While enabled, dragging on a viewer's canvas draws a
+     * rubber-band area and emits an `EcadCommentAreaEvent` on mouseup
+     * instead of performing normal item selection.
+     */
+    public setCommentMode(enabled: boolean): void {
+        if (enabled) {
+            this.setAttribute("comment-mode", "");
+        } else {
+            this.removeAttribute("comment-mode");
+        }
+        this.#safe_board_viewer()?.set_comment_mode(enabled);
+        this.#safe_schematic_viewer()?.set_comment_mode(enabled);
     }
 
     public clearSelection(): void {
@@ -1282,20 +1303,95 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         event.stopPropagation();
         const item = (event as KiCanvasSelectEvent).detail.item;
         if (!item) return;
-        const board = this.#safe_board_viewer()?.board;
+        const viewer = this.#safe_board_viewer();
+        const board = viewer?.board;
         if (!board) return;
         const detail = normalize_board_selection(item, board);
-        if (detail) this.dispatchEvent(new EcadSemanticSelectionEvent(detail));
+        if (!detail) return;
+        this.#attach_item_bounds_pcb(detail, item, viewer!);
+        this.dispatchEvent(new EcadSemanticSelectionEvent(detail));
     }
 
     #relay_schematic_selection(event: Event) {
         event.stopPropagation();
         const item = (event as KiCanvasSelectEvent).detail.item;
         if (!item) return;
-        const schematic = this.#safe_schematic_viewer()?.schematic;
+        const viewer = this.#safe_schematic_viewer();
+        const schematic = viewer?.schematic;
         if (!schematic) return;
         const detail = normalize_schematic_selection(item, schematic);
-        if (detail) this.dispatchEvent(new EcadSemanticSelectionEvent(detail));
+        if (!detail) return;
+        this.#attach_item_bounds_sch(detail, item, viewer!);
+        this.dispatchEvent(new EcadSemanticSelectionEvent(detail));
+    }
+
+    /** Best-effort item bbox lookup for the given world coordinate systems. */
+    static #item_bbox(item: unknown): BBox | undefined {
+        if (
+            item &&
+            typeof item === "object" &&
+            "bbox" in item &&
+            (item as { bbox?: unknown }).bbox instanceof BBox
+        ) {
+            return (item as { bbox: BBox }).bbox;
+        }
+        return undefined;
+    }
+
+    #attach_item_bounds_sch(
+        detail: EcadSemanticSelectionDetail,
+        item: unknown,
+        viewer: SchematicViewer,
+    ) {
+        let bbox = ECadViewer.#item_bbox(item);
+        if (!bbox && detail.uuid) {
+            bbox = viewer.schematic_renderer.get_item_bbox(detail.uuid);
+        }
+        ECadViewer.#apply_bounds(detail, bbox);
+    }
+
+    #attach_item_bounds_pcb(
+        detail: EcadSemanticSelectionDetail,
+        item: unknown,
+        viewer: BoardViewer,
+    ) {
+        let bbox = ECadViewer.#item_bbox(item);
+        if (!bbox && detail.uuid) {
+            bbox = viewer.overlay_item_bounds(detail.uuid);
+        }
+        if (!bbox && detail.reference) {
+            bbox = viewer.board.find_footprint(detail.reference)?.bbox;
+        }
+        ECadViewer.#apply_bounds(detail, bbox);
+    }
+
+    static #apply_bounds(
+        detail: EcadSemanticSelectionDetail,
+        bbox: BBox | undefined,
+    ) {
+        if (!bbox) return;
+        detail.x = bbox.center.x;
+        detail.y = bbox.center.y;
+        detail.bounds = [bbox.x, bbox.y, bbox.w, bbox.h];
+    }
+
+    #relay_overlay_event<D>(
+        EventClass: new (detail: D) => CustomEvent<D>,
+        event: Event,
+    ): void {
+        event.stopPropagation();
+        this.dispatchEvent(
+            new EventClass((event as CustomEvent<D>).detail),
+        );
+    }
+
+    #relay_comment_area_event(event: Event) {
+        event.stopPropagation();
+        const detail = { ...(event as EcadCommentAreaEvent).detail };
+        if (detail.context === "SCH" && !detail.page) {
+            detail.page = this.#safe_schematic_viewer()?.schematic?.filename;
+        }
+        this.dispatchEvent(new EcadCommentAreaEvent(detail));
     }
 
     #apply_schematic_cross_probe(
@@ -1519,6 +1615,22 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 KiCanvasSelectEvent.type,
                 (event) => this.#relay_board_selection(event),
             );
+            this.#board_app.addEventListener(
+                EcadOverlayClickEvent.type,
+                (event) => this.#relay_overlay_event(EcadOverlayClickEvent, event),
+            );
+            this.#board_app.addEventListener(
+                EcadOverlayHoverEvent.type,
+                (event) => this.#relay_overlay_event(EcadOverlayHoverEvent, event),
+            );
+            this.#board_app.addEventListener(
+                EcadOverlayLeaveEvent.type,
+                (event) => this.#relay_overlay_event(EcadOverlayLeaveEvent, event),
+            );
+            this.#board_app.addEventListener(
+                EcadCommentAreaEvent.type,
+                (event) => this.#relay_comment_area_event(event),
+            );
             if (!this.#project.has_3d) {
                 try {
                     this.#project
@@ -1545,6 +1657,22 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             this.#schematic_app.addEventListener(
                 KiCanvasSelectEvent.type,
                 (event) => this.#relay_schematic_selection(event),
+            );
+            this.#schematic_app.addEventListener(
+                EcadOverlayClickEvent.type,
+                (event) => this.#relay_overlay_event(EcadOverlayClickEvent, event),
+            );
+            this.#schematic_app.addEventListener(
+                EcadOverlayHoverEvent.type,
+                (event) => this.#relay_overlay_event(EcadOverlayHoverEvent, event),
+            );
+            this.#schematic_app.addEventListener(
+                EcadOverlayLeaveEvent.type,
+                (event) => this.#relay_overlay_event(EcadOverlayLeaveEvent, event),
+            );
+            this.#schematic_app.addEventListener(
+                EcadCommentAreaEvent.type,
+                (event) => this.#relay_comment_area_event(event),
             );
             this.#schematic_app.addEventListener(SheetLoadEvent.type, (e) => {
                 this.#tab_header.dispatchEvent(new SheetLoadEvent(e.detail));

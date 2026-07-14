@@ -10,6 +10,7 @@ import { listen } from "../../base/events";
 import { Vec2 } from "../../base/math";
 import { Renderer } from "../../graphics";
 import {
+    EcadCommentAreaEvent,
     EcadOverlayClickEvent,
     EcadOverlayHoverEvent,
     EcadOverlayLeaveEvent,
@@ -32,6 +33,9 @@ export enum ViewerType {
     PCB,
 }
 
+const COMMENT_AREA_PREVIEW_CHANNEL = "__comment-area-preview__";
+const MIN_COMMENT_AREA_SIZE = 0.5;
+
 export abstract class Viewer extends EventTarget {
     public renderer: Renderer;
     public viewport: Viewport;
@@ -44,6 +48,8 @@ export abstract class Viewer extends EventTarget {
     #hover_frame: number | null = null;
     #overlay_scenes: OverlaySceneManager | null = null;
     #overlay_hover: OverlayHit | null = null;
+    #comment_mode = false;
+    #comment_drag_start: Vec2 | null = null;
 
     get client_mouse_pos(): Vec2 {
         return this.#mouse_client_pos;
@@ -145,6 +151,7 @@ export abstract class Viewer extends EventTarget {
             this.disposables.add(
                 listen(this.canvas, "click", (e) => {
                     if (!this.#active) return;
+                    if (this.#comment_mode) return;
                     const overlay = this.#overlay_scenes?.hit_test(
                         this.#mouse_position,
                     );
@@ -159,12 +166,38 @@ export abstract class Viewer extends EventTarget {
             this.disposables.add(
                 listen(this.canvas, "dblclick", (e) => {
                     if (!this.#active) return;
+                    if (this.#comment_mode) return;
                     this.on_dblclick(this.#mouse_position);
                 }),
             );
             this.disposables.add(
                 listen(document, "click", () => {
                     if (this.#active) this.on_document_clicked();
+                }),
+            );
+
+            this.disposables.add(
+                listen(this.canvas, "mousedown", (e) => {
+                    if (!this.#active || !this.#comment_mode) return;
+                    if (e.button !== 0) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    // Refresh world position from this event before capturing
+                    // the drag start, in case the pointer hasn't moved yet.
+                    this.on_mouse_change(e);
+                    this.#comment_drag_start = this.#mouse_position.copy();
+                    this.#update_comment_area_preview();
+                }),
+            );
+
+            this.disposables.add(
+                listen(window, "mouseup", (e) => {
+                    if (!this.#comment_mode || !this.#comment_drag_start)
+                        return;
+                    if (e instanceof MouseEvent) {
+                        this.on_mouse_change(e);
+                    }
+                    this.#finish_comment_area();
                 }),
             );
         }
@@ -193,7 +226,11 @@ export abstract class Viewer extends EventTarget {
             this.#mouse_position.y != new_position.y
         ) {
             this.#mouse_position.set(new_position);
-            this.#update_overlay_hover();
+            if (this.#comment_mode && this.#comment_drag_start) {
+                this.#update_comment_area_preview();
+            } else {
+                this.#update_overlay_hover();
+            }
             this.dispatchEvent(
                 new KiCanvasMouseMoveEvent(this.#mouse_position),
             );
@@ -249,6 +286,82 @@ export abstract class Viewer extends EventTarget {
         const changed = this.#overlay_scenes?.clear_scene(channel_id) ?? false;
         if (changed) this.draw();
         return changed;
+    }
+
+    public get comment_mode(): boolean {
+        return this.#comment_mode;
+    }
+
+    /**
+     * Enable or disable comment mode. While enabled, dragging on the
+     * canvas draws a rubber-band selection and emits an
+     * `EcadCommentAreaEvent` on mouseup instead of performing normal
+     * item selection.
+     */
+    public set_comment_mode(enabled: boolean): void {
+        if (this.#comment_mode === enabled) return;
+        this.#comment_mode = enabled;
+        if (this.canvas) {
+            this.canvas.style.cursor = enabled ? "crosshair" : "";
+        }
+        if (!enabled) {
+            this.#comment_drag_start = null;
+            this.clear_overlay_scene(COMMENT_AREA_PREVIEW_CHANNEL);
+        }
+    }
+
+    #update_comment_area_preview() {
+        if (!this.#comment_drag_start) return;
+        const start = this.#comment_drag_start;
+        const end = this.#mouse_position;
+        const bounds: [number, number, number, number] = [
+            Math.min(start.x, end.x),
+            Math.min(start.y, end.y),
+            Math.abs(end.x - start.x),
+            Math.abs(end.y - start.y),
+        ];
+        this.set_overlay_scene({
+            channelId: COMMENT_AREA_PREVIEW_CHANNEL,
+            context: this.type === ViewerType.SCHEMATIC ? "SCH" : "PCB",
+            placement: "foreground",
+            visible: true,
+            primitives: [
+                {
+                    id: "comment-area-preview",
+                    kind: "bbox",
+                    anchor: { kind: "bbox", bounds },
+                    stroke: "#ca8a04",
+                    fill: "#facc1533",
+                    strokeWidth: 0.25,
+                    dash: [2, 1.2],
+                },
+            ],
+        });
+    }
+
+    #finish_comment_area() {
+        const start = this.#comment_drag_start;
+        this.#comment_drag_start = null;
+        this.clear_overlay_scene(COMMENT_AREA_PREVIEW_CHANNEL);
+        if (!start) return;
+        const end = this.#mouse_position;
+        const w = Math.abs(end.x - start.x);
+        const h = Math.abs(end.y - start.y);
+        if (w < MIN_COMMENT_AREA_SIZE || h < MIN_COMMENT_AREA_SIZE) return;
+        const bounds: [number, number, number, number] = [
+            Math.min(start.x, end.x),
+            Math.min(start.y, end.y),
+            w,
+            h,
+        ];
+        this.dispatchEvent(
+            new EcadCommentAreaEvent({
+                context: this.type === ViewerType.SCHEMATIC ? "SCH" : "PCB",
+                x: bounds[0] + w / 2,
+                y: bounds[1] + h / 2,
+                bounds,
+            }),
+        );
     }
 
     public abstract load(src: any): Promise<void>;

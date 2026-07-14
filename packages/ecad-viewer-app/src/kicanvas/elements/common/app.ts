@@ -14,6 +14,10 @@ import {
 import { KCUISelectElement, KCUIElement } from "../../../kc-ui";
 import type { KicadPCB, KicadSch } from "../../../kicad";
 import {
+    EcadCommentAreaEvent,
+    EcadOverlayClickEvent,
+    EcadOverlayHoverEvent,
+    EcadOverlayLeaveEvent,
     KiCanvasSelectEvent,
     TabMenuVisibleChangeEvent,
 } from "../../../viewers/base/events";
@@ -164,6 +168,30 @@ export abstract class KCViewerAppElement<
                 // host by itself. Relay it once at the app boundary for
                 // embedders such as the Prism host adapter.
                 this.dispatchEvent(new KiCanvasSelectEvent(e.detail));
+            }),
+        );
+
+        // Relay overlay hit-test and comment-area events emitted by the
+        // Viewer (a plain EventTarget, not a DOM node) onto this element so
+        // they reach embedders such as the Prism host adapter.
+        this.addDisposable(
+            this.viewer.addEventListener(EcadOverlayClickEvent.type, (e) => {
+                this.dispatchEvent(new EcadOverlayClickEvent(e.detail));
+            }),
+        );
+        this.addDisposable(
+            this.viewer.addEventListener(EcadOverlayHoverEvent.type, (e) => {
+                this.dispatchEvent(new EcadOverlayHoverEvent(e.detail));
+            }),
+        );
+        this.addDisposable(
+            this.viewer.addEventListener(EcadOverlayLeaveEvent.type, (e) => {
+                this.dispatchEvent(new EcadOverlayLeaveEvent(e.detail));
+            }),
+        );
+        this.addDisposable(
+            this.viewer.addEventListener(EcadCommentAreaEvent.type, (e) => {
+                this.dispatchEvent(new EcadCommentAreaEvent(e.detail));
             }),
         );
 

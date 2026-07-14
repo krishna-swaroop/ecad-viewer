@@ -35,6 +35,11 @@ export type EcadSemanticSelectionDetail = {
     sheet?: string;
     page?: string;
     layer?: string;
+    /** World-space center point of the selected item, when resolvable. */
+    x?: number;
+    y?: number;
+    /** World-space bounding box [x, y, w, h] of the selected item. */
+    bounds?: [number, number, number, number];
 };
 
 export type EcadSourceUpdate = {
