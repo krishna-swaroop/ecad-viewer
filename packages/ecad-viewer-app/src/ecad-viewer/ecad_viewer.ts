@@ -300,11 +300,17 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             const board_viewer = this.#safe_board_viewer();
             if (board_viewer) {
                 if (request.kind === "net") {
-                    const net_code =
-                        request.netCode ??
-                        board_viewer.board.nets.find(
-                            (net) => net.name === (request.net ?? value),
-                        )?.number;
+                    const requested_name = request.net ?? value;
+                    // A schematic/semantic numeric ID is not guaranteed to be
+                    // the board's local net code. Resolve by stable name first
+                    // and use the numeric code only as a validated fallback.
+                    const by_name = board_viewer.board.nets.find(
+                        (net) => net.name === requested_name,
+                    );
+                    const by_code = board_viewer.board.nets.find(
+                        (net) => net.number === request.netCode,
+                    );
+                    const net_code = by_name?.number ?? by_code?.number;
                     if (net_code !== undefined) {
                         board_viewer.focus_net(net_code, false);
                         return true;

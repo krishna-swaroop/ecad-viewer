@@ -89,17 +89,28 @@ function parse_rect(expr: Parseable): DS.I_Rect {
 }
 
 function parse_polygon(expr: Parseable): DS.I_Polygon {
-    return {
+    const parsed = {
         kind: "polygon",
         ...parse_expr(
             expr,
             P.start("polygon"),
             P.item("pos", parse_coordinate),
             P.pair("rotate", T.number),
-            P.list("pts", T.vec2),
+            P.collection(
+                "contours",
+                "pts",
+                (obj, name, value) =>
+                    parse_expr(
+                        value as any,
+                        P.start("pts"),
+                        P.collection("points", "xy", T.vec2),
+                    )["points"] ?? [],
+            ),
             ...common_defs,
         ),
     } as unknown as DS.I_Polygon;
+    parsed.pts = parsed.contours?.[0] ?? [];
+    return parsed;
 }
 
 function parse_bitmap(expr: Parseable): DS.I_Bitmap {

@@ -40,7 +40,13 @@ export interface I_Rect extends I_DrawingSheetItem {
 export interface I_Polygon extends I_DrawingSheetItem {
     rotate: number;
     pos: I_Coordinate;
-    pts: I_Vec2[];
+    /**
+     * KiCad stores each closed contour in its own `(pts ...)` expression.
+     * Keep every contour so compound worksheet artwork is not truncated.
+     */
+    contours: I_Vec2[][];
+    /** @deprecated Compatibility projection of the first contour. */
+    pts?: I_Vec2[];
 }
 
 export interface I_Bitmap extends I_DrawingSheetItem {

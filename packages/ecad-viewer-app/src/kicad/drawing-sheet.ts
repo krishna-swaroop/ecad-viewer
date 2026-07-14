@@ -244,13 +244,20 @@ export class Rect extends DrawingSheetItem {
 export class Polygon extends DrawingSheetItem {
     rotate: number;
     pos: Coordinate;
-    pts: Vec2[];
+    contours: Vec2[][];
 
     constructor(data: DS.I_Polygon, parent: DrawingSheet) {
         super(parent, data);
         this.rotate = data.rotate ?? 0;
         this.pos = new Coordinate(data.pos);
-        this.pts = data.pts?.map((p) => new Vec2(p.x, p.y)) ?? [];
+        const contours = data.contours?.length
+            ? data.contours
+            : data.pts?.length
+              ? [data.pts]
+              : [];
+        this.contours = contours.map((points) =>
+            points.map((point) => new Vec2(point.x, point.y)),
+        );
     }
 }
 

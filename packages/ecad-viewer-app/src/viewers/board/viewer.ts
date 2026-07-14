@@ -46,10 +46,31 @@ export class BoardViewer extends DocumentViewer<
     set layer_visibility_ctrl(ctr: KCBoardLayersPanelElement) {
         this.#layer_visibility_ctrl = ctr;
     }
+
+    #restore_native_layers() {
+        if (!this.#should_restore_visibility) return;
+        const visibilities = this.layer_visibility;
+        if (visibilities) {
+            for (const layer of this.layers.in_ui_order()) {
+                layer.visible = visibilities.get(layer.name) ?? layer.visible;
+            }
+        }
+        this.#should_restore_visibility = false;
+    }
+
+    #restore_zone_layers() {
+        for (const layer of this.layers.zone_layers()) {
+            const visible = this.#zones_visibility.get(layer.name);
+            if (visible !== undefined) layer.visible = visible;
+        }
+        this.#zones_visibility.clear();
+    }
+
     public highlight_net(num: number | null, emit_selection = true) {
-        this.#layer_visibility_ctrl.clear_highlight();
-        if (this.painter.paint_net(this.board, num, this.layer_visibility)) {
-            this.#should_restore_visibility = false;
+        this.#restore_native_layers();
+        this.#restore_zone_layers();
+        this.#layer_visibility_ctrl?.clear_highlight();
+        if (this.painter.paint_net(this.board, num)) {
             if (num) {
                 this.#should_restore_visibility = true;
                 for (const layer of this.layers.in_ui_order()) {
@@ -72,11 +93,7 @@ export class BoardViewer extends DocumentViewer<
     }
     protected override on_document_clicked(): void {
         if (this.#should_restore_visibility) {
-            const visibilities = this.layer_visibility;
-            for (const layer of this.layers.in_ui_order()) {
-                layer.visible = visibilities.get(layer.name)!;
-            }
-            this.#should_restore_visibility = false;
+            this.#restore_native_layers();
             this.painter.clear_interactive();
             this.draw();
         }
@@ -92,6 +109,7 @@ export class BoardViewer extends DocumentViewer<
     }
 
     public highlight_fp(fp: board_items.Footprint) {
+        this.#restore_native_layers();
         if (!this.#zones_visibility.size)
             for (const layer of this.layers.zone_layers()) {
                 this.#zones_visibility.set(layer.name, layer.visibility);
@@ -113,6 +131,9 @@ export class BoardViewer extends DocumentViewer<
     }
 
     public clear_selection() {
+        this.#restore_native_layers();
+        this.#restore_zone_layers();
+        this.painter.filter_net = null;
         this.painter?.clear_interactive();
         this.layers?.highlight(null);
         this.draw();

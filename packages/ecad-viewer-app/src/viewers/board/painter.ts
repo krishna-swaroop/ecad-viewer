@@ -719,11 +719,18 @@ export class BoardPainter extends DocumentPainter {
     paint_footprint(fp: board_items.Footprint) {
         this.clear_interactive();
 
-        const layer = this.layers.selection_mask;
-        this.gfx.start_layer(layer.name);
-        this.paint_item(layer, fp);
-        layer.graphics = this.gfx.end_layer();
-        layer.graphics.composite_operation = "source-over";
+        const mask = this.layers.selection_mask;
+        mask.color = new Color(0, 0.72, 1, 0.42);
+        this.gfx.start_layer(mask.name);
+        this.paint_item(mask, fp);
+        mask.graphics = this.gfx.end_layer();
+        mask.graphics.composite_operation = "source-over";
+
+        const outline = this.layers.selection_fg;
+        this.gfx.start_layer(outline.name);
+        this.gfx.line(Polyline.from_BBox(fp.bbox.grow(0.3), 0.3, Color.cyan));
+        outline.graphics = this.gfx.end_layer();
+        outline.graphics.composite_operation = "source-over";
     }
 
     clear_interactive() {
@@ -735,95 +742,85 @@ export class BoardPainter extends DocumentPainter {
             layer.clear();
     }
 
-    paint_net(
-        board: board_items.KicadPCB,
-        net: number | null,
-        layer_visibility: Map<string, boolean>,
-    ) {
+    paint_net(board: board_items.KicadPCB, net: number | null) {
         if (this.filter_net === net) return false;
 
         if (!net) return false;
 
-        this.filter_net = net;
+        this.clear_interactive();
 
-        //SECTION - the background
+        // Compile an intentionally subdued copy of the complete board. The
+        // native layers are hidden by BoardViewer while this scene is active,
+        // matching KiCad's "dim everything else" net highlight treatment.
         {
             const layer = this.layers.selection_bg;
+            layer.opacity = 0.16;
             this.gfx.start_layer(layer.name);
-
+            this.filter_net = null;
             for (const item of board.items()) {
-                switch (item.typeId) {
-                    case "LineSegment": {
-                        const line = item as board_items.LineSegment;
-                        if (
-                            layer_visibility.get(line.layer) &&
-                            line.net !== net
-                        ) {
-                            const painter = this.painter_for(item);
-                            if (!painter) continue;
-                            this.paint_item(layer, item);
-                        }
-
-                        break;
-                    }
-                    default:
-                        {
-                            const painter = this.painter_for(item);
-
-                            if (!painter) continue;
-
-                            this.paint_item(layer, item);
-                        }
-                        break;
-                }
+                const painter = this.painter_for(item);
+                if (!painter) continue;
+                this.paint_item(layer, item);
             }
 
             layer.graphics = this.gfx.end_layer();
             layer.graphics.composite_operation = "source-over";
         }
 
-        //SECTION - The foreground
+        // Compile only copper belonging to the selected net into the full
+        // opacity foreground: tracks/arcs, vias, zones, and footprint pads.
         {
             this.#net_bbox = null;
             const layer = this.layers.selection_fg;
+            layer.opacity = 1;
             this.gfx.start_layer(layer.name);
+            this.filter_net = net;
+
+            const include_bbox = (bbox: BBox) => {
+                this.#net_bbox = this.#net_bbox
+                    ? BBox.combine([this.#net_bbox, bbox])
+                    : bbox;
+            };
 
             for (const item of board.items()) {
-                switch (item.typeId) {
-                    case "LineSegment":
-                        if ((item as board_items.LineSegment).net === net) {
-                            const painter = this.painter_for(item);
-                            const line = item as board_items.LineSegment;
-
-                            if (!this.#net_bbox) this.#net_bbox = line.bbox;
-                            else
-                                this.#net_bbox = BBox.combine([
-                                    line.bbox,
-                                    this.#net_bbox,
-                                ]);
-
-                            if (!painter) continue;
-                            this.paint_item(layer, item);
-                        }
-                        break;
-                    case "Zone":
-                        {
-                            const painter = this.painter_for(item);
-
-                            if (!painter) continue;
-
-                            this.paint_item(layer, item);
-                        }
-                        break;
-
-                    default:
-                        break;
+                if (
+                    (item instanceof board_items.LineSegment ||
+                        item instanceof board_items.ArcSegment ||
+                        item instanceof board_items.Via ||
+                        item instanceof board_items.Zone) &&
+                    item.net === net
+                ) {
+                    include_bbox(item.bbox);
+                    this.paint_item(layer, item);
+                    continue;
+                }
+                if (item instanceof board_items.Footprint) {
+                    const matrix = Matrix3.translation(
+                        item.at.position.x,
+                        item.at.position.y,
+                    ).rotate_self(Angle.deg_to_rad(item.at.rotation));
+                    this.gfx.state.push();
+                    this.gfx.state.multiply(matrix);
+                    for (const pad of item.pads) {
+                        if (pad.net?.number !== net) continue;
+                        include_bbox(pad.bbox);
+                        this.paint_item(layer, pad);
+                    }
+                    for (const zone of item.zones) {
+                        if (zone.net !== net) continue;
+                        include_bbox(zone.bbox);
+                        this.paint_item(layer, zone);
+                    }
+                    this.gfx.state.pop();
                 }
             }
 
             layer.graphics = this.gfx.end_layer();
             layer.graphics.composite_operation = "source-over";
         }
+
+        // Filtering is a compilation concern, not persistent viewer state.
+        this.filter_net = null;
 
         return true;
     }

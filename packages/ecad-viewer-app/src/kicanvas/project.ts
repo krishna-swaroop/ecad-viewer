@@ -463,13 +463,15 @@ export class Project extends EventTarget implements IDisposable {
         }
         const page =
             kind === AssertType.SCH
-                ? (this._pages_by_path.get(this.active_sch_name ?? "") ??
-                  this.pages.find(
-                      (candidate) => candidate.document === document,
-                  ))
+                ? this.#page_for_drawing_sheet(document)
                 : undefined;
         drawing_sheet.sheet_number = page?.page || "1";
-        drawing_sheet.sheet_count = String(Math.max(1, this.pages.length));
+        const numbered_pages = this.pages
+            .map((candidate) => Number.parseInt(candidate.page ?? "", 10))
+            .filter(Number.isFinite);
+        drawing_sheet.sheet_count = String(
+            Math.max(1, ...numbered_pages, this.pages.length),
+        );
         drawing_sheet.sheet_path = page?.sheet_path || "/";
         drawing_sheet.sheet_name = page?.name || "";
         drawing_sheet.kicad_version =
@@ -477,6 +479,21 @@ export class Project extends EventTarget implements IDisposable {
                 ? document.generator_version || document.generator || "KiCad"
                 : document?.generator || "KiCad";
         return drawing_sheet;
+    }
+
+    #page_for_drawing_sheet(document?: KicadPCB | KicadSch) {
+        const active = this.active_sch_name ?? "";
+        const exact = this._pages_by_path.get(active);
+        if (exact) return exact;
+
+        // Hosts may activate by filename while the internal project uses a
+        // filename + instance-path key. Prefer the active filename before the
+        // document fallback so reused hierarchical sheets keep their page ID.
+        const by_filename = this.pages.find(
+            (candidate) => candidate.filename === active,
+        );
+        if (by_filename) return by_filename;
+        return this.pages.find((candidate) => candidate.document === document);
     }
 
     async get_file_text(filename: string) {
