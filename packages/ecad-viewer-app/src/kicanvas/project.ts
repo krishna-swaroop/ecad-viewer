@@ -9,6 +9,7 @@ import { Barrier } from "../base/async";
 import { type IDisposable } from "../base/disposable";
 import { first, length, map } from "../base/iterator";
 import { Logger } from "../base/log";
+import { dirname } from "../base/paths";
 
 import { DrawingSheet, KicadPCB, KicadSch, ProjectSettings } from "../kicad";
 import { parse_drawing_sheet } from "kicad-parser";
@@ -529,6 +530,50 @@ export class Project extends EventTarget implements IDisposable {
         return undefined;
     }
 
+    /**
+     * Resolve a schematic sheet file using KiCad's relative-path semantics.
+     * A child sheet path is relative to the schematic that owns the sheet,
+     * rather than unconditionally relative to the project root.
+     */
+    public resolve_schematic_filename(
+        parent_filename: string,
+        requested_filename: string,
+    ): string | undefined {
+        const normalize = (value: string) => {
+            const parts: string[] = [];
+            for (const part of value.replace(/\\/g, "/").split("/")) {
+                if (!part || part === ".") continue;
+                if (part === "..") parts.pop();
+                else parts.push(part);
+            }
+            return parts.join("/");
+        };
+
+        const requested = normalize(requested_filename);
+        const relative = normalize(
+            `${dirname(parent_filename.replace(/\\/g, "/"))}/${requested_filename}`,
+        );
+
+        // Relative resolution is authoritative for nested sheets. Exact root
+        // paths remain a fallback for top-level project references.
+        for (const candidate of [relative, requested]) {
+            if (candidate && this._files_by_name.has(candidate)) {
+                return candidate;
+            }
+        }
+
+        // Hosts sometimes flatten source paths. Only use a basename/suffix
+        // fallback when it identifies exactly one loaded schematic.
+        const matches = Array.from(this._files_by_name.keys()).filter(
+            (filename) =>
+                filename === requested ||
+                filename.endsWith(`/${requested}`) ||
+                filename === relative ||
+                filename.endsWith(`/${relative}`),
+        );
+        return matches.length === 1 ? matches[0] : undefined;
+    }
+
     public *boards() {
         for (const value of this._files_by_name.values()) {
             if (value instanceof KicadPCB) {
@@ -633,16 +678,26 @@ export class Project extends EventTarget implements IDisposable {
         const paths_to_schematics = new Map<string, KicadSch>();
         const paths_to_sheet_instances = new Map<
             string,
-            { sheet: SchematicSheet; instance: SchematicSheetInstance }
+            {
+                sheet: SchematicSheet;
+                instance: SchematicSheetInstance;
+                filename: string;
+            }
         >();
 
         for (const schematic of this.schematics()) {
             paths_to_schematics.set(`/${schematic.uuid}`, schematic);
 
             for (const sheet of schematic.sheets) {
-                const sheet_sch = this._files_by_name.get(
-                    sheet.sheetfile ?? "",
-                ) as KicadSch;
+                const sheet_filename = sheet.sheetfile
+                    ? this.resolve_schematic_filename(
+                          schematic.filename,
+                          sheet.sheetfile,
+                      )
+                    : undefined;
+                const sheet_sch = sheet_filename
+                    ? (this._files_by_name.get(sheet_filename) as KicadSch)
+                    : undefined;
 
                 if (!sheet_sch) {
                     continue;
@@ -655,6 +710,7 @@ export class Project extends EventTarget implements IDisposable {
                         {
                             sheet: sheet,
                             instance: instance,
+                            filename: sheet_filename,
                         },
                     );
                 }
@@ -704,7 +760,7 @@ export class Project extends EventTarget implements IDisposable {
                 pages.push(
                     new ProjectPage(
                         this,
-                        sheet.sheet.sheetfile!,
+                        sheet.filename,
                         path,
                         sheet.sheet.sheetname ?? sheet.sheet.sheetfile!,
                         sheet.instance.page ?? "",

@@ -86,9 +86,7 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
         );
 
         window.addEventListener(SelectDesignatorEvent.type, (e) => {
-            const refs = this.project.find_designator(
-                e.detail.designator,
-            );
+            const refs = this.project.find_designator(e.detail.designator);
 
             if (refs && refs.length > 0) {
                 const ref = refs[0];
@@ -104,9 +102,11 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
         window.addEventListener(ComponentERCResultEvent.type, (e) => {
             Project.import_cjk_glyphs();
             const component_erc_result: ComponentERCResult = e.detail;
-            
+
             if (component_erc_result.pins.length === 0) {
-                console.warn(`ERC: No pins specified for designator ${component_erc_result.designator}`);
+                console.warn(
+                    `ERC: No pins specified for designator ${component_erc_result.designator}`,
+                );
                 return;
             }
 
@@ -118,28 +118,31 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
                     designator,
                     pin.pin_num,
                 );
-                
+
                 if (sch_symbol) {
-                    const existing_pins = pins_by_uuid.get(sch_symbol.uuid) ?? [];
+                    const existing_pins =
+                        pins_by_uuid.get(sch_symbol.uuid) ?? [];
                     existing_pins.push(pin);
                     pins_by_uuid.set(sch_symbol.uuid, existing_pins);
                 }
             }
 
             if (pins_by_uuid.size === 0) {
-                console.warn(`ERC: Cannot find any symbol instances for designator ${designator}`);
+                console.warn(
+                    `ERC: Cannot find any symbol instances for designator ${designator}`,
+                );
                 return;
             }
 
             const erc_items = Array.from(pins_by_uuid.entries()).map(
-                ([uuid, pins]) => ({ uuid, pins })
+                ([uuid, pins]) => ({ uuid, pins }),
             );
 
             const first_ref = this.project.find_designator_by_pin(
                 designator,
-                component_erc_result.pins[0].pin_num
+                component_erc_result.pins[0].pin_num,
             );
-            
+
             if (first_ref) {
                 if (first_ref.sheet_name !== this.sch_viewer.sch_name) {
                     const sch = this.project.file_by_name(first_ref.sheet_name);
@@ -150,13 +153,18 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
 
                 setTimeout(() => {
                     if (erc_items.length === 1) {
-                        this.sch_viewer.show_erc(erc_items[0].uuid, erc_items[0].pins);
+                        this.sch_viewer.show_erc(
+                            erc_items[0].uuid,
+                            erc_items[0].pins,
+                        );
                     } else {
                         this.sch_viewer.show_erc_multi(erc_items);
                     }
                 }, 500);
             } else {
-                console.warn(`ERC: Cannot find first pin's symbol instance for designator ${designator}`);
+                console.warn(
+                    `ERC: Cannot find first pin's symbol instance for designator ${designator}`,
+                );
             }
         });
 
@@ -171,9 +179,11 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
 
         this.renderRoot.addEventListener("erc-jump", (e: any) => {
             const { designator, pins } = e.detail;
-            
+
             if (!pins || pins.length === 0) {
-                console.warn(`ERC: No pins specified for designator ${designator}`);
+                console.warn(
+                    `ERC: No pins specified for designator ${designator}`,
+                );
                 return;
             }
 
@@ -184,28 +194,31 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
                     designator,
                     pin.pin_num,
                 );
-                
+
                 if (sch_symbol) {
-                    const existing_pins = pins_by_uuid.get(sch_symbol.uuid) ?? [];
+                    const existing_pins =
+                        pins_by_uuid.get(sch_symbol.uuid) ?? [];
                     existing_pins.push(pin);
                     pins_by_uuid.set(sch_symbol.uuid, existing_pins);
                 }
             }
 
             if (pins_by_uuid.size === 0) {
-                console.warn(`ERC: Cannot find any symbol instances for designator ${designator}`);
+                console.warn(
+                    `ERC: Cannot find any symbol instances for designator ${designator}`,
+                );
                 return;
             }
 
             const erc_items = Array.from(pins_by_uuid.entries()).map(
-                ([uuid, pins]) => ({ uuid, pins })
+                ([uuid, pins]) => ({ uuid, pins }),
             );
 
             const first_ref = this.project.find_designator_by_pin(
                 designator,
-                pins[0].pin_num
+                pins[0].pin_num,
             );
-            
+
             if (first_ref) {
                 if (first_ref.sheet_name !== this.sch_viewer.sch_name) {
                     const sch = this.project.file_by_name(first_ref.sheet_name);
@@ -216,21 +229,28 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
 
                 setTimeout(() => {
                     if (erc_items.length === 1) {
-                        this.sch_viewer.show_erc(erc_items[0].uuid, erc_items[0].pins);
+                        this.sch_viewer.show_erc(
+                            erc_items[0].uuid,
+                            erc_items[0].pins,
+                        );
                     } else {
                         this.sch_viewer.show_erc_multi(erc_items);
                     }
                 }, 100);
             } else {
-                console.warn(`ERC: Cannot find first pin's symbol instance for designator ${designator}`);
+                console.warn(
+                    `ERC: Cannot find first pin's symbol instance for designator ${designator}`,
+                );
             }
         });
 
         window.addEventListener(ProjectERCResultEvent.type, (e) => {
             console.log("Project ERC Result", e.detail);
-            const inspector = this.renderRoot.querySelector('kc-erc-inspector') as KCErcInspectorElement;
+            const inspector = this.renderRoot.querySelector(
+                "kc-erc-inspector",
+            ) as KCErcInspectorElement;
             if (inspector && e.detail) {
-                 inspector.ercResult = e.detail;
+                inspector.ercResult = e.detail;
             }
         });
     }
@@ -261,9 +281,14 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
 
         // If it's a sheet instance, switch over to the new sheet.
         if (item instanceof SchematicSheet) {
-            this.project.activate_sch(
-                `${item.sheetfile}:${item.path}/${item.uuid}`,
-            );
+            const filename = item.sheetfile
+                ? this.project.resolve_schematic_filename(
+                      item.parent.filename,
+                      item.sheetfile,
+                  )
+                : undefined;
+            if (!filename) return;
+            this.project.activate_sch(`${filename}:${item.path}/${item.uuid}`);
             return;
         }
     }
@@ -275,7 +300,8 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
     protected override do_render() {
         this.#selection_pop_menu =
             html`<kc-sch-selection-menu></kc-sch-selection-menu>` as HTMLElement;
-        const inspector = html`<kc-erc-inspector></kc-erc-inspector>` as KCErcInspectorElement;
+        const inspector =
+            html`<kc-erc-inspector></kc-erc-inspector>` as KCErcInspectorElement;
         const content = super.render_viewer();
         return html`${content} ${this.#selection_pop_menu} ${inspector}`;
     }
