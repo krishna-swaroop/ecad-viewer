@@ -70,7 +70,10 @@ export class Project extends EventTarget implements IDisposable {
         return this._designator_refs.get(d);
     }
 
-    find_designator_by_pin(d: string, pin_num: string): DesignatorRef | undefined {
+    find_designator_by_pin(
+        d: string,
+        pin_num: string,
+    ): DesignatorRef | undefined {
         const refs = this._designator_refs.get(d);
         if (!refs || refs.length === 0) {
             return undefined;
@@ -79,7 +82,7 @@ export class Project extends EventTarget implements IDisposable {
         if (refs.length === 1) {
             return refs[0];
         }
-        
+
         for (const ref of refs) {
             const sch = this.file_by_name(ref.sheet_name);
             if (sch instanceof KicadSch) {
@@ -88,7 +91,10 @@ export class Project extends EventTarget implements IDisposable {
                     const lib_symbol = symbol.lib_symbol;
                     if (lib_symbol) {
                         for (const child of lib_symbol.children) {
-                            if (child.unit === ref.unit && child.has_pin(pin_num)) {
+                            if (
+                                child.unit === ref.unit &&
+                                child.has_pin(pin_num)
+                            ) {
                                 return ref;
                             }
                         }
@@ -134,6 +140,7 @@ export class Project extends EventTarget implements IDisposable {
     }
 
     public dispose() {
+        this._pool.dispose();
         for (const i of [this._pcb, this._sch]) i.length = 0;
         this._files_by_name.clear();
         this._pages_by_path.clear();
@@ -141,6 +148,24 @@ export class Project extends EventTarget implements IDisposable {
         this._label_name_refs.clear();
         this._net_item_refs.clear();
         this._designator_refs.clear();
+    }
+
+    public reset() {
+        this.dispose();
+        this._pool = new WorkerPool(
+            Math.min(navigator.hardwareConcurrency ?? 4, 6),
+        );
+        this._fs = new FetchFileSystem();
+        this._pcb = [];
+        this._sch = [];
+        this._bom_items = [];
+        this._project_name = undefined;
+        this._root_schematic_page = undefined;
+        this.active_sch_file_name = undefined;
+        this.active_sch_name = undefined;
+        this._found_cjk = false;
+        this.settings = new ProjectSettings();
+        this.loaded = new Barrier();
     }
 
     public static async import_cjk_glyphs() {

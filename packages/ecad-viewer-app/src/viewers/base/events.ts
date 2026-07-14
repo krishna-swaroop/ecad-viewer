@@ -7,6 +7,7 @@
 import type { TabKind } from "../../ecad-viewer/constraint";
 import type { ComponentERCResult } from "../../proto/component_erc_result";
 import type { ProjectErcResult } from "../../proto/project_erc_result";
+import type { OverlayHit } from "./overlay-scene";
 
 class KiCanvasEvent<T> extends CustomEvent<T> {
     constructor(name: string, detail: T, bubbles = false) {
@@ -45,6 +46,30 @@ export class KiCanvasSelectEvent extends KiCanvasEvent<SelectDetails> {
 
     constructor(detail: SelectDetails) {
         super(KiCanvasSelectEvent.type, detail, true);
+    }
+}
+
+export class EcadOverlayClickEvent extends KiCanvasEvent<OverlayHit> {
+    static readonly type = "ecad-viewer:overlay-click";
+
+    constructor(detail: OverlayHit) {
+        super(EcadOverlayClickEvent.type, detail, true);
+    }
+}
+
+export class EcadOverlayHoverEvent extends KiCanvasEvent<OverlayHit> {
+    static readonly type = "ecad-viewer:overlay-hover";
+
+    constructor(detail: OverlayHit) {
+        super(EcadOverlayHoverEvent.type, detail, true);
+    }
+}
+
+export class EcadOverlayLeaveEvent extends KiCanvasEvent<OverlayHit> {
+    static readonly type = "ecad-viewer:overlay-leave";
+
+    constructor(detail: OverlayHit) {
+        super(EcadOverlayLeaveEvent.type, detail, true);
     }
 }
 
@@ -293,57 +318,26 @@ export class PresetUnsetEvent extends CustomEvent<undefined> {
     }
 }
 
-/**
- * Event dispatched when user clicks in comment mode.
- * Contains world coordinates and element information.
- */
-export interface CommentClickDetails {
-    /** X coordinate in board units (mm) */
-    worldX: number;
-    /** Y coordinate in board units (mm) */
-    worldY: number;
-    /** X coordinate on screen (pixels) */
-    screenX: number;
-    /** Y coordinate on screen (pixels) */
-    screenY: number;
-    /** Active layer name (e.g., "F.Cu") */
-    layer: string;
-    /** Context type: "PCB" or "SCH" */
-    context: "PCB" | "SCH";
-    /** Element type (e.g., "Footprint", "Pad", "Via", "Symbol", "Pin") */
-    elementType?: string;
-    /** Element ID or reference (e.g., footprint UUID) */
-    elementId?: string;
-    /** Element designator/reference (e.g., "U1", "R5", "C3") */
-    elementRef?: string;
-    /** Raw element object for additional info */
-    element?: unknown;
-}
-
 export interface ImageExportRequestDetails {
-    viewType?: 'SCH' | 'PCB' | '3D' | 'BOM';
+    viewType?: "SCH" | "PCB" | "3D" | "BOM";
 }
 
 export interface ImageExportDetails {
-    viewType: 'SCH' | 'PCB' | '3D' | 'BOM';
+    viewType: "SCH" | "PCB" | "3D" | "BOM";
     imageData: string;
     width: number;
     height: number;
     timestamp: number;
 }
 
-export class CommentClickEvent extends KiCanvasEvent<CommentClickDetails> {
-    static readonly type = "ecad-viewer:comment:click";
-
-    constructor(detail: CommentClickDetails) {
-        super(CommentClickEvent.type, detail, true);
-    }
-}
-
-export class ImageExportRequestEvent extends CustomEvent<ImageExportRequestDetails | 'SCH' | 'PCB' | '3D' | 'BOM'> {
+export class ImageExportRequestEvent extends CustomEvent<
+    ImageExportRequestDetails | "SCH" | "PCB" | "3D" | "BOM"
+> {
     static readonly type = "ecad-viewer:image:export-request";
 
-    constructor(detail: ImageExportRequestDetails | 'SCH' | 'PCB' | '3D' | 'BOM') {
+    constructor(
+        detail: ImageExportRequestDetails | "SCH" | "PCB" | "3D" | "BOM",
+    ) {
         super(ImageExportRequestEvent.type, { detail });
     }
 }
@@ -396,6 +390,9 @@ export class LoadZipErrorEvent extends CustomEvent<string> {
 export interface KiCanvasEventMap {
     [KiCanvasLoadEvent.type]: KiCanvasLoadEvent;
     [KiCanvasSelectEvent.type]: KiCanvasSelectEvent;
+    [EcadOverlayClickEvent.type]: EcadOverlayClickEvent;
+    [EcadOverlayHoverEvent.type]: EcadOverlayHoverEvent;
+    [EcadOverlayLeaveEvent.type]: EcadOverlayLeaveEvent;
     [KiCanvasAiSelectEvent.type]: KiCanvasAiSelectEvent;
     [KiCanvasMouseMoveEvent.type]: KiCanvasMouseMoveEvent;
     [KicadSyncHoverEvent.type]: KicadSyncHoverEvent;
@@ -419,7 +416,6 @@ export interface KiCanvasEventMap {
     [PresetUnsetEvent.type]: PresetUnsetEvent;
     [ComponentERCResultEvent.type]: ComponentERCResultEvent;
     [ProjectERCResultEvent.type]: ProjectERCResultEvent;
-    [CommentClickEvent.type]: CommentClickEvent;
 }
 
 declare global {
@@ -439,7 +435,6 @@ declare global {
         [BoardContentReady.type]: BoardContentReady;
         [ComponentERCResultEvent.type]: ComponentERCResultEvent;
         [ProjectERCResultEvent.type]: ProjectERCResultEvent;
-        [CommentClickEvent.type]: CommentClickEvent;
     }
 
     interface HTMLElementEventMap {
@@ -458,6 +453,5 @@ declare global {
         [BoardContentReady.type]: BoardContentReady;
         [ComponentERCResultEvent.type]: ComponentERCResultEvent;
         [ProjectERCResultEvent.type]: ProjectERCResultEvent;
-        [CommentClickEvent.type]: CommentClickEvent;
     }
 }

@@ -6,9 +6,11 @@ type ParserAPI = {
 };
 
 export class WorkerPool {
+    private workerHandles: Worker[] = [];
     private workers: Comlink.Remote<ParserAPI>[] = [];
     private idle: Comlink.Remote<ParserAPI>[] = [];
     private queue: (() => void)[] = [];
+    private disposed = false;
 
     constructor(workerCount: number) {
         for (let i = 0; i < workerCount; i++) {
@@ -18,6 +20,7 @@ export class WorkerPool {
             );
 
             const wrapped = Comlink.wrap<ParserAPI>(worker);
+            this.workerHandles.push(worker);
             this.workers.push(wrapped);
             this.idle.push(wrapped);
         }
@@ -26,11 +29,13 @@ export class WorkerPool {
     async run<T>(
         job: (worker: Comlink.Remote<ParserAPI>) => Promise<T>,
     ): Promise<T> {
+        if (this.disposed) throw new Error("Parser worker pool is disposed");
         if (this.idle.length === 0) {
             await new Promise<void>((resolve) => {
                 this.queue.push(resolve);
             });
         }
+        if (this.disposed) throw new Error("Parser worker pool is disposed");
 
         const worker = this.idle.pop()!;
         try {
@@ -44,7 +49,15 @@ export class WorkerPool {
     }
 
     dispose() {
+        if (this.disposed) return;
+        this.disposed = true;
+        for (const worker of this.workers) {
+            worker[Comlink.releaseProxy]();
+        }
+        for (const worker of this.workerHandles) worker.terminate();
+        this.workerHandles.length = 0;
         this.workers.length = 0;
         this.idle.length = 0;
+        this.queue.splice(0).forEach((resolve) => resolve());
     }
 }

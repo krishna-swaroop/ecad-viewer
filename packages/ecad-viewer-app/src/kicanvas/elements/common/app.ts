@@ -101,6 +101,7 @@ export abstract class KCViewerAppElement<
     #toggle_button?: HTMLElement;
     #placeholder = html`<ecad-spinner></ecad-spinner>` as HTMLElement;
     #content?: HTMLElement;
+    public showPropertyPanel = true;
 
     public set tabMenuHidden(v: boolean) {
         this.#fitter_menu.hidden = v;
@@ -213,11 +214,11 @@ export abstract class KCViewerAppElement<
         this.#viewer_elm = this.make_viewer_element();
         this.#property_viewer = this.make_property_element();
 
-        let elements = [
+        let elements: ElementOrFragment[] = [
             this.#fitter_menu,
             this.#viewer_elm,
-            this.#property_viewer,
         ];
+        if (this.showPropertyPanel) elements.push(this.#property_viewer);
 
         if (window.hide_header) {
             this.#toggle_button = html`<div

@@ -1,4 +1,5 @@
 import { Vec2 } from "../../../base/math";
+import { listen } from "../../../base/events";
 import { css, html } from "../../../base/web-components";
 import { KCUIElement } from "../../../kc-ui";
 import type {
@@ -71,9 +72,11 @@ export class SelectionPopMenu extends KCUIElement {
     }
 
     private setup_events() {
-        window.addEventListener("mousemove", (e) => {
-            this.#pos = new Vec2(e.offsetX, e.offsetY);
-        });
+        this.addDisposable(
+            listen(window, "mousemove", (e) => {
+                this.#pos = new Vec2(e.clientX, e.clientY);
+            }),
+        );
 
         this.addEventListener("click", (event: MouseEvent) => {
             if (this.#content.contains(event.target as any)) {
@@ -120,7 +123,7 @@ export class SelectionPopMenu extends KCUIElement {
     }
 
     getPadProperties(itm: Pad) {
-        return `Pad [Net-${itm.net.name}] on ${itm.layers[0]}`;
+        return `Pad [Net-${itm.net?.name ?? "unconnected"}] on ${itm.layers[0]}`;
     }
 
     getViaProperties(itm: Via) {
@@ -148,6 +151,7 @@ export class SelectionPopMenu extends KCUIElement {
                     <li>${this.build_item_desc(i.item)}</li>
                 `;
                 selection.addEventListener("click", () => {
+                    this.hidden = true;
                     this.viewer.dispatchEvent(
                         new KiCanvasSelectEvent({
                             item: i.item,
@@ -162,7 +166,7 @@ export class SelectionPopMenu extends KCUIElement {
                         "net" in i.item &&
                         typeof i.item.net === "number"
                     ) {
-                        this.viewer.highlight_net(i.item.net);
+                        this.viewer.highlight_net(i.item.net, false);
                     }
                 });
                 this.#content.appendChild(selection);

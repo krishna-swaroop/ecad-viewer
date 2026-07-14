@@ -1,4 +1,5 @@
 import { later } from "../base/async";
+import { listen } from "../base/events";
 import { Vec2 } from "../base/math";
 import {
     CSS,
@@ -19,9 +20,9 @@ import { KicadSch } from "../kicad";
 import { is_3d_model, is_kicad, TabHeaderElement } from "./tab_header";
 import {
     BoardContentReady,
-    CommentClickEvent,
     ImageExportRequestEvent,
     ImageExportResultEvent,
+    KiCanvasSelectEvent,
     LoadZipEvent,
     LoadZipErrorEvent,
     Online3dViewerLoaded,
@@ -32,12 +33,29 @@ import {
     TabMenuClickEvent,
     TabMenuVisibleChangeEvent,
 } from "../viewers/base/events";
+import type { EcadOverlayScene } from "../viewers/base/overlay-scene";
+import {
+    EcadSemanticSelectionEvent,
+    normalize_board_selection,
+    normalize_schematic_selection,
+    type EcadCrossProbeRequest,
+    type EcadSourceUpdate,
+} from "./host-adapter";
 
-export {
-    CommentClickEvent,
-    TabActivateEvent,
-    SheetLoadEvent,
-} from "../viewers/base/events";
+export type {
+    EcadCrossProbeRequest,
+    EcadHostContext,
+    EcadOverlaySceneInput,
+    EcadSemanticSelectionDetail,
+    EcadSourceUpdate,
+} from "./host-adapter";
+export type {
+    EcadOverlayAnchor,
+    EcadOverlayPrimitive,
+    EcadOverlayScene,
+} from "../viewers/base/overlay-scene";
+
+export { TabActivateEvent, SheetLoadEvent } from "../viewers/base/events";
 
 import { TabKind } from "./constraint";
 import type { InputContainer } from "./input_container";
@@ -48,6 +66,8 @@ import "./ecad_viewer_global";
 import { ZipUtils } from "../utils/zip_utils";
 import { length } from "../base/iterator";
 import { HQ_LOGO } from "../kc-ui/hq_logo";
+import type { BoardViewer } from "../viewers/board/viewer";
+import type { SchematicViewer } from "../viewers/schematic/viewer";
 
 export class ECadViewer extends KCUIElement implements InputContainer {
     static override styles = [
@@ -123,6 +143,19 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         super();
         this.addDisposable(this.#project);
         this.provideContext("project", this.#project);
+        this.addDisposable(
+            listen(this.#project, "change", () => {
+                const active = this.#project.active_sch_name;
+                if (
+                    active &&
+                    this.#project.pages.some(
+                        (page) => page.project_path === active,
+                    )
+                ) {
+                    this.#active_schematic_project_path = active;
+                }
+            }),
+        );
         this.addEventListener("contextmenu", function (event) {
             event.preventDefault();
         });
@@ -151,8 +184,117 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     #step_viewer_placeholder: HTMLElement;
     #viewers_container: HTMLDivElement;
     #is_full_screen = false;
+    #host_active = true;
+    #revision_key: string | null = null;
+    #source_names = new Set<string>();
+    #overlay_scenes = new Map<string, EcadOverlayScene>();
+    #active_schematic_project_path: string | null = null;
     get project() {
         return this.#project;
+    }
+
+    get showHeader() {
+        return this.getAttribute("show-header") !== "false";
+    }
+
+    get showSelectionPanel() {
+        return this.getAttribute("show-selection-panel") !== "false";
+    }
+
+    public async replaceSources(update: EcadSourceUpdate): Promise<void> {
+        if (this.#revision_key === update.revisionKey && this.loaded) return;
+        this.#project.reset();
+        this.#revision_key = update.revisionKey;
+        this.#source_names = new Set(
+            update.sources.map((source) => source.filename),
+        );
+        await this.#setup_project({ urls: [], blobs: update.sources });
+    }
+
+    public async appendSources(update: EcadSourceUpdate): Promise<void> {
+        if (
+            this.#revision_key !== null &&
+            this.#revision_key !== update.revisionKey
+        ) {
+            await this.replaceSources(update);
+            return;
+        }
+        this.#revision_key = update.revisionKey;
+        const additions = update.sources.filter(
+            (source) => !this.#source_names.has(source.filename),
+        );
+        if (!additions.length) return;
+        for (const source of additions) this.#source_names.add(source.filename);
+        await this.#add_files_to_project(additions);
+    }
+
+    public setActive(active: boolean): void {
+        this.#host_active = active;
+        this.#apply_viewer_activity();
+    }
+
+    public clearSelection(): void {
+        this.#safe_board_viewer()?.clear_selection();
+        this.#safe_schematic_viewer()?.clear_selection();
+    }
+
+    public setOverlayScene(
+        channelId: string,
+        scene: Omit<EcadOverlayScene, "channelId">,
+    ): void {
+        const normalized = { ...scene, channelId };
+        this.#overlay_scenes.set(channelId, normalized);
+        this.#viewer_for_context(normalized.context)?.set_overlay_scene(
+            normalized,
+        );
+    }
+
+    public clearOverlayScene(channelId: string): void {
+        this.#overlay_scenes.delete(channelId);
+        this.#safe_board_viewer()?.clear_overlay_scene(channelId);
+        this.#safe_schematic_viewer()?.clear_overlay_scene(channelId);
+    }
+
+    public requestCrossProbe(request: EcadCrossProbeRequest): boolean {
+        const value = request.value.trim();
+        if (!value) return false;
+        const target = request.targetContext;
+        if (target === "PCB" || (!target && this.has_pcb)) {
+            const board_viewer = this.#safe_board_viewer();
+            if (board_viewer) {
+                if (request.kind === "net") {
+                    const net_code =
+                        request.netCode ??
+                        board_viewer.board.nets.find(
+                            (net) => net.name === (request.net ?? value),
+                        )?.number;
+                    if (net_code !== undefined) {
+                        board_viewer.focus_net(net_code, false);
+                        return true;
+                    }
+                } else {
+                    const footprint = board_viewer.board.find_footprint(
+                        request.uuid ?? request.designator ?? value,
+                    );
+                    if (footprint) {
+                        board_viewer.highlight_fp(footprint);
+                        if (request.mode !== "hover") {
+                            const bounds = footprint.bbox;
+                            board_viewer.viewport.camera.bbox = bounds.grow(
+                                Math.max(bounds.w * 0.8, 4),
+                                Math.max(bounds.h * 0.8, 4),
+                            );
+                        }
+                        board_viewer.draw();
+                        return true;
+                    }
+                }
+            }
+        }
+        if (target === "SCH" || (!target && this.has_sch)) {
+            return this.#apply_schematic_cross_probe(request, value);
+        }
+        return false;
     }
 
     @attribute({ type: Boolean })
@@ -160,54 +302,6 @@ export class ECadViewer extends KCUIElement implements InputContainer {
 
     @attribute({ type: Boolean })
     public loaded: boolean;
-
-    /**
-     * When true, clicking on the viewer dispatches CommentClickEvent
-     * instead of selecting items. Used for design review commenting.
-     */
-    @attribute({ type: Boolean })
-    public "comment-mode": boolean;
-
-    /**
-     * Enable or disable comment mode programmatically.
-     * When enabled, clicks dispatch CommentClickEvent with coordinates.
-     */
-    public setCommentMode(enabled: boolean): void {
-        this["comment-mode"] = enabled;
-
-        // Helper to forward CommentClickEvent from internal viewer to this element
-        const forwardEvent = (event: Event) => {
-            const e = event as CommentClickEvent;
-            // Re-dispatch the event from this element so React can listen
-            this.dispatchEvent(new CommentClickEvent(e.detail));
-        };
-
-        if (this.#board_app?.viewer) {
-            const viewer = this.#board_app.viewer as any;
-            viewer.commentModeEnabled = enabled;
-            if (enabled) {
-                viewer.addEventListener(CommentClickEvent.type, forwardEvent);
-            } else {
-                viewer.removeEventListener(
-                    CommentClickEvent.type,
-                    forwardEvent,
-                );
-            }
-        }
-
-        if (this.#schematic_app?.viewer) {
-            const viewer = this.#schematic_app.viewer as any;
-            viewer.commentModeEnabled = enabled;
-            if (enabled) {
-                viewer.addEventListener(CommentClickEvent.type, forwardEvent);
-            } else {
-                viewer.removeEventListener(
-                    CommentClickEvent.type,
-                    forwardEvent,
-                );
-            }
-        }
-    }
 
     /**
      * Move the camera to a specific location (in world coordinates)
@@ -235,25 +329,99 @@ export class ECadViewer extends KCUIElement implements InputContainer {
      */
     public switchPage(pageId: string): void {
         if (!this.#schematic_app) return;
-
-        // Ensure we are on the schematic tab
-        if (this.#tab_header) {
-            // We can't easily programmatically click the tab header without exposing it or duplicating logic,
-            // but we can simulate the tab switch if needed.
-            // Ideally ecad-viewer should expose a method to set active tab.
-            // For now, let's assume the caller handles tab switching or we just switch the internal view.
-        }
-
-        const project = this.#project;
-        // Try to find by filename first
-        const sch = project.file_by_name(pageId);
-        if (sch) {
-            this.#schematic_app.viewer.load(sch as any);
+        const page = this.#project.pages.find(
+            (candidate) =>
+                candidate.project_path === pageId ||
+                candidate.filename === pageId ||
+                candidate.name === pageId ||
+                candidate.page === pageId,
+        );
+        if (!page) {
+            console.warn(`switchPage: Could not find page with ID ${pageId}`);
             return;
         }
+        this.#activate_schematic_page(page.project_path);
+    }
 
-        // Try to find by sheet path/UUID if needed - but filename is usually sufficient for now
-        console.warn(`switchPage: Could not find page with ID ${pageId}`);
+    public navigateSchematicPage(direction: -1 | 1): boolean {
+        const pages = this.#project.pages;
+        if (!pages.length) return false;
+        const current = this.#active_schematic_page();
+        const index = pages.findIndex(
+            (page) => page.project_path === current?.project_path,
+        );
+        const next =
+            pages[
+                ((index >= 0 ? index : 0) + direction + pages.length) %
+                    pages.length
+            ];
+        return next ? this.#activate_schematic_page(next.project_path) : false;
+    }
+
+    public navigateSchematicParent(): boolean {
+        const current = this.#active_schematic_page();
+        if (!current) return false;
+        const current_parts = current.sheet_path.split("/").filter(Boolean);
+        const parent_path =
+            current_parts.length > 1
+                ? `/${current_parts.slice(0, -1).join("/")}`
+                : "";
+        const parent =
+            this.#project.pages.find(
+                (page) => page.sheet_path === parent_path,
+            ) ??
+            this.#project.pages
+                .filter(
+                    (page) =>
+                        page.project_path !== current.project_path &&
+                        page.sheet_path.length < current.sheet_path.length &&
+                        current.sheet_path.startsWith(`${page.sheet_path}/`),
+                )
+                .sort((a, b) => b.sheet_path.length - a.sheet_path.length)[0];
+        return parent
+            ? this.#activate_schematic_page(parent.project_path)
+            : false;
+    }
+
+    public getActiveSchematicPage() {
+        const page = this.#active_schematic_page();
+        return page
+            ? {
+                  projectPath: page.project_path,
+                  sheetPath: page.sheet_path,
+                  filename: page.filename,
+                  name: page.name,
+                  page: page.page,
+              }
+            : null;
+    }
+
+    #active_schematic_page() {
+        const exact = this.#project.pages.find(
+            (page) => page.project_path === this.#active_schematic_project_path,
+        );
+        if (exact) return exact;
+        const filename = this.#safe_schematic_viewer()?.schematic?.filename;
+        return this.#project.pages
+            .filter((page) => !filename || page.filename === filename)
+            .sort(
+                (a, b) =>
+                    a.sheet_path.split("/").filter(Boolean).length -
+                    b.sheet_path.split("/").filter(Boolean).length,
+            )[0];
+    }
+
+    #activate_schematic_page(project_path: string): boolean {
+        const page = this.#project.pages.find(
+            (candidate) => candidate.project_path === project_path,
+        );
+        const viewer = this.#safe_schematic_viewer();
+        if (!page || !viewer || !(page.document instanceof KicadSch))
+            return false;
+        this.#active_schematic_project_path = page.project_path;
+        this.#project.activate_sch(page.project_path);
+        void viewer.load(page.document);
+        return true;
     }
 
     /**
@@ -285,7 +453,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     public async exportImage(
-        viewType: 'SCH' | 'PCB' | '3D' | 'BOM' = this.#active_tab as 'SCH' | 'PCB' | '3D' | 'BOM',
+        viewType: "SCH" | "PCB" | "3D" | "BOM" = this.#active_tab as
+            "SCH" | "PCB" | "3D" | "BOM",
     ): Promise<{ image: string; width: number; height: number } | null> {
         await this.loaded;
 
@@ -297,63 +466,79 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             await this.#switchToTab(tabKind);
         }
 
-        let result: { image: string; width: number; height: number } | null = null;
+        let result: { image: string; width: number; height: number } | null =
+            null;
 
         switch (viewType) {
-            case 'PCB': {
+            case "PCB": {
                 const boardViewer = this.#board_app?.viewer;
                 if (boardViewer?.canvas) {
                     const canvas = boardViewer.canvas as HTMLCanvasElement;
-                    
+
                     if (canvas.width === 0 || canvas.height === 0) {
                         return null;
                     }
-                    
-                    if (typeof boardViewer.draw === 'function') {
+
+                    if (typeof boardViewer.draw === "function") {
                         boardViewer.draw();
                     }
-                    
-                    await new Promise(resolve => requestAnimationFrame(resolve));
-                    
+
+                    await new Promise((resolve) =>
+                        requestAnimationFrame(resolve),
+                    );
+
                     result = {
-                        image: canvas.toDataURL('image/png'),
+                        image: canvas.toDataURL("image/png"),
                         width: canvas.width,
                         height: canvas.height,
                     };
                 }
                 break;
             }
-            case 'SCH': {
+            case "SCH": {
                 const schViewer = this.#schematic_app?.viewer;
                 if (schViewer?.canvas) {
-                    const schematics = Array.from(this.#project?.schematics() || []);
-                    
+                    const schematics = Array.from(
+                        this.#project?.schematics() || [],
+                    );
+
                     if (schematics.length > 1) {
-                        const images: Array<{ image: string; width: number; height: number; name: string }> = [];
+                        const images: Array<{
+                            image: string;
+                            width: number;
+                            height: number;
+                            name: string;
+                        }> = [];
                         const originalSheet = (schViewer as any).sch_name;
-                        
+
                         for (const sch of schematics) {
                             if (sch instanceof KicadSch) {
                                 await this.#schematic_app.viewer.load(sch);
-                                await new Promise(resolve => requestAnimationFrame(resolve));
-                                
-                                const canvas = schViewer.canvas as HTMLCanvasElement;
+                                await new Promise((resolve) =>
+                                    requestAnimationFrame(resolve),
+                                );
+
+                                const canvas =
+                                    schViewer.canvas as HTMLCanvasElement;
                                 images.push({
-                                    image: canvas.toDataURL('image/png'),
+                                    image: canvas.toDataURL("image/png"),
                                     width: canvas.width,
                                     height: canvas.height,
                                     name: sch.filename,
                                 });
                             }
                         }
-                        
+
                         if (originalSheet) {
-                            const originalSch = this.#project.file_by_name(originalSheet);
+                            const originalSch =
+                                this.#project.file_by_name(originalSheet);
                             if (originalSch instanceof KicadSch) {
-                                await this.#schematic_app.viewer.load(originalSch);
+                                await this.#schematic_app.viewer.load(
+                                    originalSch,
+                                );
                             }
                         }
-                        
+
                         result = {
                             image: JSON.stringify(images),
                             width: 0,
@@ -362,7 +547,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                     } else {
                         const canvas = schViewer.canvas as HTMLCanvasElement;
                         result = {
-                            image: canvas.toDataURL('image/png'),
+                            image: canvas.toDataURL("image/png"),
                             width: canvas.width,
                             height: canvas.height,
                         };
@@ -370,19 +555,19 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 }
                 break;
             }
-            case '3D': {
+            case "3D": {
                 const viewer3d = this.#ov_d_app;
                 if (viewer3d?._viewer_container) {
                     const renderer = viewer3d._viewer_container.renderer;
                     if (renderer) {
                         renderer.render(
                             viewer3d._viewer_container.scene,
-                            viewer3d._viewer_container.activeCamera
+                            viewer3d._viewer_container.activeCamera,
                         );
-                        
+
                         const canvas = renderer.domElement;
                         result = {
-                            image: canvas.toDataURL('image/png'),
+                            image: canvas.toDataURL("image/png"),
                             width: canvas.width,
                             height: canvas.height,
                         };
@@ -390,108 +575,161 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 }
                 break;
             }
-            case 'BOM': {
+            case "BOM": {
                 const bomItems = this.#project?.bom_items;
                 if (bomItems && bomItems.length > 0) {
                     const padding = 20;
                     const rowHeight = 28;
                     const headerHeight = 32;
                     const colWidths = [50, 140, 350, 160, 200, 70];
-                    const totalWidth = colWidths.reduce((a, b) => a + b, 0) + padding * 2;
-                    const totalHeight = headerHeight + (bomItems.length + 1) * rowHeight + padding * 2;
-                    
-                    const canvas = document.createElement('canvas');
+                    const totalWidth =
+                        colWidths.reduce((a, b) => a + b, 0) + padding * 2;
+                    const totalHeight =
+                        headerHeight +
+                        (bomItems.length + 1) * rowHeight +
+                        padding * 2;
+
+                    const canvas = document.createElement("canvas");
                     const dpr = window.devicePixelRatio || 1;
                     canvas.width = totalWidth * dpr;
                     canvas.height = totalHeight * dpr;
-                    const ctx = canvas.getContext('2d');
-                    
+                    const ctx = canvas.getContext("2d");
+
                     if (ctx) {
                         ctx.scale(dpr, dpr);
-                        
-                        ctx.fillStyle = '#ffffff';
+
+                        ctx.fillStyle = "#ffffff";
                         ctx.fillRect(0, 0, totalWidth, totalHeight);
-                        
-                        ctx.fillStyle = '#666';
-                        ctx.fillRect(padding, padding, totalWidth - padding * 2, headerHeight);
-                        
-                        ctx.fillStyle = '#ffffff';
-                        ctx.font = 'bold 12px sans-serif';
-                        ctx.textAlign = 'left';
-                        ctx.textBaseline = 'middle';
-                        
-                        const headers = ['No', 'Value', 'Description', 'Footprint', 'Designator', 'Quantity'];
+
+                        ctx.fillStyle = "#666";
+                        ctx.fillRect(
+                            padding,
+                            padding,
+                            totalWidth - padding * 2,
+                            headerHeight,
+                        );
+
+                        ctx.fillStyle = "#ffffff";
+                        ctx.font = "bold 12px sans-serif";
+                        ctx.textAlign = "left";
+                        ctx.textBaseline = "middle";
+
+                        const headers = [
+                            "No",
+                            "Value",
+                            "Description",
+                            "Footprint",
+                            "Designator",
+                            "Quantity",
+                        ];
                         let x = padding + 8;
                         headers.forEach((header, index) => {
                             ctx.fillText(header, x, padding + headerHeight / 2);
                             x += colWidths[index] ?? 0;
                         });
-                        
-                        ctx.fillStyle = '#333';
-                        ctx.font = '11px sans-serif';
-                        ctx.textAlign = 'left';
-                        ctx.textBaseline = 'middle';
-                        
+
+                        ctx.fillStyle = "#333";
+                        ctx.font = "11px sans-serif";
+                        ctx.textAlign = "left";
+                        ctx.textBaseline = "middle";
+
                         let y = padding + headerHeight;
                         bomItems.forEach((item, index) => {
                             if (index % 2 === 0) {
-                                ctx.fillStyle = '#f9f9f9';
-                                ctx.fillRect(padding, y, totalWidth - padding * 2, rowHeight);
+                                ctx.fillStyle = "#f9f9f9";
+                                ctx.fillRect(
+                                    padding,
+                                    y,
+                                    totalWidth - padding * 2,
+                                    rowHeight,
+                                );
                             }
-                            
-                            ctx.fillStyle = '#333';
+
+                            ctx.fillStyle = "#333";
                             let x = padding + 8;
-                            
-                            ctx.fillText(String(index + 1), x, y + rowHeight / 2);
+
+                            ctx.fillText(
+                                String(index + 1),
+                                x,
+                                y + rowHeight / 2,
+                            );
                             x += colWidths[0] ?? 0;
-                            
+
                             ctx.save();
                             ctx.beginPath();
                             ctx.rect(x - 8, y, colWidths[1] ?? 0, rowHeight);
                             ctx.clip();
-                            ctx.fillText(item.Name || '', x, y + rowHeight / 2);
+                            ctx.fillText(item.Name || "", x, y + rowHeight / 2);
                             ctx.restore();
                             x += colWidths[1] ?? 0;
-                            
+
                             ctx.save();
                             ctx.beginPath();
                             ctx.rect(x - 8, y, colWidths[2] ?? 0, rowHeight);
                             ctx.clip();
-                            ctx.fillText(item.Description || '', x, y + rowHeight / 2);
+                            ctx.fillText(
+                                item.Description || "",
+                                x,
+                                y + rowHeight / 2,
+                            );
                             ctx.restore();
                             x += colWidths[2] ?? 0;
-                            
+
                             ctx.save();
                             ctx.beginPath();
                             ctx.rect(x - 8, y, colWidths[3] ?? 0, rowHeight);
                             ctx.clip();
-                            ctx.fillText(item.Footprint || '', x, y + rowHeight / 2);
+                            ctx.fillText(
+                                item.Footprint || "",
+                                x,
+                                y + rowHeight / 2,
+                            );
                             ctx.restore();
                             x += colWidths[3] ?? 0;
-                            
+
                             ctx.save();
                             ctx.beginPath();
                             ctx.rect(x - 8, y, colWidths[4] ?? 0, rowHeight);
                             ctx.clip();
-                            ctx.fillText(item.Reference || '', x, y + rowHeight / 2);
+                            ctx.fillText(
+                                item.Reference || "",
+                                x,
+                                y + rowHeight / 2,
+                            );
                             ctx.restore();
                             x += colWidths[4] ?? 0;
-                            
-                            ctx.fillText(String(item.Qty), x, y + rowHeight / 2);
-                            
+
+                            ctx.fillText(
+                                String(item.Qty),
+                                x,
+                                y + rowHeight / 2,
+                            );
+
                             y += rowHeight;
                         });
-                        
-                        const totalQty = bomItems.reduce((sum, item) => sum + item.Qty, 0);
-                        ctx.fillStyle = '#666';
-                        ctx.fillRect(padding, y, totalWidth - padding * 2, rowHeight);
-                        ctx.fillStyle = '#ffffff';
-                        ctx.font = 'bold 12px sans-serif';
-                        ctx.textAlign = 'right';
-                        ctx.fillText(`Total: ${totalQty} Price: N/A`, totalWidth - padding - 8, y + rowHeight / 2);
-                        
+
+                        const totalQty = bomItems.reduce(
+                            (sum, item) => sum + item.Qty,
+                            0,
+                        );
+                        ctx.fillStyle = "#666";
+                        ctx.fillRect(
+                            padding,
+                            y,
+                            totalWidth - padding * 2,
+                            rowHeight,
+                        );
+                        ctx.fillStyle = "#ffffff";
+                        ctx.font = "bold 12px sans-serif";
+                        ctx.textAlign = "right";
+                        ctx.fillText(
+                            `Total: ${totalQty} Price: N/A`,
+                            totalWidth - padding - 8,
+                            y + rowHeight / 2,
+                        );
+
                         result = {
-                            image: canvas.toDataURL('image/png'),
+                            image: canvas.toDataURL("image/png"),
                             width: canvas.width,
                             height: canvas.height,
                         };
@@ -508,19 +746,25 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         return result;
     }
 
-    #viewTypeToTabKind(viewType: 'SCH' | 'PCB' | '3D' | 'BOM'): TabKind {
+    #viewTypeToTabKind(viewType: "SCH" | "PCB" | "3D" | "BOM"): TabKind {
         switch (viewType) {
-            case 'PCB': return TabKind.pcb;
-            case 'SCH': return TabKind.sch;
-            case '3D': return TabKind.step;
-            case 'BOM': return TabKind.bom;
-            default: return TabKind.pcb;
+            case "PCB":
+                return TabKind.pcb;
+            case "SCH":
+                return TabKind.sch;
+            case "3D":
+                return TabKind.step;
+            case "BOM":
+                return TabKind.bom;
+            default:
+                return TabKind.pcb;
         }
     }
 
     async #switchToTab(tabKind: TabKind): Promise<void> {
         return new Promise((resolve) => {
-            const tabButtons = this.#tab_header?.shadowRoot?.querySelectorAll('tab-button');
+            const tabButtons =
+                this.#tab_header?.shadowRoot?.querySelectorAll("tab-button");
             if (tabButtons) {
                 tabButtons.forEach((btn) => {
                     if (btn.textContent?.trim().toUpperCase() === tabKind) {
@@ -528,7 +772,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                     }
                 });
             }
-            
+
             const checkTab = () => {
                 if (this.#active_tab === tabKind) {
                     resolve();
@@ -540,19 +784,6 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         });
     }
 
-    attributeChangedCallback(
-        name: string,
-        old_value: string,
-        new_value: string,
-    ) {
-        // super.attributeChangedCallback(name, old_value, new_value);
-        // Sync comment-mode attribute to viewer's commentModeEnabled property
-        // Only update if loaded (viewers exist)
-        if (name === "comment-mode" && this.loaded) {
-            const enabled = new_value !== null && new_value !== "false";
-            this.setCommentMode(enabled);
-        }
-    }
     override initialContentCallback() {
         this.#setup_events();
         later(() => {
@@ -562,45 +793,52 @@ export class ECadViewer extends KCUIElement implements InputContainer {
 
     async #setup_events() {
         // Listen for ZIP blob received via postMessage
-        window.addEventListener(LoadZipEvent.type, async (e) => {
-            const event = e as LoadZipEvent;
-            const blob = event.detail;
-            // Dispose current project and load new one
-            await this.load_zip(blob);
-        });
+        this.addDisposable(
+            listen(window, LoadZipEvent.type, async (event) => {
+                await this.load_zip((event as LoadZipEvent).detail);
+            }),
+        );
 
-        window.addEventListener(ImageExportRequestEvent.type, async (e) => {
-            const event = e as ImageExportRequestEvent;
-            let viewType: 'SCH' | 'PCB' | '3D' | 'BOM' = this.#active_tab as 'SCH' | 'PCB' | '3D' | 'BOM';
-            
-            if (typeof event.detail === 'string') {
-                viewType = event.detail as 'SCH' | 'PCB' | '3D' | 'BOM';
-            } else if (event.detail && typeof event.detail === 'object' && 'viewType' in event.detail && event.detail.viewType) {
-                viewType = event.detail.viewType;
-            }
-        
-            const result = await this.exportImage(viewType);
-            if (result) {
-                window.parent.postMessage(
-                    {
-                        type: ImageExportResultEvent.type,
-                        detail: {
-                            viewType: viewType,
-                            imageData: result.image,
-                            width: result.width,
-                            height: result.height,
-                            timestamp: Date.now(),
+        this.addDisposable(
+            listen(window, ImageExportRequestEvent.type, async (e) => {
+                const event = e as ImageExportRequestEvent;
+                let viewType: "SCH" | "PCB" | "3D" | "BOM" = this
+                    .#active_tab as "SCH" | "PCB" | "3D" | "BOM";
+
+                if (typeof event.detail === "string") {
+                    viewType = event.detail as "SCH" | "PCB" | "3D" | "BOM";
+                } else if (
+                    event.detail &&
+                    typeof event.detail === "object" &&
+                    "viewType" in event.detail &&
+                    event.detail.viewType
+                ) {
+                    viewType = event.detail.viewType;
+                }
+
+                const result = await this.exportImage(viewType);
+                if (result) {
+                    window.parent.postMessage(
+                        {
+                            type: ImageExportResultEvent.type,
+                            detail: {
+                                viewType: viewType,
+                                imageData: result.image,
+                                width: result.width,
+                                height: result.height,
+                                timestamp: Date.now(),
+                            },
                         },
-                    },
-                    '*',
-                );
-            }
-        });
+                        "*",
+                    );
+                }
+            }),
+        );
     }
 
     async load_zip(file: Blob) {
         // Dispose current project (queueing: newest wins)
-        this.#project.dispose();
+        this.#project.reset();
 
         try {
             const files = await ZipUtils.unzipFile(file);
@@ -629,7 +867,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         } catch (error) {
             console.error("Error while loading ZIP:", error);
             // Dispatch error event for iframe bridge to handle
-            const errorMessage = error instanceof Error ? error.message : "Unknown error while loading ZIP";
+            const errorMessage =
+                error instanceof Error
+                    ? error.message
+                    : "Unknown error while loading ZIP";
             window.dispatchEvent(new LoadZipErrorEvent(errorMessage));
         }
     }
@@ -652,12 +893,18 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     async load_src() {
-        console.log("[ECadViewer] load_src() called, design_urls:", window.design_urls);
+        console.log(
+            "[ECadViewer] load_src() called, design_urls:",
+            window.design_urls,
+        );
         if (window.zip_url) {
             return this.load_window_zip_url(window.zip_url);
         }
         if (window.design_urls) {
-            const extract_zip_blobs = async (url: string, label: string): Promise<EcadBlob[]> => {
+            const extract_zip_blobs = async (
+                url: string,
+                label: string,
+            ): Promise<EcadBlob[]> => {
                 console.log("[ECadViewer] Loading", label + ":", url);
                 const blob = await (await fetch(url)).blob();
                 const files = await ZipUtils.unzipFile(blob);
@@ -674,24 +921,41 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                     if (is_kicad(name)) {
                         blobs.push({ filename: name, content });
                     } else if (is_3d_model(name)) {
-                        this.#project.ov_3d_url = URL.createObjectURL(files[idx]!);
-                        console.log("[ECadViewer] 3D model found in zip:", name);
+                        this.#project.ov_3d_url = URL.createObjectURL(
+                            files[idx]!,
+                        );
+                        console.log(
+                            "[ECadViewer] 3D model found in zip:",
+                            name,
+                        );
                     }
                 });
-                console.log("[ECadViewer]", label, "loaded,", blobs.length, "kicad files");
+                console.log(
+                    "[ECadViewer]",
+                    label,
+                    "loaded,",
+                    blobs.length,
+                    "kicad files",
+                );
                 return blobs;
             };
 
             let initial_loaded = false;
 
             if (window.design_urls.sch_url) {
-                const sch_blobs = await extract_zip_blobs(window.design_urls.sch_url, "SCH");
+                const sch_blobs = await extract_zip_blobs(
+                    window.design_urls.sch_url,
+                    "SCH",
+                );
                 await this.#setup_project({ urls: [], blobs: sch_blobs });
                 initial_loaded = true;
             }
 
             if (window.design_urls.pcb_url) {
-                const pcb_blobs = await extract_zip_blobs(window.design_urls.pcb_url, "PCB");
+                const pcb_blobs = await extract_zip_blobs(
+                    window.design_urls.pcb_url,
+                    "PCB",
+                );
                 if (!initial_loaded) {
                     await this.#setup_project({ urls: [], blobs: pcb_blobs });
                     initial_loaded = true;
@@ -701,7 +965,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             }
 
             if (window.design_urls.glb_url) {
-                const glb_blobs = await extract_zip_blobs(window.design_urls.glb_url, "GLB");
+                const glb_blobs = await extract_zip_blobs(
+                    window.design_urls.glb_url,
+                    "GLB",
+                );
                 if (!initial_loaded) {
                     await this.#setup_project({ urls: [], blobs: glb_blobs });
                     initial_loaded = true;
@@ -709,8 +976,12 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                     await this.#add_files_to_project(glb_blobs);
                 }
                 if (this.#project.ov_3d_url) {
-                    console.log("[ECadViewer] GLB URL ready, dispatching Online3dViewerUrlReady");
-                    window.dispatchEvent(new Online3dViewerUrlReady(this.#project.ov_3d_url));
+                    console.log(
+                        "[ECadViewer] GLB URL ready, dispatching Online3dViewerUrlReady",
+                    );
+                    window.dispatchEvent(
+                        new Online3dViewerUrlReady(this.#project.ov_3d_url),
+                    );
                 }
             }
 
@@ -750,7 +1021,12 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     async #setup_project(sources: EcadSources) {
-        console.log("[ECadViewer] #setup_project() called, has_sch:", this.has_sch, "has_pcb:", this.has_pcb);
+        console.log(
+            "[ECadViewer] #setup_project() called, has_sch:",
+            this.has_sch,
+            "has_pcb:",
+            this.has_pcb,
+        );
         this.loaded = false;
         this.loading = true;
 
@@ -758,13 +1034,26 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             await this.#project.load(sources);
 
             this.loaded = true;
-            console.log("[ECadViewer] Project loaded, has_sch:", this.has_sch, "has_pcb:", this.has_pcb, "active_tab:", this.#active_tab);
+            console.log(
+                "[ECadViewer] Project loaded, has_sch:",
+                this.has_sch,
+                "has_pcb:",
+                this.has_pcb,
+                "active_tab:",
+                this.#active_tab,
+            );
             await this.update();
             this.#project.on_loaded();
         } catch (error) {
-            console.error("[ECadViewer] Error while setting up project:", error);
+            console.error(
+                "[ECadViewer] Error while setting up project:",
+                error,
+            );
             // Dispatch error event for iframe bridge to handle
-            const errorMessage = error instanceof Error ? error.message : "Unknown error while setting up project";
+            const errorMessage =
+                error instanceof Error
+                    ? error.message
+                    : "Unknown error while setting up project";
             window.dispatchEvent(new LoadZipErrorEvent(errorMessage));
         } finally {
             this.loading = false;
@@ -772,18 +1061,131 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     async #add_files_to_project(blobs: EcadBlob[]) {
-        console.log("[ECadViewer] #add_files_to_project() called, adding", blobs.length, "files");
+        console.log(
+            "[ECadViewer] #add_files_to_project() called, adding",
+            blobs.length,
+            "files",
+        );
         this.loading = true;
         try {
             await this.#project.load({ urls: [], blobs });
-            console.log("[ECadViewer] Files added, has_sch:", this.has_sch, "has_pcb:", this.has_pcb);
+            console.log(
+                "[ECadViewer] Files added, has_sch:",
+                this.has_sch,
+                "has_pcb:",
+                this.has_pcb,
+            );
             // Notify existing viewers of the updated project without re-rendering
             this.#project.on_loaded();
         } catch (error) {
-            console.error("[ECadViewer] Error while adding files to project:", error);
+            console.error(
+                "[ECadViewer] Error while adding files to project:",
+                error,
+            );
         } finally {
             this.loading = false;
         }
+    }
+
+    #safe_board_viewer(): BoardViewer | null {
+        try {
+            return (this.#board_app?.viewer as BoardViewer | undefined) ?? null;
+        } catch {
+            return null;
+        }
+    }
+
+    #safe_schematic_viewer(): SchematicViewer | null {
+        try {
+            return (
+                (this.#schematic_app?.viewer as SchematicViewer | undefined) ??
+                null
+            );
+        } catch {
+            return null;
+        }
+    }
+
+    #viewer_for_context(context: "SCH" | "PCB") {
+        return context === "SCH"
+            ? this.#safe_schematic_viewer()
+            : this.#safe_board_viewer();
+    }
+
+    #apply_viewer_activity() {
+        const board_active =
+            this.#host_active &&
+            (this.#active_tab === TabKind.pcb || !this.has_sch);
+        const schematic_active =
+            this.#host_active &&
+            (this.#active_tab === TabKind.sch || !this.has_pcb);
+        this.#safe_board_viewer()?.set_active(board_active);
+        this.#safe_schematic_viewer()?.set_active(schematic_active);
+    }
+
+    #restore_overlay_scenes() {
+        for (const scene of this.#overlay_scenes.values()) {
+            this.#viewer_for_context(scene.context)?.set_overlay_scene(scene);
+        }
+    }
+
+    #relay_board_selection(event: Event) {
+        event.stopPropagation();
+        const item = (event as KiCanvasSelectEvent).detail.item;
+        if (!item) return;
+        const board = this.#safe_board_viewer()?.board;
+        if (!board) return;
+        const detail = normalize_board_selection(item, board);
+        if (detail) this.dispatchEvent(new EcadSemanticSelectionEvent(detail));
+    }
+
+    #relay_schematic_selection(event: Event) {
+        event.stopPropagation();
+        const item = (event as KiCanvasSelectEvent).detail.item;
+        if (!item) return;
+        const schematic = this.#safe_schematic_viewer()?.schematic;
+        if (!schematic) return;
+        const detail = normalize_schematic_selection(item, schematic);
+        if (detail) this.dispatchEvent(new EcadSemanticSelectionEvent(detail));
+    }
+
+    #apply_schematic_cross_probe(
+        request: EcadCrossProbeRequest,
+        value: string,
+    ): boolean {
+        const viewer = this.#safe_schematic_viewer();
+        if (!viewer) return false;
+
+        let sheet = request.sheet ?? request.page;
+        let uuid = request.uuid;
+        if (request.kind === "net") {
+            const ref = this.#project.find_labels_by_name(
+                request.net ?? value,
+            )?.[0];
+            sheet ??= ref?.sheet_name;
+            uuid ??= ref?.uuid;
+        } else if (!uuid) {
+            for (const schematic of this.#project.schematics()) {
+                const symbol = schematic.find_symbol(
+                    request.designator ?? value,
+                );
+                if (!symbol) continue;
+                sheet ??= schematic.filename;
+                uuid = symbol.uuid;
+                break;
+            }
+        }
+        if (!uuid) return false;
+
+        const focus = () => viewer.zoom_fit_item(uuid!);
+        if (sheet && sheet !== viewer.sch_name) {
+            const target = this.#project.file_by_name(sheet);
+            if (!(target instanceof KicadSch)) return false;
+            void viewer.load(target).then(focus);
+            return true;
+        }
+        focus();
+        return true;
     }
     get has_3d() {
         return this.#project.has_boards || this.#project.has_3d;
@@ -836,21 +1238,33 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             active_tab: this.#user_selected_tab ? this.#active_tab : undefined,
         });
 
-        if (window.hide_header) {
+        if (window.hide_header || !this.showHeader) {
             this.#tab_header.hidden = true;
         }
 
         this.#tab_header.input_container = this;
         this.#tab_header.addEventListener(TabActivateEvent.type, (event) => {
             const tab = (event as TabActivateEvent).detail;
-            console.log("[ECadViewer] TabActivateEvent received: previous=", tab.previous, "current=", tab.current, "userInitiated=", tab.userInitiated, "initial_tab_set=", this.#initial_tab_set);
+            console.log(
+                "[ECadViewer] TabActivateEvent received: previous=",
+                tab.previous,
+                "current=",
+                tab.current,
+                "userInitiated=",
+                tab.userInitiated,
+                "initial_tab_set=",
+                this.#initial_tab_set,
+            );
             if (tab.userInitiated) {
                 this.#user_selected_tab = true;
                 this.#initial_tab_set = true;
             } else if (!this.#initial_tab_set) {
                 this.#initial_tab_set = true;
                 this.#user_selected_tab = true;
-                console.log("[ECadViewer] First automatic tab activation recorded - future renders will preserve tab:", tab.current);
+                console.log(
+                    "[ECadViewer] First automatic tab activation recorded - future renders will preserve tab:",
+                    tab.current,
+                );
             }
             this.#active_tab = tab.current;
             this.dispatchEvent(new TabActivateEvent(tab));
@@ -875,6 +1289,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 i.classList.remove("active");
             });
             this.#tab_contents[tab.current]?.classList.add("active");
+            this.#apply_viewer_activity();
 
             if (tab.current === TabKind.step) {
                 if (this.#ov_d_app) {
@@ -893,7 +1308,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                         page.classList.add("active");
                         page.style.display = "none";
                         const onLoaded = () => {
-                            console.log("[ECadViewer] Online3dViewerLoaded received, showing 3D viewer");
+                            console.log(
+                                "[ECadViewer] Online3dViewerLoaded received, showing 3D viewer",
+                            );
                             this.#step_viewer_placeholder.hidden = true;
                             this.#ov_d_app.style.display = "";
                             this.#ov_d_app.on_show();
@@ -947,7 +1364,12 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         if (this.has_pcb) {
             this.#board_app = html`<kc-board-app>
             </kc-board-app>` as KCBoardAppElement;
+            this.#board_app.showPropertyPanel = this.showSelectionPanel;
             embed_to_tab(this.#board_app, TabKind.pcb);
+            this.#board_app.addEventListener(
+                KiCanvasSelectEvent.type,
+                (event) => this.#relay_board_selection(event),
+            );
             if (!this.#project.has_3d) {
                 try {
                     this.#project
@@ -968,8 +1390,13 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         if (this.has_sch) {
             this.#schematic_app = html`<kc-schematic-app>
             </kc-schematic-app>` as KCSchematicAppElement;
+            this.#schematic_app.showPropertyPanel = this.showSelectionPanel;
             this.#tab_contents[TabKind.sch] = this.#schematic_app;
             embed_to_tab(this.#schematic_app, TabKind.sch);
+            this.#schematic_app.addEventListener(
+                KiCanvasSelectEvent.type,
+                (event) => this.#relay_schematic_selection(event),
+            );
             this.#schematic_app.addEventListener(SheetLoadEvent.type, (e) => {
                 this.#tab_header.dispatchEvent(new SheetLoadEvent(e.detail));
                 // Re-dispatch from viewer so visualizer can track active sheet
@@ -1004,6 +1431,13 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             </a>
         </div>` as HTMLElement;
         return html` ${this.#content} ${this.#spinner} `;
+    }
+
+    override renderedCallback() {
+        window.requestAnimationFrame(() => {
+            this.#apply_viewer_activity();
+            this.#restore_overlay_scenes();
+        });
     }
 }
 

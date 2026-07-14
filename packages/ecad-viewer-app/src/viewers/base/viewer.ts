@@ -10,11 +10,20 @@ import { listen } from "../../base/events";
 import { Vec2 } from "../../base/math";
 import { Renderer } from "../../graphics";
 import {
-    CommentClickEvent,
+    EcadOverlayClickEvent,
+    EcadOverlayHoverEvent,
+    EcadOverlayLeaveEvent,
     KiCanvasLoadEvent,
     KiCanvasMouseMoveEvent,
     type KiCanvasEventMap,
 } from "./events";
+import {
+    OverlaySceneManager,
+    type EcadOverlayAnchor,
+    type EcadOverlayScene,
+    type OverlayHit,
+    type ResolvedOverlayAnchor,
+} from "./overlay-scene";
 import { ViewLayerSet } from "./view-layers";
 import { Viewport } from "./viewport";
 
@@ -30,6 +39,11 @@ export abstract class Viewer extends EventTarget {
     #mouse_position: Vec2 = new Vec2(0, 0);
     #mouse_client_pos: Vec2 = new Vec2(0, 0);
     #page_mouse_pos: Vec2 = new Vec2(0, 0);
+    #active = true;
+    #draw_frame: number | null = null;
+    #hover_frame: number | null = null;
+    #overlay_scenes: OverlaySceneManager | null = null;
+    #overlay_hover: OverlayHit | null = null;
 
     get client_mouse_pos(): Vec2 {
         return this.#mouse_client_pos;
@@ -49,18 +63,6 @@ export abstract class Viewer extends EventTarget {
     protected disposables = new Disposables();
     protected setup_finished = new Barrier();
 
-    /**
-     * When true, clicks dispatch CommentClickEvent instead of normal selection.
-     */
-    public commentModeEnabled = false;
-
-    /**
-     * Current active layer name for comments (override in subclass).
-     */
-    protected get activeLayerName(): string {
-        return "";
-    }
-
     constructor(
         public canvas: HTMLCanvasElement,
         protected interactive = true,
@@ -69,7 +71,26 @@ export abstract class Viewer extends EventTarget {
     }
 
     dispose() {
+        if (this.#draw_frame !== null) cancelAnimationFrame(this.#draw_frame);
+        if (this.#hover_frame !== null) cancelAnimationFrame(this.#hover_frame);
+        this.#draw_frame = null;
+        this.#hover_frame = null;
         this.disposables.dispose();
+    }
+
+    public set_active(active: boolean) {
+        if (this.#active === active) return;
+        this.#active = active;
+        if (!active) {
+            if (this.#draw_frame !== null)
+                cancelAnimationFrame(this.#draw_frame);
+            if (this.#hover_frame !== null)
+                cancelAnimationFrame(this.#hover_frame);
+            this.#draw_frame = null;
+            this.#hover_frame = null;
+            return;
+        }
+        this.draw();
     }
 
     override addEventListener<K extends keyof KiCanvasEventMap>(
@@ -123,32 +144,44 @@ export abstract class Viewer extends EventTarget {
 
             this.disposables.add(
                 listen(this.canvas, "click", (e) => {
-                    // Always call on_click - subclasses can check commentModeEnabled
-                    // to dispatch CommentClickEvent with element info
+                    if (!this.#active) return;
+                    const overlay = this.#overlay_scenes?.hit_test(
+                        this.#mouse_position,
+                    );
+                    if (overlay) {
+                        this.dispatchEvent(new EcadOverlayClickEvent(overlay));
+                        return;
+                    }
                     this.on_click(this.#mouse_position, e);
                 }),
             );
 
             this.disposables.add(
                 listen(this.canvas, "dblclick", (e) => {
+                    if (!this.#active) return;
                     this.on_dblclick(this.#mouse_position);
                 }),
             );
-            document.addEventListener("click", () => {
-                this.on_document_clicked();
-            });
+            this.disposables.add(
+                listen(document, "click", () => {
+                    if (this.#active) this.on_document_clicked();
+                }),
+            );
         }
 
         this.setup_finished.open();
     }
 
     protected on_viewport_change() {
+        if (!this.#active) return;
+        this.#overlay_scenes?.refresh_screen_sized();
         if (this.interactive) {
             this.draw();
         }
     }
 
     protected on_mouse_change(e: MouseEvent) {
+        if (!this.#active) return;
         const rect = this.canvas.getBoundingClientRect();
         this.#mouse_client_pos = new Vec2(e.clientX, e.clientY);
         this.#page_mouse_pos = new Vec2(e.pageX, e.pageY);
@@ -160,11 +193,62 @@ export abstract class Viewer extends EventTarget {
             this.#mouse_position.y != new_position.y
         ) {
             this.#mouse_position.set(new_position);
-            this.on_hover(this.#mouse_position);
+            this.#update_overlay_hover();
             this.dispatchEvent(
                 new KiCanvasMouseMoveEvent(this.#mouse_position),
             );
+            if (this.#hover_frame === null) {
+                this.#hover_frame = requestAnimationFrame(() => {
+                    this.#hover_frame = null;
+                    if (this.#active) this.on_hover(this.#mouse_position);
+                });
+            }
         }
+    }
+
+    #update_overlay_hover() {
+        const next =
+            this.#overlay_scenes?.hit_test(this.#mouse_position) ?? null;
+        if (
+            next?.channelId === this.#overlay_hover?.channelId &&
+            next?.primitiveId === this.#overlay_hover?.primitiveId
+        ) {
+            return;
+        }
+        if (this.#overlay_hover) {
+            this.dispatchEvent(new EcadOverlayLeaveEvent(this.#overlay_hover));
+        }
+        this.#overlay_hover = next;
+        if (next) this.dispatchEvent(new EcadOverlayHoverEvent(next));
+    }
+
+    protected resolve_overlay_anchor(
+        _anchor: EcadOverlayAnchor,
+    ): ResolvedOverlayAnchor | null {
+        return null;
+    }
+
+    protected rebind_overlay_layers() {
+        this.#overlay_scenes?.replace_layers(this.layers);
+    }
+
+    public set_overlay_scene(scene: EcadOverlayScene) {
+        if (!this.layers) return false;
+        this.#overlay_scenes ??= new OverlaySceneManager(
+            this.renderer,
+            this.layers,
+            (anchor) => this.resolve_overlay_anchor(anchor),
+            () => this.viewport?.camera.zoom ?? 1,
+        );
+        const changed = this.#overlay_scenes.set_scene(scene);
+        if (changed) this.draw();
+        return changed;
+    }
+
+    public clear_overlay_scene(channel_id: string) {
+        const changed = this.#overlay_scenes?.clear_scene(channel_id) ?? false;
+        if (changed) this.draw();
+        return changed;
     }
 
     public abstract load(src: any): Promise<void>;
@@ -178,7 +262,7 @@ export abstract class Viewer extends EventTarget {
 
     public abstract paint(): void;
 
-    protected on_document_clicked(): void { }
+    protected on_document_clicked(): void {}
 
     protected on_draw() {
         this.renderer.clear_canvas();
@@ -207,11 +291,11 @@ export abstract class Viewer extends EventTarget {
     }
 
     public draw() {
-        if (!this.viewport) {
+        if (!this.viewport || !this.#active || this.#draw_frame !== null)
             return;
-        }
-
-        window.requestAnimationFrame(() => {
+        this.#draw_frame = window.requestAnimationFrame(() => {
+            this.#draw_frame = null;
+            if (!this.#active) return;
             this.on_draw();
         });
     }
@@ -229,39 +313,6 @@ export abstract class Viewer extends EventTarget {
     abstract on_click(pos: Vec2, event?: MouseEvent): void;
 
     abstract on_dblclick(pos: Vec2): void;
-
-    // ============================================================
-    // COMMENT MODE API
-    // ============================================================
-
-    /**
-     * Dispatch a CommentClickEvent with world and screen coordinates.
-     * Called when commentModeEnabled is true and user clicks.
-     */
-    protected dispatchCommentClick(e: MouseEvent): void {
-        const rect = this.canvas.getBoundingClientRect();
-        const screenX = e.clientX;
-        const screenY = e.clientY;
-
-        // Convert screen coordinates to world (board) coordinates
-        const worldPos = this.viewport.camera.screen_to_world(
-            new Vec2(e.clientX - rect.left, e.clientY - rect.top),
-        );
-
-        const context: "PCB" | "SCH" =
-            this.type === ViewerType.PCB ? "PCB" : "SCH";
-
-        this.dispatchEvent(
-            new CommentClickEvent({
-                worldX: worldPos.x,
-                worldY: worldPos.y,
-                screenX: screenX,
-                screenY: screenY,
-                layer: this.activeLayerName,
-                context: context,
-            }),
-        );
-    }
 
     /**
      * Convert screen coordinates to world (board) coordinates.

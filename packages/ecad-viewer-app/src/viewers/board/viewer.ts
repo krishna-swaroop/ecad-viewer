@@ -6,7 +6,7 @@
 
 import type { CrossHightAble } from "../../base/cross_highlight_able";
 import { Logger } from "../../base/log";
-import { Vec2 } from "../../base/math";
+import { BBox, Vec2 } from "../../base/math";
 import { Color, Renderer } from "../../graphics";
 import { WebGL2Renderer } from "../../graphics/webgl";
 import type { BoardTheme } from "../../kicad";
@@ -19,9 +19,13 @@ import {
 } from "../../kicad/board_bbox_visitor";
 import type { KCBoardLayersPanelElement } from "../../kicanvas/elements/kc-board/layers-panel";
 import { DocumentViewer } from "../base/document-viewer";
-import { CommentClickEvent, KiCanvasFitterMenuEvent, KiCanvasSelectEvent } from "../base/events";
+import { KiCanvasFitterMenuEvent, KiCanvasSelectEvent } from "../base/events";
 import type { VisibilityType } from "../base/view-layers";
 import { ViewerType } from "../base/viewer";
+import type {
+    EcadOverlayAnchor,
+    ResolvedOverlayAnchor,
+} from "../base/overlay-scene";
 import { LayerNames, LayerSet, ViewLayer } from "./layers";
 import { BoardPainter } from "./painter";
 import { OrderedMap } from "immutable";
@@ -42,7 +46,7 @@ export class BoardViewer extends DocumentViewer<
     set layer_visibility_ctrl(ctr: KCBoardLayersPanelElement) {
         this.#layer_visibility_ctrl = ctr;
     }
-    public highlight_net(num: number | null) {
+    public highlight_net(num: number | null, emit_selection = true) {
         this.#layer_visibility_ctrl.clear_highlight();
         if (this.painter.paint_net(this.board, num, this.layer_visibility)) {
             this.#should_restore_visibility = false;
@@ -54,7 +58,7 @@ export class BoardViewer extends DocumentViewer<
             }
             this.draw();
         }
-        if (num) {
+        if (num && emit_selection) {
             this.dispatchEvent(
                 new KiCanvasSelectEvent({
                     item: {
@@ -97,8 +101,8 @@ export class BoardViewer extends DocumentViewer<
         this.draw();
     }
 
-    public focus_net(num: number | null) {
-        this.highlight_net(num);
+    public focus_net(num: number | null, emit_selection = true) {
+        this.highlight_net(num, emit_selection);
         const net_bbox = this.painter.net_bbox;
         if (net_bbox) {
             this.viewport.camera.bbox = net_bbox.grow(
@@ -108,37 +112,15 @@ export class BoardViewer extends DocumentViewer<
         }
     }
 
+    public clear_selection() {
+        this.painter?.clear_interactive();
+        this.layers?.highlight(null);
+        this.draw();
+    }
+
     override on_click(pos: Vec2, event?: MouseEvent): void {
         const items = this.find_items_under_pos(pos);
 
-        // In comment mode, dispatch CommentClickEvent with element info
-        if (this.commentModeEnabled && event) {
-            // Only dispatch if we found an element
-            if (items.length > 0) {
-                const it = items[0]!;
-                const item = it.item as any;
-
-                // const rect = this.canvas.getBoundingClientRect();
-                this.dispatchEvent(
-                    new CommentClickEvent({
-                        worldX: pos.x,
-                        worldY: pos.y,
-                        screenX: event.clientX,
-                        screenY: event.clientY,
-                        layer: it.is_on_layer?.("F.Cu") ? "F.Cu" : "B.Cu",
-                        context: "PCB",
-                        elementType: item?.typeId || "Unknown",
-                        elementId: item?.uuid || "",
-                        elementRef: item?.reference || item?.designator || "",
-                        element: item,
-                    }),
-                );
-            }
-            // Don't dispatch select event in comment mode
-            return;
-        }
-
-        // Normal mode - dispatch selection events
         if (items.length > 0) {
             if (items.length == 1) {
                 const it = items[0];
@@ -249,6 +231,7 @@ export class BoardViewer extends DocumentViewer<
     #last_hover: BoardInteractiveItem | null = null;
 
     #highlighted_track = true;
+    #overlay_item_bounds = new Map<string, BBox>();
 
     set_highlighted_track(val: boolean) {
         this.#highlighted_track = val;
@@ -262,17 +245,45 @@ export class BoardViewer extends DocumentViewer<
         try {
             const visitor = new BoardBBoxVisitor();
             visitor.visit(src);
+            this.#overlay_item_bounds.clear();
 
             for (let k = Depth.START; k < Depth.END; k++)
                 this.#interactive = this.#interactive.set(k, []);
 
-            for (const e of visitor.interactive_items)
+            for (const e of visitor.interactive_items) {
                 this.#interactive.get(e.depth)?.push(e);
+                const uuid =
+                    e.item && "uuid" in e.item
+                        ? e.item.uuid
+                        : e.item && "tstamp" in e.item
+                          ? e.item.tstamp
+                          : undefined;
+                if (uuid) this.#overlay_item_bounds.set(uuid, e.item!.bbox);
+            }
             this.#net_info = visitor.net_info;
         } catch (e) {
             log.warn(`BoardBBoxVisitor error :${e}`);
         }
         await super.load(src);
+    }
+
+    protected override resolve_overlay_anchor(
+        anchor: EcadOverlayAnchor,
+    ): ResolvedOverlayAnchor | null {
+        if (anchor.kind === "source-item") {
+            const bounds = this.#overlay_item_bounds.get(anchor.uuid);
+            return bounds
+                ? { point: bounds.center, bounds, page: anchor.page }
+                : null;
+        }
+        if (anchor.kind === "entity" && anchor.reference) {
+            const footprint = this.board.find_footprint(anchor.reference);
+            const bounds = footprint?.bbox;
+            return bounds
+                ? { point: bounds.center, bounds, page: anchor.page }
+                : null;
+        }
+        return null;
     }
 
     protected override create_renderer(canvas: HTMLCanvasElement): Renderer {

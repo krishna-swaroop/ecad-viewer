@@ -34,6 +34,8 @@ export enum ViewLayerNames {
  */
 
 export type VisibilityType = boolean | (() => boolean);
+export type ExtensionLayerPlacement =
+    "underlay" | "content-overlay" | "foreground";
 
 /**
  * A view layer
@@ -150,6 +152,14 @@ export class ViewLayerSet implements IDisposable {
     #selection_bg: ViewLayer;
     #selection_fg: ViewLayer;
     #selection_mask: ViewLayer;
+    #extension_layers = new Map<
+        ExtensionLayerPlacement,
+        Map<string, ViewLayer>
+    >([
+        ["underlay", new Map()],
+        ["content-overlay", new Map()],
+        ["foreground", new Map()],
+    ]);
 
     /**
      * Create a new LayerSet
@@ -190,6 +200,10 @@ export class ViewLayerSet implements IDisposable {
      */
     dispose() {
         this.#overlay.dispose();
+        for (const placement of this.#extension_layers.values()) {
+            for (const layer of placement.values()) layer.dispose();
+            placement.clear();
+        }
         for (const layer of this.#layer_list) {
             layer.dispose();
         }
@@ -222,6 +236,7 @@ export class ViewLayerSet implements IDisposable {
      * including the overlay layer.
      */
     *in_display_order() {
+        yield* this.#extension_layers.get("underlay")!.values();
         for (let i = this.#layer_list.length - 1; i >= 0; i--) {
             const layer = this.#layer_list[i]!;
 
@@ -240,6 +255,8 @@ export class ViewLayerSet implements IDisposable {
             }
         }
 
+        yield* this.#extension_layers.get("content-overlay")!.values();
+
         yield this.#selection_bg;
 
         yield this.#selection_fg;
@@ -247,6 +264,36 @@ export class ViewLayerSet implements IDisposable {
         yield this.#selection_mask;
 
         yield this.#overlay;
+
+        yield* this.#extension_layers.get("foreground")!.values();
+    }
+
+    extension_layer(
+        channel_id: string,
+        placement: ExtensionLayerPlacement,
+    ): ViewLayer {
+        const layers = this.#extension_layers.get(placement)!;
+        let layer = layers.get(channel_id);
+        if (!layer) {
+            layer = new ViewLayer(
+                this,
+                `:Extension:${placement}:${channel_id}`,
+                true,
+                false,
+                Color.white,
+            );
+            layers.set(channel_id, layer);
+        }
+        return layer;
+    }
+
+    clear_extension_layer(channel_id: string) {
+        for (const layers of this.#extension_layers.values()) {
+            const layer = layers.get(channel_id);
+            if (!layer) continue;
+            layer.dispose();
+            layers.delete(channel_id);
+        }
     }
 
     /**
@@ -292,10 +339,7 @@ export class ViewLayerSet implements IDisposable {
      */
     highlight(
         layer_or_layers:
-            | string
-            | ViewLayer
-            | null
-            | Iterable<string | ViewLayer>,
+            string | ViewLayer | null | Iterable<string | ViewLayer>,
     ) {
         let layer_names: string[] = [];
         if (layer_or_layers) {

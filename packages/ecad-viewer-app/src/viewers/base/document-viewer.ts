@@ -105,6 +105,7 @@ export abstract class DocumentViewer<
         // Setup graphical layers
         this.disposables.disposeAndRemove(this.layers);
         this.layers = this.disposables.add(this.create_layer_set());
+        this.rebind_overlay_layers();
 
         // Paint the board
         this.painter = this.create_painter();

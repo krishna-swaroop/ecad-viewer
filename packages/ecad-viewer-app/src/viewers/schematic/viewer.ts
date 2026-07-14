@@ -18,7 +18,6 @@ import {
     LabelClickEvent,
     SheetChangeEvent,
     SheetLoadEvent,
-    CommentClickEvent,
 } from "../base/events";
 import { ViewerType } from "../base/viewer";
 import { LayerNames, LayerSet } from "./layers";
@@ -26,6 +25,10 @@ import { SchematicPainter } from "./painter";
 import { get_symbol_transform } from "./painters/symbol";
 import { StrokeFont, TextAttributes } from "../../kicad/text";
 import type { PinCheckResult } from "../../proto/component_erc_result";
+import type {
+    EcadOverlayAnchor,
+    ResolvedOverlayAnchor,
+} from "../base/overlay-scene";
 
 export function get_sch_bbox(theme: SchematicTheme, sch: KicadSch): BBox {
     const gfx = new NullRenderer();
@@ -61,8 +64,6 @@ export class SchematicViewer extends DocumentViewer<
     SchematicTheme
 > {
     static InterActiveBBoxLineWidth = 0.265;
-
-    public override commentModeEnabled = false;
 
     #focus_net_item?: string;
 
@@ -101,28 +102,6 @@ export class SchematicViewer extends DocumentViewer<
 
     override on_click(pos: Vec2): void {
         const ct = this.find_item(pos);
-
-        if (this.commentModeEnabled) {
-            // Dispatch comment click event
-            this.dispatchEvent(
-                new CommentClickEvent({
-                    worldX: pos.x,
-                    worldY: pos.y,
-                    screenX: 0, // Viewer doesn't easily know screen coords here without viewport transform, but visualizer uses world anyway.
-                    // Actually we can get screen coords if needed, but let's stick to world for now or calc it.
-                    // Visualizer.tsx calculation:
-                    //   setPendingLocation({ x: detail.worldX, y: detail.worldY, layer: detail.layer || "F.Cu" });
-                    // It uses worldX/Y.
-
-                    screenY: 0,
-                    layer: "Schematic",
-                    context: "SCH",
-                    element: ct.item,
-                    elementType: ct.item?.constructor.name,
-                })
-            );
-            return;
-        }
 
         if (ct.item) {
             const it = ct.item;
@@ -207,6 +186,35 @@ export class SchematicViewer extends DocumentViewer<
         return this.renderer as Canvas2DRenderer;
     }
 
+    protected override resolve_overlay_anchor(
+        anchor: EcadOverlayAnchor,
+    ): ResolvedOverlayAnchor | null {
+        let uuid: string | undefined;
+        if (anchor.kind === "source-item") {
+            uuid = anchor.uuid;
+        } else if (anchor.kind === "entity") {
+            if (anchor.reference) {
+                uuid = this.schematic.find_symbol(anchor.reference)?.uuid;
+            } else if (anchor.net) {
+                for (const item of this.schematic.items()) {
+                    if (item instanceof Label && item.text === anchor.net) {
+                        uuid = item.uuid;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!uuid) return null;
+        const bounds = this.schematic_renderer.get_item_bbox(uuid);
+        return bounds
+            ? {
+                  point: bounds.center,
+                  bounds,
+                  page: anchor.page ?? this.sch_name,
+              }
+            : null;
+    }
+
     override create_renderer(canvas: HTMLCanvasElement): Renderer {
         const renderer = new Canvas2DRenderer(canvas);
         renderer.state.fill = this.theme.note;
@@ -277,6 +285,10 @@ export class SchematicViewer extends DocumentViewer<
         this.draw();
     }
 
+    public clear_selection() {
+        this.paint_selected(null);
+    }
+
     #erc_data?: Array<{ uuid: string; pins: PinCheckResult[] }>;
 
     public show_erc(uuid: string, pins: PinCheckResult[]) {
@@ -285,12 +297,14 @@ export class SchematicViewer extends DocumentViewer<
         // zoom_fit_item calls paint_selected, which now calls paint_erc
     }
 
-    public show_erc_multi(erc_items: Array<{ uuid: string; pins: PinCheckResult[] }>) {
+    public show_erc_multi(
+        erc_items: Array<{ uuid: string; pins: PinCheckResult[] }>,
+    ) {
         if (erc_items.length === 0) {
             return;
         }
         this.#erc_data = erc_items;
-        
+
         const bboxes: BBox[] = [];
         for (const erc_item of erc_items) {
             const bbox = this.schematic_renderer.get_item_bbox(erc_item.uuid);
@@ -298,7 +312,7 @@ export class SchematicViewer extends DocumentViewer<
                 bboxes.push(bbox);
             }
         }
-        
+
         if (bboxes.length > 0) {
             const combined_bbox = BBox.combine(bboxes);
             this.viewport.camera.bbox = combined_bbox.grow(20);
@@ -339,41 +353,43 @@ export class SchematicViewer extends DocumentViewer<
                 );
                 if (!pin_inst) continue;
 
-            // pin_inst.definition returns PinDefinition directly (from LibSymbol.pin_by_number)
-            const pin_def = pin_inst.definition;
-            const pin_pos = symbol_pos.add(
-                matrix.transform(pin_def.at.position),
-            );
+                // pin_inst.definition returns PinDefinition directly (from LibSymbol.pin_by_number)
+                const pin_def = pin_inst.definition;
+                const pin_pos = symbol_pos.add(
+                    matrix.transform(pin_def.at.position),
+                );
 
-            const severity_color =
-                pin_err.severity == "error"
-                    ? (this.theme.erc_error ?? new Color(1, 0, 0))
-                    : (this.theme.erc_warning ?? new Color(1, 0.6, 0));
+                const severity_color =
+                    pin_err.severity == "error"
+                        ? (this.theme.erc_error ?? new Color(1, 0, 0))
+                        : (this.theme.erc_warning ?? new Color(1, 0.6, 0));
 
-            // Draw marker polygon (KiCad's distinctive arrow-like shape)
-            // Shape coordinates from KiCad's marker_base.cpp MarkerShapeCorners
-            // Scaled to fit schematic units
-            const markerScale = 0.2;
-            const markerShapeCorners = [
-                new Vec2(0, 0),
-                new Vec2(8, 1),
-                new Vec2(4, 3),
-                new Vec2(13, 8),
-                new Vec2(9, 9),
-                new Vec2(8, 13),
-                new Vec2(3, 4),
-                new Vec2(1, 8),
-                new Vec2(0, 0),
-            ];
-            
-            // Scale and translate the marker shape to pin position
-            const markerPoints = markerShapeCorners.map((corner) =>
-                pin_pos.add(corner.mul(markerScale))
-            );
-            
-            this.renderer.polygon(new Polygon(markerPoints, severity_color));
+                // Draw marker polygon (KiCad's distinctive arrow-like shape)
+                // Shape coordinates from KiCad's marker_base.cpp MarkerShapeCorners
+                // Scaled to fit schematic units
+                const markerScale = 0.2;
+                const markerShapeCorners = [
+                    new Vec2(0, 0),
+                    new Vec2(8, 1),
+                    new Vec2(4, 3),
+                    new Vec2(13, 8),
+                    new Vec2(9, 9),
+                    new Vec2(8, 13),
+                    new Vec2(3, 4),
+                    new Vec2(1, 8),
+                    new Vec2(0, 0),
+                ];
 
-            if (pin_err.message) {
+                // Scale and translate the marker shape to pin position
+                const markerPoints = markerShapeCorners.map((corner) =>
+                    pin_pos.add(corner.mul(markerScale)),
+                );
+
+                this.renderer.polygon(
+                    new Polygon(markerPoints, severity_color),
+                );
+
+                if (pin_err.message) {
                     // Draw text
                     this.renderer.state.push();
                     // Position text slightly offset from pin
