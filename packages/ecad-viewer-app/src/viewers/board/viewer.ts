@@ -70,7 +70,13 @@ export class BoardViewer extends DocumentViewer<
         this.#restore_native_layers();
         this.#restore_zone_layers();
         this.#layer_visibility_ctrl?.clear_highlight();
-        if (this.painter.paint_net(this.board, num)) {
+        if (
+            this.painter.paint_net(
+                this.board,
+                num,
+                this.layer_visibility ?? new Map<string, boolean>(),
+            )
+        ) {
             if (num) {
                 this.#should_restore_visibility = true;
                 for (const layer of this.layers.in_ui_order()) {
