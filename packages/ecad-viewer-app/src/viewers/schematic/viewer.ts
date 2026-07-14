@@ -135,7 +135,12 @@ export class SchematicViewer extends DocumentViewer<
         if (this.document.sheets)
             for (const item of this.document.sheets) {
                 if (item.bbox.contains_point(pos) && item.sheetfile) {
-                    this.dispatchEvent(new SheetChangeEvent(item.sheetfile));
+                    this.dispatchEvent(
+                        new SheetChangeEvent({
+                            filename: item.sheetfile,
+                            uuid: item.uuid,
+                        }),
+                    );
                     break;
                 }
             }

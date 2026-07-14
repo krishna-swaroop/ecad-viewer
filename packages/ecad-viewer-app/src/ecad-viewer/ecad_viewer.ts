@@ -403,32 +403,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
 
     public navigateSchematicParent(): boolean {
         const current = this.#active_schematic_page();
-        if (!current) return false;
-        const current_parts = current.sheet_path.split("/").filter(Boolean);
-        const direct_parent_path =
-            current_parts.length > 1
-                ? `/${current_parts.slice(0, -1).join("/")}`
-                : "";
-        // Prefer the exact instance path. The prefix fallback is retained for
-        // legacy projects whose sheet-instance paths omit an intermediate node.
-        const parent =
-            this.#project.pages.find(
-                (page) => page.sheet_path === direct_parent_path,
-            ) ??
-            this.#project.pages
-            .filter((page) => {
-                if (page.project_path === current.project_path) return false;
-                const parts = page.sheet_path.split("/").filter(Boolean);
-                return (
-                    parts.length < current_parts.length &&
-                    parts.every((part, index) => part === current_parts[index])
-                );
-            })
-            .sort(
-                (a, b) =>
-                    b.sheet_path.split("/").filter(Boolean).length -
-                    a.sheet_path.split("/").filter(Boolean).length,
-            )[0];
+        if (!current?.parent_project_path) return false;
+        const parent = this.#project.pages.find(
+            (page) => page.project_path === current.parent_project_path,
+        );
         return parent
             ? this.#activate_schematic_page(parent.project_path)
             : false;
@@ -592,14 +570,6 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             return false;
         this.#active_schematic_project_path = page.project_path;
         this.#project.activate_sch(page.project_path);
-        // Do not make host page navigation depend on the app's asynchronous
-        // project-change listener.  Loading the resolved document here keeps
-        // the rendered sheet, active page projection, and hierarchy shortcut
-        // in lockstep.  The app listener treats this as an idempotent reload.
-        void viewer.load(page.document).finally(() =>
-            this.#emit_view_state_change(),
-        );
-        this.#emit_view_state_change();
         return true;
     }
 

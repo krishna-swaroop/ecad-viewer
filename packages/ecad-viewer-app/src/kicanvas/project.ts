@@ -4,7 +4,6 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import { sorted_by_numeric_strings } from "../base/array";
 import { Barrier } from "../base/async";
 import { type IDisposable } from "../base/disposable";
 import { first, length, map } from "../base/iterator";
@@ -21,10 +20,6 @@ import {
 import type { BomItem } from "../kicad/bom_item";
 import { ItemsGroupedByFpValueDNP } from "../kicad/ItemsGroupedByFpValueDNP";
 import { NetRef } from "../kicad/net_ref";
-import type {
-    SchematicSheet,
-    SchematicSheetInstance,
-} from "../kicad/schematic";
 import { SchematicBomVisitor } from "../kicad/schematic_bom_visitor";
 import { NewStrokeGlyph } from "../kicad/text/newstroke-glyphs";
 
@@ -670,135 +665,92 @@ export class Project extends EventTarget implements IDisposable {
         );
     }
 
+    public activate_child_sch(sheet_uuid: string): boolean {
+        const current =
+            this._pages_by_path.get(this.active_sch_name ?? "") ??
+            this._root_schematic_page;
+        if (!current) return false;
+        const child = this.pages.find(
+            (page) =>
+                page.parent_project_path === current.project_path &&
+                page.sheet_uuid === sheet_uuid,
+        );
+        if (!child) return false;
+        this.activate_sch(child.project_path);
+        return true;
+    }
+
     _determine_schematic_hierarchy() {
-        // This method is also called after appendSources(). Rebuild the page
-        // projection from the complete set of parsed schematics so stale
-        // root-only/orphan entries cannot break host page navigation.
+        // KiCad schematic navigation is an instance tree. A schematic file can
+        // be instantiated more than once, so filenames alone cannot identify a
+        // page. Rebuild the tree from the root document and each sheet's UUID,
+        // instance path, and parent-relative file reference.
         this._pages_by_path.clear();
-        const paths_to_schematics = new Map<string, KicadSch>();
-        const paths_to_sheet_instances = new Map<
-            string,
-            {
-                sheet: SchematicSheet;
-                instance: SchematicSheetInstance;
-                filename: string;
-            }
-        >();
-
-        for (const schematic of this.schematics()) {
-            paths_to_schematics.set(`/${schematic.uuid}`, schematic);
-
-            for (const sheet of schematic.sheets) {
-                const sheet_filename = sheet.sheetfile
-                    ? this.resolve_schematic_filename(
-                          schematic.filename,
-                          sheet.sheetfile,
-                      )
-                    : undefined;
-                const sheet_sch = sheet_filename
-                    ? (this._files_by_name.get(sheet_filename) as KicadSch)
-                    : undefined;
-
-                if (!sheet_sch) {
-                    continue;
-                }
-
-                for (const instance of sheet.instances.values()) {
-                    // paths_to_schematics.set(instance.path, schematic);
-                    paths_to_sheet_instances.set(
-                        `${instance.path}/${sheet.uuid}`,
-                        {
-                            sheet: sheet,
-                            instance: instance,
-                            filename: sheet_filename,
-                        },
-                    );
-                }
-            }
+        const schematics = Array.from(this.schematics());
+        const expected_root = this._project_name
+            ? this._files_by_name.get(`${this._project_name}.kicad_sch`)
+            : undefined;
+        const root =
+            (expected_root instanceof KicadSch ? expected_root : undefined) ??
+            schematics.find((schematic) => schematic.sheet_instances?.get("/")) ??
+            first(schematics);
+        if (!root) {
+            this._root_schematic_page = undefined;
+            return false;
         }
 
-        // Find the root sheet. This is done by sorting all of the paths
-        // from shortest to longest and walking through the paths to see if
-        // we can find the schematic for the parent. The first one we find
-        // it the common ancestor (root).
-        const paths = Array.from(paths_to_sheet_instances.keys()).sort(
-            (a, b) => a.length - b.length,
+        const root_page = new ProjectPage(
+            this,
+            root.filename,
+            `/${root.uuid}`,
+            "Root",
+            root.sheet_instances?.get("/")?.page ?? "1",
         );
+        this._root_schematic_page = root_page;
+        const visited = new Set<string>();
 
-        let root: KicadSch | undefined;
-        let found_root = false;
-        for (const path of paths) {
-            const parent_path = path.split("/").slice(0, -1).join("/");
-
-            if (!parent_path) {
-                continue;
-            }
-
-            root = paths_to_schematics.get(parent_path);
-
-            if (root) {
-                found_root = true;
-                break;
-            }
-        }
-
-        // If we found a root page, we can build out the list of pages by
-        // walking through paths_to_sheet with root as page one.
-        let pages = [];
-
-        if (root) {
-            this._root_schematic_page = new ProjectPage(
-                this,
-                root.filename,
-                `/${root!.uuid}`,
-                "Root",
-                "1",
-            );
-            pages.push(this._root_schematic_page);
-
-            for (const [path, sheet] of paths_to_sheet_instances.entries()) {
-                pages.push(
-                    new ProjectPage(
-                        this,
-                        sheet.filename,
-                        path,
-                        sheet.sheet.sheetname ?? sheet.sheet.sheetfile!,
-                        sheet.instance.page ?? "",
-                    ),
-                );
-            }
-        }
-
-        // Sort the pages we've collected so far and then insert them
-        // into the pages map.
-        pages = sorted_by_numeric_strings(pages, (p) => p.page!);
-
-        for (const page of pages) {
+        const visit = (document: KicadSch, page: ProjectPage) => {
+            if (visited.has(page.project_path)) return;
+            visited.add(page.project_path);
             this._pages_by_path.set(page.project_path, page);
-        }
 
-        // Add any "orphan" sheets to the list of pages now that we've added all
-        // the hierarchical ones.
-        const seen_schematic_files = new Set(
-            map(this._pages_by_path.values(), (p) => p.filename),
-        );
-
-        for (const schematic of this.schematics()) {
-            if (!seen_schematic_files.has(schematic.filename)) {
-                const page = new ProjectPage(
-                    this,
-                    schematic.filename,
-                    `/${schematic.uuid}`,
-                    schematic.filename,
-                    undefined,
+            for (const sheet of document.sheets) {
+                if (!sheet.sheetfile) continue;
+                const instance =
+                    sheet.instances.get(page.sheet_path) ??
+                    (sheet.instances.size === 1
+                        ? first(sheet.instances.values())
+                        : undefined);
+                if (!instance) continue;
+                const filename = this.resolve_schematic_filename(
+                    document.filename,
+                    sheet.sheetfile,
                 );
-                this._pages_by_path.set(page.project_path, page);
-            }
-        }
+                const child_document = filename
+                    ? this._files_by_name.get(filename)
+                    : undefined;
+                if (!(child_document instanceof KicadSch) || !filename)
+                    continue;
 
-        // Finally, if no root schematic was found, just use the first one we saw.
-        this._root_schematic_page = first(this._pages_by_path.values());
-        return found_root;
+                const child_path = `${page.sheet_path}/${sheet.uuid}`;
+                const child_page = new ProjectPage(
+                    this,
+                    filename,
+                    child_path,
+                    sheet.sheetname ?? sheet.sheetfile,
+                    instance.page ?? "",
+                    page.project_path,
+                    sheet.uuid,
+                );
+                visit(child_document, child_page);
+            }
+        };
+
+        visit(root, root_page);
+        if (!this._pages_by_path.has(this.active_sch_name ?? "")) {
+            this.active_sch_name = root_page.project_path;
+        }
+        return true;
     }
 }
 
@@ -809,6 +761,8 @@ export class ProjectPage {
         public sheet_path: string,
         public name?: string,
         public page?: string,
+        public parent_project_path?: string,
+        public sheet_uuid?: string,
     ) {}
 
     /**

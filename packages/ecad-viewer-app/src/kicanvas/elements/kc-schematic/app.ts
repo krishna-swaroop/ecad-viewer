@@ -62,8 +62,7 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
     override initialContentCallback() {
         super.initialContentCallback();
         this.viewer.addEventListener(SheetChangeEvent.type, (e) => {
-            const sch = this.project.file_by_name(e.detail);
-            if (sch instanceof KicadSch) this.viewer.load(sch);
+            this.project.activate_child_sch(e.detail.uuid);
         });
 
         this.viewer.addEventListener(SheetLoadEvent.type, (e) => {
@@ -281,14 +280,7 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
 
         // If it's a sheet instance, switch over to the new sheet.
         if (item instanceof SchematicSheet) {
-            const filename = item.sheetfile
-                ? this.project.resolve_schematic_filename(
-                      item.parent.filename,
-                      item.sheetfile,
-                  )
-                : undefined;
-            if (!filename) return;
-            this.project.activate_sch(`${filename}:${item.path}/${item.uuid}`);
+            this.project.activate_child_sch(item.uuid);
             return;
         }
     }

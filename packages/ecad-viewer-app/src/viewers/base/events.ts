@@ -175,11 +175,16 @@ export class TabMenuClickEvent extends CustomEvent<TabKind> {
     }
 }
 
-export class SheetChangeEvent extends CustomEvent<string> {
+export interface SheetChangeDetail {
+    filename: string;
+    uuid: string;
+}
+
+export class SheetChangeEvent extends CustomEvent<SheetChangeDetail> {
     static readonly type = "kicanvas:sheet:change";
 
-    constructor(fp: string) {
-        super(SheetChangeEvent.type, { detail: fp });
+    constructor(detail: SheetChangeDetail) {
+        super(SheetChangeEvent.type, { detail });
     }
 }
 
