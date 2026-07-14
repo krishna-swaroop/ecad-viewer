@@ -159,6 +159,11 @@ export abstract class KCViewerAppElement<
         this.addDisposable(
             this.viewer.addEventListener(KiCanvasSelectEvent.type, (e) => {
                 this.on_viewer_select(e.detail.item, e.detail.previous);
+                // Viewer is an EventTarget rather than a DOM node, so its
+                // selection event cannot bubble through the custom-element
+                // host by itself. Relay it once at the app boundary for
+                // embedders such as the Prism host adapter.
+                this.dispatchEvent(new KiCanvasSelectEvent(e.detail));
             }),
         );
 

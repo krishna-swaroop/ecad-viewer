@@ -133,6 +133,22 @@ export function normalize_board_selection(
 ): EcadSemanticSelectionDetail | null {
     if (!item || typeof item !== "object") return null;
     const uuid = source_uuid(item);
+    if (
+        "net" in item &&
+        typeof item.net === "string" &&
+        item.net.trim()
+    ) {
+        return {
+            sourceContext: "PCB",
+            itemType: "net",
+            net: item.net,
+            netCode:
+                "number" in item && typeof item.number === "number"
+                    ? item.number
+                    : undefined,
+            page: board.filename,
+        };
+    }
     if (item instanceof Footprint) {
         return {
             sourceContext: "PCB",

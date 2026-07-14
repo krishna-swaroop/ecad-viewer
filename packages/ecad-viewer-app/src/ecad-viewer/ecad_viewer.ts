@@ -159,6 +159,11 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.addEventListener("contextmenu", function (event) {
             event.preventDefault();
         });
+        this.addDisposable(
+            listen(window, "keydown", (event) => {
+                this.#handle_host_keydown(event as KeyboardEvent);
+            }),
+        );
     }
 
     get input() {
@@ -383,6 +388,38 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             : false;
     }
 
+    #handle_host_keydown(event: KeyboardEvent) {
+        if (!this.#host_active || !this.has_sch || event.defaultPrevented)
+            return;
+        if (document.querySelector('[role="dialog"][data-state="open"]'))
+            return;
+        const target = event.composedPath()[0];
+        if (
+            target instanceof HTMLInputElement ||
+            target instanceof HTMLTextAreaElement ||
+            (target instanceof HTMLElement && target.isContentEditable)
+        )
+            return;
+
+        const direction =
+            event.key === "[" || event.code === "BracketLeft"
+                ? -1
+                : event.key === "]" || event.code === "BracketRight"
+                  ? 1
+                  : null;
+        if (direction) {
+            if (this.navigateSchematicPage(direction)) event.preventDefault();
+            return;
+        }
+        if (
+            event.altKey &&
+            (event.key === "Backspace" || event.key === "Delete") &&
+            this.navigateSchematicParent()
+        ) {
+            event.preventDefault();
+        }
+    }
+
     public getActiveSchematicPage() {
         const page = this.#active_schematic_page();
         return page
@@ -420,7 +457,6 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             return false;
         this.#active_schematic_project_path = page.project_path;
         this.#project.activate_sch(page.project_path);
-        void viewer.load(page.document);
         return true;
     }
 

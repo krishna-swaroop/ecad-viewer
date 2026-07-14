@@ -482,6 +482,17 @@ export class Project extends EventTarget implements IDisposable {
     public get_first_page(kind: AssertType) {
         switch (kind) {
             case AssertType.SCH:
+                if (this.active_sch_name) {
+                    const active_page = this._pages_by_path.get(
+                        this.active_sch_name,
+                    );
+                    if (active_page?.document instanceof KicadSch)
+                        return active_page.document;
+                    const active_file = this._files_by_name.get(
+                        this.active_sch_name,
+                    );
+                    if (active_file instanceof KicadSch) return active_file;
+                }
                 return (
                     (this._files_by_name.get(
                         `${this._project_name}.kicad_sch`,
@@ -495,7 +506,7 @@ export class Project extends EventTarget implements IDisposable {
     }
 
     public page_by_path(project_path: string) {
-        return this._files_by_name.get(project_path);
+        return this._pages_by_path.get(project_path)?.document;
     }
 
     public get is_empty() {
@@ -520,6 +531,10 @@ export class Project extends EventTarget implements IDisposable {
     }
 
     _determine_schematic_hierarchy() {
+        // This method is also called after appendSources(). Rebuild the page
+        // projection from the complete set of parsed schematics so stale
+        // root-only/orphan entries cannot break host page navigation.
+        this._pages_by_path.clear();
         const paths_to_schematics = new Map<string, KicadSch>();
         const paths_to_sheet_instances = new Map<
             string,
@@ -621,10 +636,10 @@ export class Project extends EventTarget implements IDisposable {
             if (!seen_schematic_files.has(schematic.filename)) {
                 const page = new ProjectPage(
                     this,
-                    "schematic",
                     schematic.filename,
                     `/${schematic.uuid}`,
                     schematic.filename,
+                    undefined,
                 );
                 this._pages_by_path.set(page.project_path, page);
             }
