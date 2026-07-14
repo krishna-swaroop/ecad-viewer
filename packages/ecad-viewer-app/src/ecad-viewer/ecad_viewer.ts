@@ -425,11 +425,19 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     #handle_host_keydown(event: KeyboardEvent) {
-        if (!this.#host_active || !this.has_sch || event.defaultPrevented)
-            return;
-        if (document.querySelector('[role="dialog"][data-state="open"]'))
-            return;
         const target = event.composedPath()[0];
+        const open_dialog = document.querySelector(
+            '[role="dialog"][data-state="open"]',
+        );
+        if (
+            !this.#host_active ||
+            !this.has_sch ||
+            event.defaultPrevented ||
+            (open_dialog instanceof HTMLElement &&
+                target instanceof Node &&
+                open_dialog.contains(target))
+        )
+            return;
         if (
             target instanceof HTMLInputElement ||
             target instanceof HTMLTextAreaElement ||
@@ -448,11 +456,14 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             return;
         }
         if (
-            event.altKey &&
+            event.getModifierState("Alt") &&
             (event.key === "Backspace" ||
                 event.key === "Delete" ||
+                event.key === "Del" ||
                 event.code === "Backspace" ||
-                event.code === "Delete") &&
+                event.code === "Delete" ||
+                event.keyCode === 8 ||
+                event.keyCode === 46) &&
             this.navigateSchematicParent()
         ) {
             event.preventDefault();
