@@ -370,8 +370,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     /**
      * Switch to a specific schematic page (by filename or sheet path)
      */
-    public switchPage(pageId: string): void {
-        if (!this.#schematic_app) return;
+    public switchPage(pageId: string): boolean {
+        if (!this.#schematic_app) return false;
         const page = this.#project.pages.find(
             (candidate) =>
                 candidate.project_path === pageId ||
@@ -381,9 +381,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         );
         if (!page) {
             console.warn(`switchPage: Could not find page with ID ${pageId}`);
-            return;
+            return false;
         }
-        this.#activate_schematic_page(page.project_path);
+        return this.#activate_schematic_page(page.project_path);
     }
 
     public navigateSchematicPage(direction: -1 | 1): boolean {
@@ -483,7 +483,12 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     public getSchematicPages(): EcadSchematicPageState[] {
-        const active = this.#active_schematic_page()?.project_path;
+        // The project owns page activation; prefer its explicit active path so
+        // host controls update synchronously, even while the canvas is loading
+        // the new schematic document.
+        const active =
+            this.#project.active_sch_name ??
+            this.#active_schematic_page()?.project_path;
         return this.#project.pages.map((page) => ({
             projectPath: page.project_path,
             sheetPath: page.sheet_path,
@@ -587,6 +592,14 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             return false;
         this.#active_schematic_project_path = page.project_path;
         this.#project.activate_sch(page.project_path);
+        // Do not make host page navigation depend on the app's asynchronous
+        // project-change listener.  Loading the resolved document here keeps
+        // the rendered sheet, active page projection, and hierarchy shortcut
+        // in lockstep.  The app listener treats this as an idempotent reload.
+        void viewer.load(page.document).finally(() =>
+            this.#emit_view_state_change(),
+        );
+        this.#emit_view_state_change();
         return true;
     }
 
