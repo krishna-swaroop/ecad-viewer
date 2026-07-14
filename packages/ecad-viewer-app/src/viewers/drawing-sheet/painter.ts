@@ -11,7 +11,7 @@
  */
 
 import { Angle, BBox, Vec2 } from "../../base/math";
-import { Polyline, Renderer } from "../../graphics";
+import { Polygon as GraphicPolygon, Polyline, Renderer } from "../../graphics";
 import type { BaseTheme } from "../../kicad";
 import * as drawing_sheet from "../../kicad/drawing-sheet";
 import { EDAText, StrokeFont } from "../../kicad/text";
@@ -71,7 +71,7 @@ class LinePainter extends ItemPainter {
                     l.start.position.add(offset),
                     l.start.anchor,
                 ),
-                offset_point(sheet, l.end.position.add(offset), l.start.anchor),
+                offset_point(sheet, l.end.position.add(offset), l.end.anchor),
             ];
 
             if (!start || !end) {
@@ -169,7 +169,9 @@ class TbTextPainter extends ItemPainter {
 
         edatext.attributes.bold = t.font?.bold ?? false;
         edatext.attributes.italic = t.font?.italic ?? false;
-        edatext.attributes.color = layer.color;
+        edatext.attributes.color = t.font?.color?.is_transparent_black
+            ? layer.color
+            : (t.font?.color ?? layer.color);
         edatext.attributes.size = (
             t.font?.size ?? t.parent.setup.textsize
         ).multiply(10000);
@@ -218,12 +220,41 @@ class TbTextPainter extends ItemPainter {
     }
 }
 
+class PolygonPainter extends ItemPainter {
+    classes = [drawing_sheet.Polygon];
+
+    override layers_for(item: unknown): string[] {
+        return [ViewLayerNames.drawing_sheet];
+    }
+
+    paint(layer: ViewLayer, polygon: drawing_sheet.Polygon) {
+        const angle = Angle.from_degrees(polygon.rotate);
+        for (let i = 0; i < polygon.repeat; i++) {
+            const offset = new Vec2(polygon.incrx * i, polygon.incry * i);
+            const origin = offset_point(
+                polygon.parent,
+                polygon.pos.position.add(offset),
+                polygon.pos.anchor,
+                i > 0,
+            );
+            if (!origin) break;
+            const points = polygon.pts.map((point) =>
+                origin.add(point.rotate(angle)),
+            );
+            if (points.length >= 3) {
+                this.gfx.polygon(new GraphicPolygon(points, layer.color));
+            }
+        }
+    }
+}
+
 export class DrawingSheetPainter extends DocumentPainter {
     constructor(gfx: Renderer, layers: ViewLayerSet, theme: BaseTheme) {
         super(gfx, layers, theme);
         this.painter_list = [
             new LinePainter(this, gfx),
             new RectPainter(this, gfx),
+            new PolygonPainter(this, gfx),
             new TbTextPainter(this, gfx),
         ];
     }

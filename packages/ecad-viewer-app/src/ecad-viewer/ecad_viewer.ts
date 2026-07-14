@@ -55,6 +55,33 @@ export type {
     EcadOverlayScene,
 } from "../viewers/base/overlay-scene";
 
+export interface EcadSchematicPageState {
+    projectPath: string;
+    sheetPath: string;
+    filename: string;
+    name?: string;
+    page?: string;
+    depth: number;
+    active: boolean;
+}
+
+export interface EcadPcbLayerState {
+    name: string;
+    color: string;
+    visible: boolean;
+    highlighted: boolean;
+}
+
+export interface EcadPcbViewState {
+    layers: EcadPcbLayerState[];
+    objectOpacity: Record<"tracks" | "vias" | "pads" | "zones", number>;
+    objectVisibility: Record<
+        "references" | "values" | "footprintText" | "hiddenText",
+        boolean
+    >;
+    highlightTracks: boolean;
+}
+
 export { TabActivateEvent, SheetLoadEvent } from "../viewers/base/events";
 
 import { TabKind } from "./constraint";
@@ -154,6 +181,11 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 ) {
                     this.#active_schematic_project_path = active;
                 }
+                this.dispatchEvent(
+                    new CustomEvent("ecad-viewer:view-state-change", {
+                        bubbles: false,
+                    }),
+                );
             }),
         );
         this.addEventListener("contextmenu", function (event) {
@@ -367,22 +399,20 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         const current = this.#active_schematic_page();
         if (!current) return false;
         const current_parts = current.sheet_path.split("/").filter(Boolean);
-        const parent_path =
-            current_parts.length > 1
-                ? `/${current_parts.slice(0, -1).join("/")}`
-                : "";
-        const parent =
-            this.#project.pages.find(
-                (page) => page.sheet_path === parent_path,
-            ) ??
-            this.#project.pages
-                .filter(
-                    (page) =>
-                        page.project_path !== current.project_path &&
-                        page.sheet_path.length < current.sheet_path.length &&
-                        current.sheet_path.startsWith(`${page.sheet_path}/`),
-                )
-                .sort((a, b) => b.sheet_path.length - a.sheet_path.length)[0];
+        const parent = this.#project.pages
+            .filter((page) => {
+                if (page.project_path === current.project_path) return false;
+                const parts = page.sheet_path.split("/").filter(Boolean);
+                return (
+                    parts.length < current_parts.length &&
+                    parts.every((part, index) => part === current_parts[index])
+                );
+            })
+            .sort(
+                (a, b) =>
+                    b.sheet_path.split("/").filter(Boolean).length -
+                    a.sheet_path.split("/").filter(Boolean).length,
+            )[0];
         return parent
             ? this.#activate_schematic_page(parent.project_path)
             : false;
@@ -413,7 +443,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         }
         if (
             event.altKey &&
-            (event.key === "Backspace" || event.key === "Delete") &&
+            (event.key === "Backspace" ||
+                event.key === "Delete" ||
+                event.code === "Backspace" ||
+                event.code === "Delete") &&
             this.navigateSchematicParent()
         ) {
             event.preventDefault();
@@ -431,6 +464,87 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                   page: page.page,
               }
             : null;
+    }
+
+    public getSchematicPages(): EcadSchematicPageState[] {
+        const active = this.#active_schematic_page()?.project_path;
+        return this.#project.pages.map((page) => ({
+            projectPath: page.project_path,
+            sheetPath: page.sheet_path,
+            filename: page.filename,
+            name: page.name,
+            page: page.page,
+            depth: Math.max(
+                0,
+                page.sheet_path.split("/").filter(Boolean).length - 1,
+            ),
+            active: page.project_path === active,
+        }));
+    }
+
+    public getPcbViewState(): EcadPcbViewState | null {
+        return this.#safe_board_viewer()?.get_host_view_state() ?? null;
+    }
+
+    public setPcbLayerVisibility(name: string, visible: boolean): boolean {
+        const changed =
+            this.#safe_board_viewer()?.set_host_layer_visibility(
+                name,
+                visible,
+            ) ?? false;
+        if (changed) this.#emit_view_state_change();
+        return changed;
+    }
+
+    public setPcbLayerHighlight(name: string | null): boolean {
+        const changed =
+            this.#safe_board_viewer()?.set_host_layer_highlight(name) ?? false;
+        if (changed) this.#emit_view_state_change();
+        return changed;
+    }
+
+    public applyPcbLayerPreset(
+        preset:
+            | "front"
+            | "back"
+            | "copper"
+            | "outer-copper"
+            | "inner-copper"
+            | "drawings"
+            | "all"
+            | "none",
+    ): void {
+        this.#safe_board_viewer()?.apply_host_layer_preset(preset);
+        this.#emit_view_state_change();
+    }
+
+    public setPcbObjectOpacity(
+        kind: "tracks" | "vias" | "pads" | "zones",
+        opacity: number,
+    ): void {
+        this.#safe_board_viewer()?.set_host_object_opacity(kind, opacity);
+        this.#emit_view_state_change();
+    }
+
+    public setPcbObjectVisibility(
+        kind: "references" | "values" | "footprintText" | "hiddenText",
+        visible: boolean,
+    ): void {
+        this.#safe_board_viewer()?.set_host_object_visibility(kind, visible);
+        this.#emit_view_state_change();
+    }
+
+    public setPcbTrackHighlight(enabled: boolean): void {
+        this.#safe_board_viewer()?.set_host_track_highlight(enabled);
+        this.#emit_view_state_change();
+    }
+
+    #emit_view_state_change() {
+        this.dispatchEvent(
+            new CustomEvent("ecad-viewer:view-state-change", {
+                bubbles: false,
+            }),
+        );
     }
 
     #active_schematic_page() {

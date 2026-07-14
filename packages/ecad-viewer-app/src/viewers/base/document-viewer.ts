@@ -44,6 +44,14 @@ export abstract class DocumentViewer<
 
     protected static FACTOR_zoom_fit_top_item = 1.6;
 
+    public set_drawing_sheet(sheet: DrawingSheet) {
+        this.drawing_sheet = sheet;
+        if (this.document) {
+            this.paint();
+            this.draw();
+        }
+    }
+
     constructor(
         canvas: HTMLCanvasElement,
         interactive: boolean,

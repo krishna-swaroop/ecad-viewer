@@ -22,7 +22,8 @@ export const is_ad = (name: string) =>
 export const is_kicad = (name: string) =>
     name.endsWith(".kicad_pcb") ||
     name.endsWith(".kicad_sch") ||
-    name.endsWith(".kicad_pro");
+    name.endsWith(".kicad_pro") ||
+    name.endsWith(".kicad_wks");
 
 export const is_3d_model = (name: string) => name.endsWith(".glb");
 
@@ -347,20 +348,34 @@ export class TabHeaderElement extends KCUIElement {
     }
 
     override renderedCallback(): void | undefined {
-        console.log("[TabHeader] renderedCallback() called, option:", this.option, "current_tab:", this.#current_tab);
+        console.log(
+            "[TabHeader] renderedCallback() called, option:",
+            this.option,
+            "current_tab:",
+            this.#current_tab,
+        );
         if (this.option.active_tab !== undefined) {
-            console.log("[TabHeader] Activating tab from option.active_tab:", this.option.active_tab);
+            console.log(
+                "[TabHeader] Activating tab from option.active_tab:",
+                this.option.active_tab,
+            );
             this.activateTab(this.option.active_tab);
             return;
         }
 
         if (!window.app || window.app === "full") {
             if (window.default_page) {
-                console.log("[TabHeader] Activating tab from default_page:", window.default_page);
+                console.log(
+                    "[TabHeader] Activating tab from default_page:",
+                    window.default_page,
+                );
                 this.activateTab(window.default_page.toUpperCase() as TabKind);
             } else {
                 if (this.option.sch_count) {
-                    console.log("[TabHeader] Activating SCH tab (sch_count:", this.option.sch_count + ")");
+                    console.log(
+                        "[TabHeader] Activating SCH tab (sch_count:",
+                        this.option.sch_count + ")",
+                    );
                     this.activateTab(TabKind.sch);
                 } else if (this.option.has_pcb) {
                     console.log("[TabHeader] Activating PCB tab");

@@ -188,6 +188,14 @@ export abstract class KCViewerAppElement<
     override async load(src: KicadAssert) {
         await this.viewerReady;
         if (this.can_load(src)) {
+            const documentViewer = this.viewer as Viewer & {
+                set_drawing_sheet?: (
+                    sheet: ReturnType<Project["drawing_sheet_for"]>,
+                ) => void;
+            };
+            documentViewer.set_drawing_sheet?.(
+                this.project.drawing_sheet_for(this.assert_type(), src),
+            );
             await this.#viewer_elm.load(src);
             if (this.#content) {
                 this.#content.hidden = false;

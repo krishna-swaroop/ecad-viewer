@@ -10,7 +10,8 @@ import { type IDisposable } from "../base/disposable";
 import { first, length, map } from "../base/iterator";
 import { Logger } from "../base/log";
 
-import { KicadPCB, KicadSch, ProjectSettings } from "../kicad";
+import { DrawingSheet, KicadPCB, KicadSch, ProjectSettings } from "../kicad";
+import { parse_drawing_sheet } from "kicad-parser";
 import * as Comlink from "comlink";
 import {
     BoardBomItemVisitor,
@@ -32,7 +33,12 @@ import {
     type EcadSources,
 } from "./services/vfs";
 import "../ecad-viewer/ecad_viewer_global";
-import { KICAD_PCB_EXT, KICAD_PRO_EXT, KICAD_SCH_EXT } from "./file_ext";
+import {
+    KICAD_PCB_EXT,
+    KICAD_PRO_EXT,
+    KICAD_SCH_EXT,
+    KICAD_WKS_EXT,
+} from "./file_ext";
 import { WorkerPool } from "./worker_pool";
 
 const log = new Logger("kicanvas:project");
@@ -46,6 +52,7 @@ export class Project extends EventTarget implements IDisposable {
     _fs = new FetchFileSystem();
     _files_by_name: Map<string, KicadPCB | KicadSch> = new Map();
     _file_content: Map<string, string> = new Map();
+    _drawing_sheet_sources: Map<string, string> = new Map();
     _pool = new WorkerPool(Math.min(navigator.hardwareConcurrency ?? 4, 6));
     _pcb: KicadPCB[] = [];
     _sch: KicadSch[] = [];
@@ -145,6 +152,7 @@ export class Project extends EventTarget implements IDisposable {
         this._files_by_name.clear();
         this._pages_by_path.clear();
         this._file_content.clear();
+        this._drawing_sheet_sources.clear();
         this._label_name_refs.clear();
         this._net_item_refs.clear();
         this._designator_refs.clear();
@@ -159,6 +167,7 @@ export class Project extends EventTarget implements IDisposable {
         this._pcb = [];
         this._sch = [];
         this._bom_items = [];
+        this._drawing_sheet_sources = new Map();
         this._project_name = undefined;
         this._root_schematic_page = undefined;
         this.active_sch_file_name = undefined;
@@ -228,6 +237,8 @@ export class Project extends EventTarget implements IDisposable {
                 );
                 const data = JSON.parse(blob.content);
                 this.settings = ProjectSettings.load(data);
+            } else if (blob.filename.endsWith(KICAD_WKS_EXT)) {
+                this._drawing_sheet_sources.set(blob.filename, blob.content);
             }
         }
 
@@ -319,6 +330,11 @@ export class Project extends EventTarget implements IDisposable {
         if (filename.endsWith(".kicad_pro")) {
             return this._load_meta(filename);
         }
+        if (filename.endsWith(".kicad_wks")) {
+            const text = await this.get_file_text(filename);
+            this._drawing_sheet_sources.set(filename, text!);
+            return;
+        }
 
         log.warn(`Couldn't load ${filename}: unknown file type`);
     }
@@ -399,6 +415,68 @@ export class Project extends EventTarget implements IDisposable {
         const text = await this.get_file_text(filename);
         const data = JSON.parse(text!);
         this.settings = ProjectSettings.load(data);
+    }
+
+    public drawing_sheet_for(
+        kind: AssertType,
+        document?: KicadPCB | KicadSch,
+    ): DrawingSheet {
+        const configured =
+            kind === AssertType.SCH
+                ? String(
+                      (this.settings.schematic as Record<string, unknown>)[
+                          "page_layout_descr_file"
+                      ] ?? "",
+                  )
+                : this.settings.pcbnew.page_layout_descr_file;
+        const requested = configured
+            .replace(/^kicad-embed:\/\//, "")
+            .replace(/\\/g, "/");
+        let content = requested
+            ? this._drawing_sheet_sources.get(requested)
+            : undefined;
+        if (!content && requested) {
+            const basename = requested.split("/").pop();
+            for (const [name, source] of this._drawing_sheet_sources) {
+                if (name === basename || name.endsWith(`/${basename}`)) {
+                    content = source;
+                    break;
+                }
+            }
+        }
+        // A project with one supplied worksheet commonly relies on KiCad's
+        // embedded-path indirection.  Use it when the configured basename was
+        // flattened by an embedding host.
+        if (!content && requested && this._drawing_sheet_sources.size === 1) {
+            content = this._drawing_sheet_sources.values().next().value;
+        }
+        let drawing_sheet: DrawingSheet;
+        if (!content) {
+            drawing_sheet = DrawingSheet.default();
+        } else {
+            try {
+                drawing_sheet = new DrawingSheet(parse_drawing_sheet(content));
+            } catch (error) {
+                log.warn(`Couldn't parse drawing sheet ${requested}: ${error}`);
+                drawing_sheet = DrawingSheet.default();
+            }
+        }
+        const page =
+            kind === AssertType.SCH
+                ? (this._pages_by_path.get(this.active_sch_name ?? "") ??
+                  this.pages.find(
+                      (candidate) => candidate.document === document,
+                  ))
+                : undefined;
+        drawing_sheet.sheet_number = page?.page || "1";
+        drawing_sheet.sheet_count = String(Math.max(1, this.pages.length));
+        drawing_sheet.sheet_path = page?.sheet_path || "/";
+        drawing_sheet.sheet_name = page?.name || "";
+        drawing_sheet.kicad_version =
+            document instanceof KicadSch
+                ? document.generator_version || document.generator || "KiCad"
+                : document?.generator || "KiCad";
+        return drawing_sheet;
     }
 
     async get_file_text(filename: string) {

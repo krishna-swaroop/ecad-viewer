@@ -246,7 +246,7 @@ export class KCBoardLayersPanelElement extends KCUIElement {
         });
     }
 
-    private update_item_states() {
+    public update_item_states() {
         for (const item of this.items) {
             const layer = this.viewer.layers.by_name(item.layer_name!);
             item.layer_visible = layer?.visible ?? false;

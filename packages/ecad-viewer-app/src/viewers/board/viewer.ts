@@ -237,6 +237,177 @@ export class BoardViewer extends DocumentViewer<
         this.#highlighted_track = val;
     }
 
+    public get_host_view_state() {
+        const layers = this.layers as LayerSet;
+        const first_opacity = (items: Generator<ViewLayer>) =>
+            items.next().value?.opacity ?? 1;
+        const any_visible = (items: Generator<ViewLayer>) =>
+            Array.from(items).some((layer) => (layer.opacity ?? 1) > 0);
+        return {
+            layers: Array.from(layers.in_ui_order()).map((layer) => ({
+                name: layer.name,
+                color: layer.color.to_css(),
+                visible: layer.visible,
+                highlighted: layer.highlighted,
+            })),
+            objectOpacity: {
+                tracks: first_opacity(layers.copper_layers()),
+                vias: first_opacity(layers.via_layers()),
+                pads: first_opacity(layers.pad_layers()),
+                zones: first_opacity(layers.zone_layers()),
+            },
+            objectVisibility: {
+                references: any_visible(layers.fp_reference_txt_layers()),
+                values: any_visible(layers.fp_value_txt_layers()),
+                footprintText: any_visible(layers.fp_txt_layers()),
+                hiddenText: any_visible(layers.hidden_txt_layers()),
+            },
+            highlightTracks: this.#highlighted_track,
+        };
+    }
+
+    public set_host_layer_visibility(name: string, visible: boolean) {
+        const layer = this.layers.by_name(name);
+        if (!layer || !Array.from(this.layers.in_ui_order()).includes(layer))
+            return false;
+        layer.visible = visible;
+        if (!visible && layer.highlighted) this.layers.highlight(null);
+        this.#layer_visibility_ctrl?.update_item_states();
+        this.draw();
+        return true;
+    }
+
+    public set_host_layer_highlight(name: string | null) {
+        if (!name) {
+            this.layers.highlight(null);
+            this.#layer_visibility_ctrl?.update_item_states();
+            this.draw();
+            return true;
+        }
+        const layer = this.layers.by_name(name);
+        if (!layer || !Array.from(this.layers.in_ui_order()).includes(layer))
+            return false;
+        const next = layer.highlighted ? null : layer;
+        this.layers.highlight(next);
+        if (next) next.visible = true;
+        this.#layer_visibility_ctrl?.update_item_states();
+        this.draw();
+        return true;
+    }
+
+    public apply_host_layer_preset(
+        preset:
+            | "front"
+            | "back"
+            | "copper"
+            | "outer-copper"
+            | "inner-copper"
+            | "drawings"
+            | "all"
+            | "none",
+    ) {
+        for (const layer of this.layers.in_ui_order()) {
+            switch (preset) {
+                case "front":
+                    layer.visible =
+                        layer.name.startsWith("F.") ||
+                        layer.name === LayerNames.edge_cuts;
+                    break;
+                case "back":
+                    layer.visible =
+                        layer.name.startsWith("B.") ||
+                        layer.name === LayerNames.edge_cuts;
+                    break;
+                case "copper":
+                    layer.visible =
+                        layer.name.endsWith(".Cu") ||
+                        layer.name === LayerNames.edge_cuts;
+                    break;
+                case "outer-copper":
+                    layer.visible =
+                        layer.name === LayerNames.f_cu ||
+                        layer.name === LayerNames.b_cu ||
+                        layer.name === LayerNames.edge_cuts;
+                    break;
+                case "inner-copper":
+                    layer.visible =
+                        (layer.name.endsWith(".Cu") &&
+                            layer.name !== LayerNames.f_cu &&
+                            layer.name !== LayerNames.b_cu) ||
+                        layer.name === LayerNames.edge_cuts;
+                    break;
+                case "drawings":
+                    layer.visible =
+                        !layer.name.endsWith(".Cu") &&
+                        !layer.name.endsWith(".Mask") &&
+                        !layer.name.endsWith(".Paste") &&
+                        !layer.name.endsWith(".Adhes");
+                    break;
+                case "all":
+                    layer.visible = true;
+                    break;
+                case "none":
+                    layer.visible = false;
+                    break;
+            }
+        }
+        this.layers.highlight(null);
+        this.#layer_visibility_ctrl?.update_item_states();
+        this.draw();
+    }
+
+    public set_host_object_opacity(
+        kind: "tracks" | "vias" | "pads" | "zones",
+        opacity: number,
+    ) {
+        const value = Math.max(0, Math.min(1, opacity));
+        switch (kind) {
+            case "tracks":
+                this.track_opacity = value;
+                break;
+            case "vias":
+                this.via_opacity = value;
+                break;
+            case "pads":
+                this.pad_opacity = value;
+                break;
+            case "zones":
+                this.zone_opacity = value;
+                break;
+        }
+    }
+
+    public set_host_object_visibility(
+        kind: "references" | "values" | "footprintText" | "hiddenText",
+        visible: boolean,
+    ) {
+        const layers = this.layers as LayerSet;
+        const opacity = visible ? 1 : 0;
+        const set = (items: Generator<ViewLayer>) => {
+            for (const layer of items) layer.opacity = opacity;
+        };
+        switch (kind) {
+            case "references":
+                set(layers.fp_reference_txt_layers());
+                break;
+            case "values":
+                set(layers.fp_value_txt_layers());
+                break;
+            case "footprintText":
+                set(layers.fp_txt_layers());
+                break;
+            case "hiddenText":
+                set(layers.hidden_txt_layers());
+                break;
+        }
+        this.draw();
+    }
+
+    public set_host_track_highlight(enabled: boolean) {
+        this.set_highlighted_track(enabled);
+        this.draw();
+    }
+
     get board(): board_items.KicadPCB {
         return this.document;
     }

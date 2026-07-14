@@ -1,4 +1,3 @@
-
 import type { I_Vec2, I_Color } from "./common";
 
 export interface I_Setup {
@@ -18,6 +17,7 @@ export interface I_Coordinate {
 }
 
 export interface I_DrawingSheetItem {
+    kind: "line" | "rect" | "polygon" | "bitmap" | "tbtext";
     name?: string;
     comment?: string;
     option?: "page1only" | "notonpage1" | null;
