@@ -405,7 +405,17 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         const current = this.#active_schematic_page();
         if (!current) return false;
         const current_parts = current.sheet_path.split("/").filter(Boolean);
-        const parent = this.#project.pages
+        const direct_parent_path =
+            current_parts.length > 1
+                ? `/${current_parts.slice(0, -1).join("/")}`
+                : "";
+        // Prefer the exact instance path. The prefix fallback is retained for
+        // legacy projects whose sheet-instance paths omit an intermediate node.
+        const parent =
+            this.#project.pages.find(
+                (page) => page.sheet_path === direct_parent_path,
+            ) ??
+            this.#project.pages
             .filter((page) => {
                 if (page.project_path === current.project_path) return false;
                 const parts = page.sheet_path.split("/").filter(Boolean);
@@ -425,19 +435,11 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     #handle_host_keydown(event: KeyboardEvent) {
-        const target = event.composedPath()[0];
-        const open_dialog = document.querySelector(
-            '[role="dialog"][data-state="open"]',
-        );
-        if (
-            !this.#host_active ||
-            !this.has_sch ||
-            event.defaultPrevented ||
-            (open_dialog instanceof HTMLElement &&
-                target instanceof Node &&
-                open_dialog.contains(target))
-        )
+        if (!this.#host_active || !this.has_sch || event.defaultPrevented)
             return;
+        if (document.querySelector('[role="dialog"][data-state="open"]'))
+            return;
+        const target = event.composedPath()[0];
         if (
             target instanceof HTMLInputElement ||
             target instanceof HTMLTextAreaElement ||
@@ -456,14 +458,11 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             return;
         }
         if (
-            event.getModifierState("Alt") &&
+            event.altKey &&
             (event.key === "Backspace" ||
                 event.key === "Delete" ||
-                event.key === "Del" ||
                 event.code === "Backspace" ||
-                event.code === "Delete" ||
-                event.keyCode === 8 ||
-                event.keyCode === 46) &&
+                event.code === "Delete") &&
             this.navigateSchematicParent()
         ) {
             event.preventDefault();
