@@ -47,7 +47,10 @@ export class KCBoardAppElement extends KCViewerAppElement<KCBoardViewerElement> 
 
     override initialContentCallback() {
         super.initialContentCallback();
-        (this.viewer as BoardViewer).layer_visibility_ctrl = this.#layer;
+        // In headless mode the fitter menu (and thus #layer) isn't built; leave
+        // the viewer's layer control unset so nothing depends on the missing UI.
+        if (this.#layer)
+            (this.viewer as BoardViewer).layer_visibility_ctrl = this.#layer;
     }
 
     protected override make_fitter_menu(): HTMLElement {
@@ -70,10 +73,16 @@ export class KCBoardAppElement extends KCViewerAppElement<KCBoardViewerElement> 
         ]);
     }
 
-    override on_viewer_select(item?: unknown, previous?: unknown) {
-        // Selecting the same item twice should show the properties panel.
-        if (item instanceof Footprint)
-            (this.viewer as BoardViewer).highlight_fp(item);
+    override on_viewer_select(
+        item?: unknown,
+        _previous?: unknown,
+        intent: "select" | "crossprobe" = "select",
+    ) {
+        if (!(item instanceof Footprint)) return;
+        const viewer = this.viewer as BoardViewer;
+        // Single-click: green outline. Cross-probe (dblclick / host): cyan hatch.
+        if (intent === "crossprobe") viewer.highlight_fp(item);
+        else viewer.outline_fp(item);
     }
 
     override can_load(src: KicadAssert): boolean {

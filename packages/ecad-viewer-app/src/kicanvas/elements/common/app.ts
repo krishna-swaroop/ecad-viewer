@@ -101,13 +101,14 @@ export abstract class KCViewerAppElement<
     ];
     #viewer_elm: ViewerElementT;
     #property_viewer: ElementOrFragment;
-    #fitter_menu: HTMLElement;
+    #fitter_menu?: HTMLElement;
     #toggle_button?: HTMLElement;
     #placeholder = html`<ecad-spinner></ecad-spinner>` as HTMLElement;
     #content?: HTMLElement;
     public showPropertyPanel = true;
 
     public set tabMenuHidden(v: boolean) {
+        if (!this.#fitter_menu) return;
         this.#fitter_menu.hidden = v;
         if (this.#toggle_button) {
             if (v) {
@@ -122,7 +123,7 @@ export abstract class KCViewerAppElement<
     }
 
     public get tabMenuHidden() {
-        return this.#fitter_menu.hidden;
+        return this.#fitter_menu?.hidden ?? true;
     }
 
     project: Project;
@@ -162,7 +163,11 @@ export abstract class KCViewerAppElement<
         // Handle item selection in the viewers.
         this.addDisposable(
             this.viewer.addEventListener(KiCanvasSelectEvent.type, (e) => {
-                this.on_viewer_select(e.detail.item, e.detail.previous);
+                this.on_viewer_select(
+                    e.detail.item,
+                    e.detail.previous,
+                    e.detail.intent ?? "select",
+                );
                 // Viewer is an EventTarget rather than a DOM node, so its
                 // selection event cannot bubble through the custom-element
                 // host by itself. Relay it once at the app boundary for
@@ -209,6 +214,7 @@ export abstract class KCViewerAppElement<
     protected abstract on_viewer_select(
         item?: unknown,
         previous?: unknown,
+        intent?: "select" | "crossprobe",
     ): void;
 
     protected abstract can_load(src: KicadAssert): boolean;
@@ -243,7 +249,23 @@ export abstract class KCViewerAppElement<
 
     protected abstract make_fitter_menu(): HTMLElement;
 
+    /**
+     * Headless mode: render only the viewer canvas, omitting the built-in
+     * fitter menu (layers/objects/nets) and property panel, so a host app can
+     * supply its own UI. Set by <ecad-viewer hide-chrome>. Purely structural —
+     * no host styling here.
+     */
+    public headless = false;
+
     protected render_viewer() {
+        this.#viewer_elm = this.make_viewer_element();
+
+        // In headless mode, skip building the chrome entirely (no fitter menu,
+        // no property panel). The host renders its own.
+        if (this.headless) {
+            return html` ${this.#viewer_elm} `;
+        }
+
         this.#fitter_menu = this.make_fitter_menu();
         this.#fitter_menu.hidden = true;
         this.#fitter_menu.addEventListener(
@@ -252,7 +274,6 @@ export abstract class KCViewerAppElement<
                 this.tabMenuHidden = e.detail;
             },
         );
-        this.#viewer_elm = this.make_viewer_element();
         this.#property_viewer = this.make_property_element();
 
         let elements: ElementOrFragment[] = [

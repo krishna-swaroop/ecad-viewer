@@ -11,7 +11,7 @@
  */
 
 import { Angle, Matrix3, Vec2 } from "../../base/math";
-import { Polyline } from "../../graphics";
+import { Polygon, Polyline } from "../../graphics";
 import * as board_items from "../../kicad/board";
 import { ViewLayerNames } from "../base/view-layers";
 import { ViewLayer } from "./layers";
@@ -33,44 +33,25 @@ export class FootprintPainter extends BoardItemPainter {
 
     paint(layer: ViewLayer, fp: board_items.Footprint) {
         if (layer.name === ViewLayerNames.selection_mask) {
+            // Exact footprint bounds — do not grow; hatch must not spill outside.
             const bbox = fp.bbox;
-            let step = 0.5;
-            if (bbox.w > bbox.h) {
-                step = (step * bbox.w) / bbox.h;
-            }
-
-            let count = 0;
-            {
-                for (let x = bbox.x; x < bbox.x + bbox.w; x += step) {
-                    const y0 =
-                        bbox.y + bbox.h - (count * step * bbox.h) / bbox.w;
-                    const y1 =
-                        bbox.y + bbox.h - (count * step * bbox.h) / bbox.w;
-
-                    this.gfx.line(
-                        new Polyline(
-                            [
-                                new Vec2(x, bbox.y),
-                                new Vec2(bbox.x + bbox.w, y0),
-                            ],
-                            0.1,
-                            layer.color,
-                        ),
-                    );
-
-                    if (count !== 0)
-                        this.gfx.line(
-                            new Polyline(
-                                [
-                                    new Vec2(x, bbox.y + bbox.h),
-                                    new Vec2(bbox.x, y1),
-                                ],
-                                0.1,
-                                layer.color,
-                            ),
-                        );
-                    ++count;
-                }
+            this.gfx.polygon(Polygon.from_BBox(bbox, layer.color));
+            const step = Math.max(0.4, Math.min(bbox.w, bbox.h) / 12);
+            // 45° diagonals clipped to the bbox (offset = x-relative − y-relative).
+            for (let offset = -bbox.h; offset <= bbox.w; offset += step) {
+                const t0 = Math.max(0, offset);
+                const t1 = Math.min(bbox.w, offset + bbox.h);
+                if (t1 <= t0) continue;
+                this.gfx.line(
+                    new Polyline(
+                        [
+                            new Vec2(bbox.x + t0, bbox.y + t0 - offset),
+                            new Vec2(bbox.x + t1, bbox.y + t1 - offset),
+                        ],
+                        0.1,
+                        layer.color,
+                    ),
+                );
             }
             return;
         }

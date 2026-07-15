@@ -36,6 +36,11 @@ import {
     KICAD_WKS_EXT,
 } from "./file_ext";
 import { WorkerPool } from "./worker_pool";
+import {
+    ecadPerfLog,
+    formatBytes,
+    isEcadPerfLogEnabled,
+} from "./perf_log";
 
 const log = new Logger("kicanvas:project");
 
@@ -44,12 +49,70 @@ export enum AssertType {
     PCB,
 }
 
+type PerfAccum = {
+    pcb: number;
+    sch: number;
+    totalWorkerMs: number;
+    totalModelMs: number;
+};
+
+// Single shared parser worker pool for the whole page. Each <ecad-viewer>
+// creates its own Project, and a diff view mounts several viewers at once
+// (new + old, sch + pcb). Giving every Project its own pool spawns
+// N × workerCount workers that oversubscribe the CPU and make every parse
+// several times slower under contention.
+let _shared_pool: WorkerPool | undefined;
+function get_shared_pool(): WorkerPool {
+    if (!_shared_pool) {
+        _shared_pool = new WorkerPool(
+            Math.min(navigator.hardwareConcurrency ?? 4, 6),
+        );
+    }
+    return _shared_pool;
+}
+
+// Parse de-duplication + result cache, keyed by (filename + content length +
+// a content sample). Identical file content requested by multiple viewers
+// (new+old sides, StrictMode) is parsed exactly once.
+const _parse_cache = new Map<string, Promise<unknown>>();
+const _PARSE_CACHE_MAX = 24;
+function _parse_key(filename: string, content: string): string {
+    const n = content.length;
+    const s =
+        content.charCodeAt(0) +
+        "," +
+        content.charCodeAt(n >> 1) +
+        "," +
+        content.charCodeAt(n - 1);
+    return `${filename}:${n}:${s}`;
+}
+function dedup_parse<T>(
+    filename: string,
+    content: string,
+    run: () => Promise<T>,
+): Promise<T> {
+    const key = _parse_key(filename, content);
+    const cached = _parse_cache.get(key);
+    if (cached) {
+        ecadPerfLog(`cache=hit  ${filename}`);
+        return cached as Promise<T>;
+    }
+    const p = run();
+    p.catch(() => _parse_cache.delete(key));
+    _parse_cache.set(key, p);
+    if (_parse_cache.size > _PARSE_CACHE_MAX) {
+        const oldest = _parse_cache.keys().next().value;
+        if (oldest !== undefined) _parse_cache.delete(oldest);
+    }
+    return p;
+}
+
 export class Project extends EventTarget implements IDisposable {
     _fs = new FetchFileSystem();
     _files_by_name: Map<string, KicadPCB | KicadSch> = new Map();
     _file_content: Map<string, string> = new Map();
     _drawing_sheet_sources: Map<string, string> = new Map();
-    _pool = new WorkerPool(Math.min(navigator.hardwareConcurrency ?? 4, 6));
+    _pool = get_shared_pool();
     _pcb: KicadPCB[] = [];
     _sch: KicadSch[] = [];
     _ov_3d_url?: string;
@@ -60,6 +123,7 @@ export class Project extends EventTarget implements IDisposable {
     _project_name?: string;
     active_sch_file_name?: string;
     _found_cjk = false;
+    #perf_accum: PerfAccum | null = null;
 
     find_labels_by_name(name: string) {
         return this._label_name_refs.get(name);
@@ -143,7 +207,7 @@ export class Project extends EventTarget implements IDisposable {
     }
 
     public dispose() {
-        this._pool.dispose();
+        // Do not dispose the shared WorkerPool — other Project instances reuse it.
         for (const i of [this._pcb, this._sch]) i.length = 0;
         this._files_by_name.clear();
         this._pages_by_path.clear();
@@ -156,9 +220,7 @@ export class Project extends EventTarget implements IDisposable {
 
     public reset() {
         this.dispose();
-        this._pool = new WorkerPool(
-            Math.min(navigator.hardwareConcurrency ?? 4, 6),
-        );
+        this._pool = get_shared_pool();
         this._fs = new FetchFileSystem();
         this._pcb = [];
         this._sch = [];
@@ -184,6 +246,18 @@ export class Project extends EventTarget implements IDisposable {
         this._fs = new FetchFileSystem(sources.urls);
 
         const promises = [];
+        const perf_enabled = isEcadPerfLogEnabled();
+        if (perf_enabled) {
+            this.#perf_accum = {
+                pcb: 0,
+                sch: 0,
+                totalWorkerMs: 0,
+                totalModelMs: 0,
+            };
+        } else {
+            this.#perf_accum = null;
+        }
+        const load_t0 = perf_enabled ? performance.now() : 0;
 
         for (const filename of this._fs.list()) {
             promises.push(this._load_file(filename));
@@ -278,6 +352,12 @@ export class Project extends EventTarget implements IDisposable {
 
         this.loaded.open();
 
+        if (perf_enabled && this.#perf_accum) {
+            ecadPerfLog(
+                `project load complete  pcb=${this.#perf_accum.pcb}  sch=${this.#perf_accum.sch}  totalWorker=${this.#perf_accum.totalWorkerMs.toFixed(0)}ms  totalModel=${this.#perf_accum.totalModelMs.toFixed(0)}ms  wall=${(performance.now() - load_t0).toFixed(0)}ms`,
+            );
+        }
+
         this.dispatchEvent(
             new CustomEvent("load", {
                 detail: this,
@@ -365,24 +445,43 @@ export class Project extends EventTarget implements IDisposable {
         const filename = blob.filename;
         let doc: KicadPCB | KicadSch;
 
-        const buffer = new TextEncoder().encode(blob.content).buffer;
+        const is_pcb = blob.filename.endsWith(KICAD_PCB_EXT);
+        const perf = this.#perf_accum;
+        const t_worker0 = perf ? performance.now() : 0;
 
-        let pod;
+        const pod = await dedup_parse(blob.filename, blob.content, () => {
+            const buffer = new TextEncoder().encode(blob.content).buffer;
+            return this._pool.run(async (worker) => {
+                if (perf) await worker.set_perf_log?.(true);
+                return is_pcb
+                    ? worker.parse_board(Comlink.transfer(buffer, [buffer]))
+                    : worker.parse_schematic(
+                          Comlink.transfer(buffer, [buffer]),
+                      );
+            });
+        });
 
-        if (blob.filename.endsWith(KICAD_PCB_EXT)) {
-            pod = await this._pool.run((worker) =>
-                worker.parse_board(Comlink.transfer(buffer, [buffer])),
-            );
-        } else {
-            pod = await this._pool.run((worker) =>
-                worker.parse_schematic(Comlink.transfer(buffer, [buffer])),
-            );
-        }
+        const t_worker1 = perf ? performance.now() : 0;
+        const t_model0 = t_worker1;
 
         if (filename.endsWith(KICAD_PCB_EXT)) {
             doc = new KicadPCB(filename, pod as any);
         } else {
             doc = new KicadSch(filename, pod as any);
+        }
+
+        const t_model1 = perf ? performance.now() : 0;
+
+        if (perf) {
+            const workerMs = t_worker1 - t_worker0;
+            const modelMs = t_model1 - t_model0;
+            if (is_pcb) perf.pcb += 1;
+            else perf.sch += 1;
+            perf.totalWorkerMs += workerMs;
+            perf.totalModelMs += modelMs;
+            ecadPerfLog(
+                `parse ${is_pcb ? "PCB" : "SCH"}  ${filename}  ${formatBytes(blob.content.length)}  worker=${workerMs.toFixed(0)}ms  model=${modelMs.toFixed(0)}ms`,
+            );
         }
 
         this._files_by_name.set(filename, doc);

@@ -39,9 +39,11 @@ import {
 } from "../viewers/base/events";
 import type { EcadOverlayScene } from "../viewers/base/overlay-scene";
 import {
+    EcadCrossProbeEvent,
     EcadSemanticSelectionEvent,
     normalize_board_selection,
     normalize_schematic_selection,
+    promote_pad_to_net_detail,
     type EcadCrossProbeRequest,
     type EcadSemanticSelectionDetail,
     type EcadSourceUpdate,
@@ -54,6 +56,7 @@ export type {
     EcadSemanticSelectionDetail,
     EcadSourceUpdate,
 } from "./host-adapter";
+export { EcadCrossProbeEvent, EcadSemanticSelectionEvent } from "./host-adapter";
 export type {
     EcadOverlayAnchor,
     EcadOverlayPrimitive,
@@ -85,6 +88,18 @@ export interface EcadPcbViewState {
         boolean
     >;
     highlightTracks: boolean;
+}
+
+/**
+ * Value-based camera state exposed by <ecad-viewer>. Plain POD so consumers
+ * never depend on the internal Camera2/Vec2/Angle types. `x`/`y` are the world
+ * center, `zoom` the scale factor, `rotation` in radians.
+ */
+export interface CameraState {
+    x: number;
+    y: number;
+    zoom: number;
+    rotation: number;
 }
 
 export { TabActivateEvent, SheetLoadEvent } from "../viewers/base/events";
@@ -119,11 +134,19 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 display: flex;
                 position: relative;
                 width: 100%;
-                max-height: 100%;
-                aspect-ratio: 1.414;
+                height: 100%;
                 background-color: white;
                 color: var(--fg);
                 contain: layout paint;
+            }
+
+            /* Opt-in A4 letterbox for standalone embeds. Forced aspect-ratio on
+               :host shrinks the viewer in sized Prism panes and desyncs the
+               first camera fit from the final layout. */
+            :host(.aspect-a4) {
+                height: auto;
+                max-height: 100%;
+                aspect-ratio: 1.414;
             }
 
             .vertical {
@@ -131,7 +154,17 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 flex-direction: column;
                 height: 100%;
                 width: 100%;
+                /* :host is a flex row; content must own full width or it shares
+                   space with the spinner sibling and collapses. */
+                flex: 1 1 100%;
+                min-width: 0;
                 overflow: hidden;
+            }
+
+            /* Spinner overlays; must not consume flex width beside content. */
+            ecad-spinner {
+                position: absolute;
+                inset: 0;
             }
 
             .tab-content {
@@ -322,24 +355,66 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             if (board_viewer) {
                 if (request.kind === "net") {
                     const requested_name = request.net ?? value;
-                    // A schematic/semantic numeric ID is not guaranteed to be
-                    // the board's local net code. Resolve by stable name first
-                    // and use the numeric code only as a validated fallback.
-                    const by_name = board_viewer.board.nets.find(
-                        (net) => net.name === requested_name,
-                    );
-                    const by_code = board_viewer.board.nets.find(
-                        (net) => net.number === request.netCode,
-                    );
-                    const net_code = by_name?.number ?? by_code?.number;
+                    // Prefer stable net *name*. Host/3D netCode is only used when
+                    // it matches an entry in the board nets table (KiCad 10 boards
+                    // synthesize codes from names; 3D ids are not interchangeable).
+                    const by_name = requested_name
+                        ? board_viewer.board.nets.find(
+                              (net) => net.name === requested_name,
+                          )
+                        : undefined;
+                    const by_code =
+                        request.netCode != null
+                            ? board_viewer.board.nets.find(
+                                  (net) => net.number === request.netCode,
+                              )
+                            : undefined;
+                    let net_code = by_name?.number ?? by_code?.number;
+                    if (net_code === undefined && requested_name) {
+                        for (const fp of board_viewer.board.footprints) {
+                            for (const pad of fp.pads ?? []) {
+                                if (pad.net?.name === requested_name) {
+                                    net_code = pad.net.number;
+                                    break;
+                                }
+                            }
+                            if (net_code !== undefined) break;
+                        }
+                    }
+                    // Resolve via copper uuid from the semantic index when present.
+                    if (net_code === undefined && request.uuids?.length) {
+                        const ids = new Set(request.uuids);
+                        for (const segment of board_viewer.board.segments) {
+                            const id = segment.uuid || segment.tstamp;
+                            if (id && ids.has(id) && segment.net) {
+                                net_code = segment.net;
+                                break;
+                            }
+                        }
+                        if (net_code === undefined) {
+                            for (const via of board_viewer.board.vias) {
+                                const id = via.uuid || via.tstamp;
+                                if (id && ids.has(id) && via.net) {
+                                    net_code = via.net;
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     if (net_code !== undefined) {
                         board_viewer.focus_net(net_code, false);
                         return true;
                     }
                 } else {
-                    const footprint = board_viewer.board.find_footprint(
-                        request.uuid ?? request.designator ?? value,
+                    // Prefer designator — semantic footprint UUIDs are not always
+                    // present, and a schematic symbol UUID must not win the lookup.
+                    const by_ref = board_viewer.board.find_footprint(
+                        request.designator ?? value,
                     );
+                    const by_uuid = request.uuid
+                        ? board_viewer.board.find_footprint(request.uuid)
+                        : null;
+                    const footprint = by_ref ?? by_uuid;
                     if (footprint) {
                         board_viewer.highlight_fp(footprint);
                         if (request.mode !== "hover") {
@@ -368,6 +443,20 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     public loaded: boolean;
 
     /**
+     * When set, the viewer suppresses its own built-in chrome — the
+     * properties/objects/nets panels, the layer "fitter" tab-view, and the
+     * bottom-left badge — leaving just the canvas. This lets a host application
+     * render its own UI over a bare viewer without fighting the built-in panels.
+     */
+    @attribute({ type: Boolean })
+    public "hide-chrome": boolean;
+
+    // The page the host last requested via showPage()/switchPage(). Re-applied
+    // after the project finishes loading so a post-init auto-load can't override
+    // the caller's choice.
+    #desired_page?: string;
+
+    /**
      * Move the camera to a specific location (in world coordinates)
      */
     public zoomToLocation(x: number, y: number): void {
@@ -386,20 +475,222 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         if (this.#schematic_app?.viewer) {
             moveCamera(this.#schematic_app.viewer);
         }
+        this.#emit_camera_change();
+    }
+
+    // ------------------------------------------------------------------
+    // Focus API
+    // ------------------------------------------------------------------
+
+    /**
+     * Fit the active viewer's camera to a world-space bbox and resolve with the
+     * settled camera (the bbox setter defers the zoom/center computation to the
+     * next paint, so we sample it a frame later).
+     */
+    public async focusBBox(
+        x: number,
+        y: number,
+        w: number,
+        h: number,
+    ): Promise<CameraState | null> {
+        const v = this.#active_inner_viewer();
+        const cam = v?.viewport?.camera;
+        if (!cam) return null;
+        cam.bbox = new BBox(x, y, w, h);
+        v.draw?.();
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        this.#emit_camera_change();
+        return this.camera;
     }
 
     /**
-     * Switch to a specific schematic page (by filename or sheet path)
+     * Focus an item by uuid: resolve its bbox inside the active viewer, fit the
+     * camera to it (grown a little), and optionally select/highlight it.
+     * Resolves with the settled camera, or null if the item can't be resolved.
      */
-    public switchPage(pageId: string): boolean {
-        if (!this.#schematic_app) return false;
-        const page = this.#project.pages.find(
+    public async focusItem(
+        uuid: string,
+        opts?: { select?: boolean; pad?: number },
+    ): Promise<CameraState | null> {
+        const v: any = this.#active_inner_viewer();
+        if (!v) return null;
+        const pad = opts?.pad ?? 20;
+        const bbox =
+            v.schematic_renderer?.get_item_bbox?.(uuid) ??
+            v.get_item_bbox?.(uuid) ??
+            null;
+        if (!bbox) return null;
+        v.viewport.camera.bbox = bbox.grow(pad);
+        if (opts?.select && typeof v.paint_selected === "function") {
+            v.paint_selected(bbox);
+        }
+        v.draw?.();
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        this.#emit_camera_change();
+        return this.camera;
+    }
+
+    /**
+     * Convenience cross-probe: focus + highlight by designator/uuid in the
+     * ACTIVE viewer. Structured hosts should prefer requestCrossProbe().
+     */
+    public async crossProbe(reference: string): Promise<CameraState | null> {
+        const v: any = this.#active_inner_viewer();
+        if (!v) return null;
+
+        const board = v.board as
+            | {
+                  find_footprint?: (
+                      r: string,
+                  ) => { uuid?: string; bbox?: BBox } | null;
+              }
+            | undefined;
+        if (board?.find_footprint) {
+            const fp = board.find_footprint(reference);
+            if (!fp?.bbox) return null;
+            if (typeof v.highlight_fp === "function") v.highlight_fp(fp);
+            const b = fp.bbox;
+            v.viewport.camera.bbox = b.grow(b.w * 0.5, b.h * 0.5);
+            v.draw?.();
+            await new Promise<void>((r) => requestAnimationFrame(() => r()));
+            this.#emit_camera_change();
+            return this.camera;
+        }
+
+        const doc = v.document as
+            | { find_symbol?: (r: string) => { uuid?: string } | null }
+            | undefined;
+        if (doc?.find_symbol) {
+            const sym = doc.find_symbol(reference);
+            if (!sym?.uuid) return null;
+            return this.focusItem(sym.uuid, { select: true });
+        }
+
+        return null;
+    }
+
+    // ------------------------------------------------------------------
+    // Camera API (value-based seam)
+    // ------------------------------------------------------------------
+
+    /** The inner viewer for the currently-active tab (or the only loaded one). */
+    #active_inner_viewer(): any | null {
+        const v =
+            this.#active_tab === TabKind.pcb && this.#board_app?.viewer
+                ? this.#board_app.viewer
+                : this.#active_tab === TabKind.sch && this.#schematic_app?.viewer
+                  ? this.#schematic_app.viewer
+                  : (this.#board_app?.viewer ??
+                    this.#schematic_app?.viewer ??
+                    null);
+        this.#ensure_camera_hook(this.#board_app?.viewer);
+        this.#ensure_camera_hook(this.#schematic_app?.viewer);
+        return v;
+    }
+
+    /**
+     * Idempotently wrap a viewer's `on_viewport_change` so any camera move
+     * (user pan/zoom included) re-emits a `camerachange` event on the host.
+     */
+    #ensure_camera_hook(viewer: any | undefined): void {
+        if (!viewer || viewer.__camerachange_hooked) return;
+        if (typeof viewer.on_viewport_change !== "function") return;
+        const orig = viewer.on_viewport_change.bind(viewer);
+        viewer.on_viewport_change = () => {
+            orig();
+            this.#emit_camera_change();
+        };
+        viewer.__camerachange_hooked = true;
+    }
+
+    public get camera(): CameraState | null {
+        const v = this.#active_inner_viewer();
+        const cam = v?.viewport?.camera;
+        if (!cam) return null;
+        return {
+            x: cam.center.x,
+            y: cam.center.y,
+            zoom: cam.zoom,
+            rotation: cam.rotation?.radians ?? 0,
+        };
+    }
+
+    public set camera(state: CameraState | null) {
+        if (!state) return;
+        const v = this.#active_inner_viewer();
+        const cam = v?.viewport?.camera;
+        if (!cam) return;
+        cam.center.set(state.x, state.y);
+        cam.zoom = state.zoom;
+        if (state.rotation != null && cam.rotation)
+            cam.rotation.radians = state.rotation;
+        v.draw?.();
+        this.#emit_camera_change();
+    }
+
+    /** Dispatch a composed `camerachange` event carrying the current camera. */
+    #emit_camera_change = () => {
+        const detail = this.camera;
+        if (!detail) return;
+        this.dispatchEvent(
+            new CustomEvent("camerachange", {
+                detail,
+                bubbles: true,
+                composed: true,
+            }),
+        );
+    };
+
+    /**
+     * Resolves once the project has finished loading (parse + first paint).
+     */
+    public get ready(): Promise<void> {
+        return this.#project.loaded.then(() => undefined);
+    }
+
+    #resolve_schematic_page(pageId: string) {
+        return this.#project.pages.find(
             (candidate) =>
                 candidate.project_path === pageId ||
                 candidate.filename === pageId ||
                 candidate.name === pageId ||
                 candidate.page === pageId,
         );
+    }
+
+    /**
+     * Switch the schematic view to a specific page and resolve once applied.
+     * Awaits project readiness first. Uses the instance-tree page model.
+     */
+    public async showPage(pageId: string): Promise<void> {
+        this.#desired_page = pageId;
+        await this.ready;
+        await this.#apply_desired_page();
+    }
+
+    async #apply_desired_page(): Promise<void> {
+        const pageId = this.#desired_page;
+        if (!pageId || !this.#schematic_app) return;
+        const page = this.#resolve_schematic_page(pageId);
+        if (!page) {
+            console.warn(`showPage: Could not find page with ID ${pageId}`);
+            return;
+        }
+        if (this.#active_tab !== TabKind.sch && this.has_sch) {
+            await this.#switchToTab(TabKind.sch);
+        }
+        this.#activate_schematic_page(page.project_path);
+    }
+
+    /**
+     * Switch to a specific schematic page (by filename or sheet path).
+     * Synchronous path used by Prism today; also records the desired page for
+     * post-load reconcile.
+     */
+    public switchPage(pageId: string): boolean {
+        this.#desired_page = pageId;
+        if (!this.#schematic_app) return false;
+        const page = this.#resolve_schematic_page(pageId);
         if (!page) {
             console.warn(`switchPage: Could not find page with ID ${pageId}`);
             return false;
@@ -1214,6 +1505,13 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             );
             await this.update();
             this.#project.on_loaded();
+            // If the host already asked for a specific page via showPage/switchPage,
+            // re-apply it after the post-load auto-activate of the root sheet.
+            if (this.#desired_page) void this.#apply_desired_page();
+            this.#ensure_camera_hook(this.#board_app?.viewer);
+            this.#ensure_camera_hook(this.#schematic_app?.viewer);
+            // Post-load autofit / first paint should notify camera consumers.
+            this.#emit_camera_change();
         } catch (error) {
             console.error(
                 "[ECadViewer] Error while setting up project:",
@@ -1301,20 +1599,28 @@ export class ECadViewer extends KCUIElement implements InputContainer {
 
     #relay_board_selection(event: Event) {
         event.stopPropagation();
-        const item = (event as KiCanvasSelectEvent).detail.item;
+        const select = event as KiCanvasSelectEvent;
+        const item = select.detail.item;
         if (!item) return;
         const viewer = this.#safe_board_viewer();
         const board = viewer?.board;
         if (!board) return;
-        const detail = normalize_board_selection(item, board);
+        let detail = normalize_board_selection(item, board);
         if (!detail) return;
         this.#attach_item_bounds_pcb(detail, item, viewer!);
+        const intent = select.detail.intent ?? "select";
+        if (intent === "crossprobe") {
+            detail = promote_pad_to_net_detail(detail);
+            this.dispatchEvent(new EcadCrossProbeEvent(detail));
+            return;
+        }
         this.dispatchEvent(new EcadSemanticSelectionEvent(detail));
     }
 
     #relay_schematic_selection(event: Event) {
         event.stopPropagation();
-        const item = (event as KiCanvasSelectEvent).detail.item;
+        const select = event as KiCanvasSelectEvent;
+        const item = select.detail.item;
         if (!item) return;
         const viewer = this.#safe_schematic_viewer();
         const schematic = viewer?.schematic;
@@ -1322,6 +1628,11 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         const detail = normalize_schematic_selection(item, schematic);
         if (!detail) return;
         this.#attach_item_bounds_sch(detail, item, viewer!);
+        const intent = select.detail.intent ?? "select";
+        if (intent === "crossprobe") {
+            this.dispatchEvent(new EcadCrossProbeEvent(detail));
+            return;
+        }
         this.dispatchEvent(new EcadSemanticSelectionEvent(detail));
     }
 
@@ -1402,13 +1713,27 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         if (!viewer) return false;
 
         let sheet = request.sheet ?? request.page;
-        let uuid = request.uuid;
+        // Semantic indexes sometimes use "/" as a root sentinel — that is not
+        // a loadable schematic filename.
+        if (sheet === "/" || sheet === "") sheet = undefined;
+        let uuid = request.uuid ?? request.uuids?.[0];
         if (request.kind === "net") {
-            const ref = this.#project.find_labels_by_name(
-                request.net ?? value,
-            )?.[0];
+            const refs =
+                this.#project.find_labels_by_name(request.net ?? value) ?? [];
+            // Deterministic: prefer requested sheet, else first by sheet name.
+            const preferred = sheet;
+            const sorted = [...refs].sort((a, b) =>
+                (a.sheet_name || "").localeCompare(b.sheet_name || ""),
+            );
+            const ref =
+                (preferred
+                    ? sorted.find((entry) => entry.sheet_name === preferred)
+                    : undefined) ?? sorted[0];
             sheet ??= ref?.sheet_name;
+            if (sheet === "/" || sheet === "") sheet = undefined;
             uuid ??= ref?.uuid;
+            // Fall back to any provided wire/label uuid list from the host.
+            uuid ??= request.uuids?.find(Boolean);
         } else if (!uuid) {
             for (const schematic of this.#project.schematics()) {
                 const symbol = schematic.find_symbol(
@@ -1420,14 +1745,34 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 break;
             }
         }
-        if (!uuid) return false;
+        if (!uuid) {
+            return false;
+        }
 
-        const focus = () => viewer.zoom_fit_item(uuid!);
+        const focus = () => {
+            const candidates = [
+                uuid!,
+                ...(request.uuids ?? []).filter((id) => id && id !== uuid),
+            ];
+            for (const id of candidates) {
+                const bbox = viewer.schematic_renderer.get_item_bbox(id);
+                if (bbox) {
+                    viewer.zoom_fit_item(id);
+                    return;
+                }
+            }
+        };
         if (sheet && sheet !== viewer.sch_name) {
-            const target = this.#project.file_by_name(sheet);
-            if (!(target instanceof KicadSch)) return false;
-            void viewer.load(target).then(focus);
-            return true;
+            const page = this.#resolve_schematic_page(sheet);
+            const target =
+                (page?.document instanceof KicadSch ? page.document : null) ??
+                this.#project.file_by_name(sheet);
+            if (target instanceof KicadSch) {
+                if (page) this.#activate_schematic_page(page.project_path);
+                void viewer.load(target).then(focus);
+                return true;
+            }
+            // Invalid sheet sentinel — still focus on the current sheet.
         }
         focus();
         return true;
@@ -1535,6 +1880,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             });
             this.#tab_contents[tab.current]?.classList.add("active");
             this.#apply_viewer_activity();
+            this.#ensure_camera_hook(this.#board_app?.viewer);
+            this.#ensure_camera_hook(this.#schematic_app?.viewer);
+            this.#emit_camera_change();
 
             if (tab.current === TabKind.step) {
                 if (this.#ov_d_app) {
@@ -1707,13 +2055,36 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 ${HQ_LOGO}
             </a>
         </div>` as HTMLElement;
-        return html` ${this.#content} ${this.#spinner} `;
+
+        // Optional headless mode: suppress the viewer's own built-in chrome so a
+        // host app can render its own UI over a bare canvas. Nested shadow-root
+        // chrome is toggled via the `headless` flag on inner apps.
+        const chrome_style = this["hide-chrome"]
+            ? (html`<style>
+                  tab-header,
+                  .bottom-left-icon {
+                      display: none !important;
+                  }
+              </style>` as HTMLStyleElement)
+            : "";
+        if (this["hide-chrome"]) {
+            if (this.#board_app)
+                (this.#board_app as unknown as { headless?: boolean }).headless =
+                    true;
+            if (this.#schematic_app)
+                (
+                    this.#schematic_app as unknown as { headless?: boolean }
+                ).headless = true;
+        }
+        return html` ${chrome_style} ${this.#content} ${this.#spinner} `;
     }
 
     override renderedCallback() {
         window.requestAnimationFrame(() => {
             this.#apply_viewer_activity();
             this.#restore_overlay_scenes();
+            this.#ensure_camera_hook(this.#board_app?.viewer);
+            this.#ensure_camera_hook(this.#schematic_app?.viewer);
         });
     }
 }
@@ -1735,8 +2106,10 @@ class EcadSourceElement extends CustomElement {
 window.customElements.define("ecad-source", EcadSourceElement);
 
 class EcadBlobElement extends CustomElement {
-    constructor() {
-        super();
+    // Attributes must not be set in the constructor — React's
+    // document.createElement("ecad-blob") throws NotSupportedError otherwise.
+    override connectedCallback() {
+        super.connectedCallback?.();
         this.ariaHidden = "true";
         this.hidden = true;
         this.style.display = "none";

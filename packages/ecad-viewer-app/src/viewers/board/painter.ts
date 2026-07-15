@@ -720,7 +720,7 @@ export class BoardPainter extends DocumentPainter {
         this.clear_interactive();
 
         const mask = this.layers.selection_mask;
-        mask.color = new Color(0, 0.72, 1, 0.42);
+        mask.color = new Color(0, 0.85, 1, 0.55);
         this.gfx.start_layer(mask.name);
         this.paint_item(mask, fp);
         mask.graphics = this.gfx.end_layer();
@@ -728,7 +728,22 @@ export class BoardPainter extends DocumentPainter {
 
         const outline = this.layers.selection_fg;
         this.gfx.start_layer(outline.name);
-        this.gfx.line(Polyline.from_BBox(fp.bbox.grow(0.3), 0.3, Color.cyan));
+        this.gfx.line(Polyline.from_BBox(fp.bbox.grow(0.15), 0.25, Color.cyan));
+        outline.graphics = this.gfx.end_layer();
+        outline.graphics.composite_operation = "source-over";
+    }
+
+    /**
+     * Light single-click selection: green bounding outline only (no hatch).
+     * Cross-probe uses {@link paint_footprint} for the stronger cyan hatch.
+     */
+    outline_footprint(fp: board_items.Footprint) {
+        this.clear_interactive();
+        const outline = this.layers.selection_fg;
+        this.gfx.start_layer(outline.name);
+        this.gfx.line(
+            Polyline.from_BBox(fp.bbox.grow(0.35), 0.25, Color.green),
+        );
         outline.graphics = this.gfx.end_layer();
         outline.graphics.composite_operation = "source-over";
     }

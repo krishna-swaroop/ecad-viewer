@@ -66,10 +66,18 @@ export class BoardViewer extends DocumentViewer<
         this.#zones_visibility.clear();
     }
 
+    #crossprobe:
+        | { kind: "fp"; fp: board_items.Footprint }
+        | { kind: "net"; num: number }
+        | null = null;
+
     public highlight_net(num: number | null, emit_selection = true) {
         this.#restore_native_layers();
         this.#restore_zone_layers();
         this.#layer_visibility_ctrl?.clear_highlight();
+        // Force a fresh paint even when re-applying the same net (e.g. after the
+        // host tab becomes visible and WebGL selection layers need rebuilding).
+        if (num != null) this.painter.filter_net = null;
         if (
             this.painter.paint_net(
                 this.board,
@@ -98,6 +106,11 @@ export class BoardViewer extends DocumentViewer<
         }
     }
     protected override on_document_clicked(): void {
+        // Cross-probe / Focus is sticky until Esc or an explicit clear_selection.
+        // Document clicks (tab UI, 3D/SCH canvas) must not wipe a probe that was
+        // just applied from another view — that was showing as "frame only".
+        if (this.#crossprobe) return;
+
         if (this.#should_restore_visibility) {
             this.#restore_native_layers();
             this.painter.clear_interactive();
@@ -115,6 +128,7 @@ export class BoardViewer extends DocumentViewer<
     }
 
     public highlight_fp(fp: board_items.Footprint) {
+        this.#crossprobe = { kind: "fp", fp };
         this.#restore_native_layers();
         if (!this.#zones_visibility.size)
             for (const layer of this.layers.zone_layers()) {
@@ -125,7 +139,18 @@ export class BoardViewer extends DocumentViewer<
         this.draw();
     }
 
+    /** Single-click selection: green outline only (no hatch / zone hide). */
+    public outline_fp(fp: board_items.Footprint) {
+        this.#crossprobe = null;
+        this.#restore_native_layers();
+        this.#restore_zone_layers();
+        this.painter.filter_net = null;
+        this.painter.outline_footprint(fp);
+        this.draw();
+    }
+
     public focus_net(num: number | null, emit_selection = true) {
+        this.#crossprobe = num != null ? { kind: "net", num } : null;
         this.highlight_net(num, emit_selection);
         const net_bbox = this.painter.net_bbox;
         if (net_bbox) {
@@ -137,12 +162,51 @@ export class BoardViewer extends DocumentViewer<
     }
 
     public clear_selection() {
+        this.#crossprobe = null;
         this.#restore_native_layers();
         this.#restore_zone_layers();
         this.painter.filter_net = null;
         this.painter?.clear_interactive();
         this.layers?.highlight(null);
         this.draw();
+    }
+
+    /**
+     * Hidden Prism tabs still receive cross-probe paints, but WebGL layers can
+     * be empty until the canvas is visible. Re-bake the last probe on activate.
+     */
+    public override set_active(active: boolean) {
+        super.set_active(active);
+        if (!active || !this.#crossprobe) return;
+        // Defer one frame so any document-click handlers from the tab switch
+        // run first; then re-bake Focus/hatch on a visible canvas.
+        const probe = this.#crossprobe;
+        requestAnimationFrame(() => {
+            if (this.#crossprobe !== probe) return;
+            if (probe.kind === "fp") {
+                this.highlight_fp(probe.fp);
+                return;
+            }
+            this.painter.filter_net = null;
+            this.highlight_net(probe.num, false);
+            const net_bbox = this.painter.net_bbox;
+            if (net_bbox) {
+                this.viewport.camera.bbox = net_bbox.grow(
+                    net_bbox.w * 0.5,
+                    net_bbox.h * 0.5,
+                );
+            }
+        });
+    }
+
+    #resolve_footprint(item: unknown): board_items.Footprint | null {
+        let node = item as { typeId?: string; parent?: unknown } | null | undefined;
+        for (let i = 0; node && i < 8; i++) {
+            if (node.typeId === "Footprint")
+                return node as unknown as board_items.Footprint;
+            node = node.parent as typeof node;
+        }
+        return null;
     }
 
     override on_click(pos: Vec2, event?: MouseEvent): void {
@@ -152,10 +216,19 @@ export class BoardViewer extends DocumentViewer<
             if (items.length == 1) {
                 const it = items[0];
                 if (it) {
+                    // Outline only when the hit is the footprint itself — pad/track
+                    // single-click is panel selection without component outline.
+                    if (
+                        it.item &&
+                        (it.item as { typeId?: string }).typeId === "Footprint"
+                    ) {
+                        this.outline_fp(it.item as board_items.Footprint);
+                    }
                     this.dispatchEvent(
                         new KiCanvasSelectEvent({
                             item: it.item,
                             previous: null,
+                            intent: "select",
                         }),
                     );
                     this.dispatchEvent(
@@ -169,6 +242,7 @@ export class BoardViewer extends DocumentViewer<
                     new KiCanvasSelectEvent({
                         item: null,
                         previous: null,
+                        intent: "select",
                     }),
                 );
                 this.dispatchEvent(
@@ -236,17 +310,42 @@ export class BoardViewer extends DocumentViewer<
 
     override on_dblclick(pos: Vec2): void {
         const items = this.find_items_under_pos(pos);
+        if (items.length === 0) return;
+        const it = items[0]!;
 
-        if (items.length > 0) {
-            {
-                const it = items[0]!;
-                if (it.net) {
-                    this.highlight_net(it.net);
-                } else if (it.item?.typeId === "Footprint") {
-                    this.painter.filter_net = null;
-                    this.highlight_fp(it.item as board_items.Footprint);
-                }
-            }
+        // Pad / track / via / zone → net cross-probe (dimmed copper + host event).
+        if (it.net) {
+            this.focus_net(it.net, false);
+            this.dispatchEvent(
+                new KiCanvasSelectEvent({
+                    item: {
+                        net: this.board.getNetName(it.net),
+                        ...this.#net_info.get(it.net),
+                    },
+                    previous: null,
+                    intent: "crossprobe",
+                }),
+            );
+            return;
+        }
+
+        const fp = this.#resolve_footprint(it.item);
+        if (fp) {
+            this.painter.filter_net = null;
+            this.highlight_fp(fp);
+            const b = fp.bbox;
+            this.viewport.camera.bbox = b.grow(
+                Math.max(b.w * 0.5, 4),
+                Math.max(b.h * 0.5, 4),
+            );
+            this.draw();
+            this.dispatchEvent(
+                new KiCanvasSelectEvent({
+                    item: fp,
+                    previous: null,
+                    intent: "crossprobe",
+                }),
+            );
         }
     }
     override type: ViewerType = ViewerType.PCB;

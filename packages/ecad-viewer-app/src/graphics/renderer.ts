@@ -53,6 +53,9 @@ export abstract class Renderer implements IDisposable {
 
     abstract dispose(): void;
 
+    /** Optional: fired when canvas backing size changes (ResizeObserver). */
+    on_resize?: () => void;
+
     protected prep_image(
         image_or_img: Image | HTMLImageElement,
         x?: number,

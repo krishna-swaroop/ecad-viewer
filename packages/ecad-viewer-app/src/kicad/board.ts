@@ -185,7 +185,80 @@ export class KicadPCB implements BoardNode {
 
         this.groups = data.groups?.map((g) => new Group(g)) ?? [];
 
-        for (const net of this.nets) this.#net_names.set(net.number, net.name);
+        this.#normalize_nets();
+    }
+
+    /**
+     * KiCad 9+/10 boards often omit the top-level `(net N "name")` table and
+     * store net *names* on copper (`(net "GND")`). Intern those names into a
+     * stable numeric table so Focus / paint_net keep working.
+     */
+    #normalize_nets() {
+        const by_name = new Map<string, number>();
+        let next = 1;
+        for (const net of this.nets) {
+            if (net.name) by_name.set(net.name, net.number || 0);
+            if ((net.number || 0) >= next) next = net.number + 1;
+        }
+        for (const net of this.nets) {
+            if (!net.name) continue;
+            if (!net.number) {
+                const existing = by_name.get(net.name);
+                if (existing) net.number = existing;
+                else {
+                    net.number = next++;
+                    by_name.set(net.name, net.number);
+                }
+            } else {
+                by_name.set(net.name, net.number);
+            }
+            this.#net_names.set(net.number, net.name);
+        }
+
+        const intern = (name: string): number => {
+            const existing = by_name.get(name);
+            if (existing) return existing;
+            const code = next++;
+            by_name.set(name, code);
+            this.nets.push(new Net({ number: code, name }));
+            this.#net_names.set(code, name);
+            return code;
+        };
+
+        const coerce = (value: number | string | undefined | null): number => {
+            if (typeof value === "number") return value;
+            if (typeof value === "string" && value) return intern(value);
+            return 0;
+        };
+
+        for (const segment of this.segments) {
+            segment.net = coerce(segment.net as number | string);
+        }
+        for (const via of this.vias) {
+            via.net = coerce(via.net as number | string);
+        }
+        for (const zone of this.zones) {
+            if (typeof (zone as { net?: number | string }).net === "string") {
+                const name = (zone as { net: string }).net;
+                zone.net = intern(name);
+                zone.net_name = zone.net_name || name;
+            } else {
+                zone.net = coerce(zone.net);
+                if (!zone.net_name && zone.net) {
+                    zone.net_name = this.#net_names.get(zone.net) ?? "";
+                } else if (zone.net_name && !zone.net) {
+                    zone.net = intern(zone.net_name);
+                }
+            }
+        }
+        for (const footprint of this.footprints) {
+            for (const pad of footprint.pads ?? []) {
+                if (!pad.net) continue;
+                if (pad.net.name) {
+                    pad.net.number = intern(pad.net.name);
+                }
+            }
+        }
     }
 
     *items() {
@@ -279,7 +352,8 @@ export class LineSegment implements BoardNode {
         this.end = new Vec2(data.end.x, data.end.y);
         this.width = data.width;
         this.layer = data.layer;
-        this.net = data.net;
+        // May be a net name string until KicadPCB.#normalize_nets runs.
+        this.net = data.net as number;
         this.locked = data.locked;
         this.tstamp = data.tstamp ?? "";
         this.uuid = data.uuid;
@@ -303,7 +377,7 @@ export class ArcSegment implements BoardNode {
         this.end = new Vec2(data.end.x, data.end.y);
         this.width = data.width;
         this.layer = data.layer;
-        this.net = data.net;
+        this.net = data.net as number;
         this.locked = data.locked;
         this.tstamp = data.tstamp ?? "";
     }
@@ -353,7 +427,7 @@ export class Via implements BoardNode {
         this.keep_end_layers = data.keep_end_layers;
         this.locked = data.locked;
         this.free = data.free;
-        this.net = data.net;
+        this.net = data.net as number;
         this.tstamp = data.tstamp ?? "";
         this.uuid = data.uuid;
     }
@@ -407,8 +481,11 @@ export class Zone implements BoardNode {
         public parent?: KicadPCB | Footprint,
     ) {
         this.locked = data.locked;
-        this.net = data.net;
-        this.net_name = data.net_name;
+        this.net = data.net as number;
+        this.net_name =
+            data.net_name ||
+            (typeof data.net === "string" ? data.net : "") ||
+            "";
         this.name = data.name;
         this.layer = data.layer;
         this.layers = data.layers;

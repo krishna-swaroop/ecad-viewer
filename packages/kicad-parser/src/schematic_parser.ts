@@ -15,6 +15,7 @@ import {
 } from "./common";
 import { listify, type List } from "./tokenizer";
 import { serializeSchematic, serializeLibSymbol } from "./schematic_serializer";
+import { ecadPerfLog, isEcadPerfLogEnabled } from "./perf_log";
 
 function parseFill(expr: Parseable): S.I_Fill {
     const parsed = parse_expr(
@@ -666,11 +667,15 @@ export {
 };
 export class SchematicParser {
     public parse(text: string): S.I_KicadSch {
+        const want_breakdown =
+            isEcadPerfLogEnabled() && text.length > 1_000_000;
+        const t0 = want_breakdown ? performance.now() : 0;
         const expr = listify(text);
+        const t1 = want_breakdown ? performance.now() : 0;
         const root =
             expr.length === 1 && Array.isArray(expr[0]) ? expr[0] : expr;
 
-        return parse_expr(
+        const result = parse_expr(
             root,
             P.start("kicad_sch"),
             P.pair("version", T.number),
@@ -727,6 +732,13 @@ export class SchematicParser {
             P.item("symbol_instances", parseSymbolInstances),
             P.collection("sheets", "sheet", T.item(parseSchematicSheet)),
         ) as unknown as S.I_KicadSch;
+        if (want_breakdown) {
+            const t2 = performance.now();
+            ecadPerfLog(
+                `SCH breakdown  ${(text.length / 1_048_576).toFixed(1)}MB  listify=${(t1 - t0).toFixed(0)}ms  parse_expr=${(t2 - t1).toFixed(0)}ms`,
+            );
+        }
+        return result;
     }
 
     public save(schematic: S.I_KicadSch): string {

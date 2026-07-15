@@ -23,9 +23,13 @@ export class KiCanvasLoadEvent extends KiCanvasEvent<null> {
     }
 }
 
+export type KiCanvasSelectIntent = "select" | "crossprobe";
+
 interface SelectDetails {
     item: unknown;
     previous: unknown;
+    /** Host policy: panel-only select vs full cross-probe. Defaults to select. */
+    intent?: KiCanvasSelectIntent;
 }
 
 interface SelectedItems {

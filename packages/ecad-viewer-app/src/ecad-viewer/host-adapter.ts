@@ -60,6 +60,8 @@ export type EcadCrossProbeRequest = {
     netCode?: number;
     crossIndex?: string;
     uuid?: string;
+    /** Additional SCH net item uuids (wires/labels) for deterministic focus. */
+    uuids?: string[];
     pin?: string;
 };
 
@@ -77,6 +79,44 @@ export class EcadSemanticSelectionEvent extends CustomEvent<EcadSemanticSelectio
             composed: true,
         });
     }
+}
+
+/**
+ * Dispatched for intentional cross-probe (SCH/PCB double-click). Hosts should
+ * mirror this into other viewers; plain `ecad-viewer:selection` is panel-only.
+ */
+export class EcadCrossProbeEvent extends CustomEvent<EcadSemanticSelectionDetail> {
+    static readonly type = "ecad-viewer:crossprobe";
+
+    constructor(detail: EcadSemanticSelectionDetail) {
+        super(EcadCrossProbeEvent.type, {
+            detail,
+            bubbles: true,
+            composed: true,
+        });
+    }
+}
+
+/** Promote pad/track/via/zone selections to a net detail for cross-probe. */
+export function promote_pad_to_net_detail(
+    detail: EcadSemanticSelectionDetail,
+): EcadSemanticSelectionDetail {
+    if (!detail.net) return detail;
+    const net_items = new Set(["pad", "track", "via", "zone", "terminal"]);
+    if (!net_items.has(detail.itemType)) return detail;
+    return {
+        sourceContext: detail.sourceContext,
+        itemType: "net",
+        net: detail.net,
+        netCode: detail.netCode,
+        uuid: detail.uuid,
+        sheet: detail.sheet,
+        page: detail.page,
+        layer: detail.layer,
+        x: detail.x,
+        y: detail.y,
+        bounds: detail.bounds,
+    };
 }
 
 const source_uuid = (item: object): string | undefined => {

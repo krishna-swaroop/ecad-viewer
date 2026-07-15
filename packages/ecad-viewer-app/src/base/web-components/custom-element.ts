@@ -98,10 +98,13 @@ export class CustomElement extends HTMLElement {
 
     async update() {
         this.updateComplete = new DeferredPromise<boolean>();
+        // Render FIRST, then swap. Clearing before the (async) render opens a
+        // race: a second update() during the await leaves two render trees.
+        const content = await this.render();
         while (this.renderRoot.firstChild) {
             this.renderRoot.firstChild.remove();
         }
-        this.renderRoot.appendChild(await this.render());
+        this.renderRoot.appendChild(content);
         this.renderedCallback();
         window.requestAnimationFrame(() => {
             this.updateComplete.resolve(true);

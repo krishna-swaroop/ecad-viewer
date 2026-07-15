@@ -1,6 +1,7 @@
 import * as Comlink from "comlink";
 
 type ParserAPI = {
+    set_perf_log?(enabled: boolean): Promise<void> | void;
     parse_board(buffer: ArrayBuffer): Promise<any>;
     parse_schematic(buffer: ArrayBuffer): Promise<any>;
 };

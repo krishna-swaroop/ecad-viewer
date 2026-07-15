@@ -315,7 +315,8 @@ export interface I_ZoneFill {
 
 export interface I_Zone {
     locked: boolean;
-    net: number;
+    /** Numeric net code, or net name string (KiCad 9+/10). */
+    net: number | string;
     net_name: string;
     name: string;
     layer: string;
@@ -341,7 +342,8 @@ export interface I_LineSegment {
     end: { x: number; y: number };
     width: number;
     layer: string;
-    net: number;
+    /** Numeric net code, or net name string (KiCad 9+/10). */
+    net: number | string;
     locked: boolean;
     tstamp: string;
     uuid?: string;
@@ -353,7 +355,8 @@ export interface I_ArcSegment {
     end: { x: number; y: number };
     width: number;
     layer: string;
-    net: number;
+    /** Numeric net code, or net name string (KiCad 9+/10). */
+    net: number | string;
     locked: boolean;
     tstamp: string;
     uuid?: string;
@@ -369,7 +372,8 @@ export interface I_Via {
     keep_end_layers: boolean;
     locked: boolean;
     free: boolean;
-    net: number;
+    /** Numeric net code, or net name string (KiCad 9+/10). */
+    net: number | string;
     tstamp: string;
     uuid?: string;
 }

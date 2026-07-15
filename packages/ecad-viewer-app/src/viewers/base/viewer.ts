@@ -125,6 +125,9 @@ export abstract class Viewer extends EventTarget {
     async setup() {
         this.renderer = this.disposables.add(this.create_renderer(this.canvas));
 
+        // When the canvas resizes (ResizeObserver, async), redraw at the new size.
+        this.renderer.on_resize = () => this.draw();
+
         await this.renderer.setup();
 
         this.viewport = this.disposables.add(
@@ -206,6 +209,9 @@ export abstract class Viewer extends EventTarget {
     }
 
     protected on_viewport_change() {
+        // SizeObserver updates camera.viewport_size but does not fire window
+        // resize — drop the cached hit-test rect so mouse mapping stays aligned.
+        this.#cached_rect = null;
         if (!this.#active) return;
         this.#overlay_scenes?.refresh_screen_sized();
         if (this.interactive) {
@@ -213,9 +219,30 @@ export abstract class Viewer extends EventTarget {
         }
     }
 
+    #cached_rect: DOMRect | null = null;
+    #rect_invalidator_installed = false;
+
+    #get_canvas_rect(): DOMRect {
+        if (!this.#rect_invalidator_installed) {
+            this.#rect_invalidator_installed = true;
+            const inval = () => {
+                this.#cached_rect = null;
+            };
+            window.addEventListener("scroll", inval, {
+                passive: true,
+                capture: true,
+            });
+            window.addEventListener("resize", inval, { passive: true });
+        }
+        if (this.#cached_rect === null) {
+            this.#cached_rect = this.canvas.getBoundingClientRect();
+        }
+        return this.#cached_rect;
+    }
+
     protected on_mouse_change(e: MouseEvent) {
         if (!this.#active) return;
-        const rect = this.canvas.getBoundingClientRect();
+        const rect = this.#get_canvas_rect();
         this.#mouse_client_pos = new Vec2(e.clientX, e.clientY);
         this.#page_mouse_pos = new Vec2(e.pageX, e.pageY);
         const new_position = this.viewport.camera.screen_to_world(
@@ -234,7 +261,9 @@ export abstract class Viewer extends EventTarget {
             this.dispatchEvent(
                 new KiCanvasMouseMoveEvent(this.#mouse_position),
             );
-            if (this.#hover_frame === null) {
+            // Skip hover hit-test while dragging/panning; coalesce to one/frame.
+            const is_dragging = e.buttons !== 0;
+            if (!is_dragging && this.#hover_frame === null) {
                 this.#hover_frame = requestAnimationFrame(() => {
                     this.#hover_frame = null;
                     if (this.#active) this.on_hover(this.#mouse_position);
@@ -389,6 +418,11 @@ export abstract class Viewer extends EventTarget {
         const camera = this.viewport.camera.matrix;
         const should_dim = this.layers.is_any_layer_highlighted();
 
+        // Skip blending for fully-opaque layers (same visual, less GPU work).
+        const gl = (this.renderer as unknown as { gl?: WebGL2RenderingContext })
+            .gl;
+        let blend_off = false;
+
         for (const layer of this.layers.in_display_order()) {
             if (layer.visible && layer.graphics) {
                 let alpha = layer.opacity;
@@ -397,18 +431,35 @@ export abstract class Viewer extends EventTarget {
                     alpha = 0.25;
                 }
 
+                if (gl) {
+                    const is_opaque = alpha >= 0.999;
+                    if (is_opaque && !blend_off) {
+                        gl.disable(gl.BLEND);
+                        blend_off = true;
+                    } else if (!is_opaque && blend_off) {
+                        gl.enable(gl.BLEND);
+                        blend_off = false;
+                    }
+                }
+
                 layer.graphics.render(camera, depth, alpha);
                 depth += 0.01;
             }
         }
+        if (blend_off && gl) {
+            gl.enable(gl.BLEND);
+        }
     }
 
+    /**
+     * Schedule a repaint. Cross-probe and host selection updates must paint even
+     * when the viewer is host-inactive (hidden Prism tab); otherwise camera
+     * state updates while highlight layers never reach the canvas.
+     */
     public draw() {
-        if (!this.viewport || !this.#active || this.#draw_frame !== null)
-            return;
+        if (!this.viewport || this.#draw_frame !== null) return;
         this.#draw_frame = window.requestAnimationFrame(() => {
             this.#draw_frame = null;
-            if (!this.#active) return;
             this.on_draw();
         });
     }

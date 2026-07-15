@@ -77,8 +77,9 @@ export class Grid {
             return;
         }
 
-        // grow the bbox 20% to improve performance of panning.
-        bbox = bbox.grow(bbox.w * 0.2);
+        // Grow the generated grid region well beyond the viewport so panning
+        // stays inside the cached grid and does NOT re-tessellate every frame.
+        bbox = bbox.grow(bbox.w * 1.5, bbox.h * 1.5);
 
         this.#last_grid_lod = lod;
         this.#last_grid_bbox = bbox;

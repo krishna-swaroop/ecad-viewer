@@ -14,8 +14,7 @@ import {
     parseTitleBlock,
 } from "./common";
 import { listify, type List } from "./tokenizer";
-
-
+import { ecadPerfLog, isEcadPerfLogEnabled } from "./perf_log";
 
 function parseLayer(expr: Parseable): B.I_Layer {
     return parse_expr(
@@ -115,21 +114,44 @@ function parseSetup(expr: Parseable): B.I_Setup {
 }
 
 function parseNet(expr: Parseable): B.I_Net {
-    return parse_expr(
+    // Classic: (net 5 "GND"). KiCad 9+/10 often omit the top-level nets
+    // table entirely and only emit name-form refs elsewhere.
+    const parsed = parse_expr(
         expr,
         P.start("net"),
-        P.positional("number", T.number),
+        P.positional("number_or_name", T.any),
         P.positional("name", T.string),
-    ) as unknown as B.I_Net;
+    ) as { number_or_name?: number | string; name?: string };
+    if (typeof parsed.number_or_name === "number") {
+        return {
+            number: parsed.number_or_name,
+            name: parsed.name ?? "",
+        };
+    }
+    if (typeof parsed.number_or_name === "string") {
+        return { number: 0, name: parsed.number_or_name };
+    }
+    return { number: 0, name: parsed.name ?? "" };
 }
 
 function parseNetReference(expr: Parseable): B.I_Net {
-    return parse_expr(
+    // Classic pad/zone ref: (net 5 "GND"). KiCad 10: (net "GND").
+    const parsed = parse_expr(
         expr,
         P.start("net"),
-        P.positional("number", T.number),
+        P.positional("number_or_name", T.any),
         P.positional("name", T.string),
-    ) as unknown as B.I_Net;
+    ) as { number_or_name?: number | string; name?: string };
+    if (typeof parsed.number_or_name === "number") {
+        return {
+            number: parsed.number_or_name,
+            name: parsed.name ?? "",
+        };
+    }
+    if (typeof parsed.number_or_name === "string") {
+        return { number: 0, name: parsed.number_or_name };
+    }
+    return { number: 0, name: parsed.name ?? "" };
 }
 
 function parseLine(expr: Parseable, start: string): B.I_Line {
@@ -541,7 +563,7 @@ function parseZone(expr: Parseable): B.I_Zone {
         expr,
         P.start("zone"),
         P.atom("locked"),
-        P.pair("net", T.number),
+        P.pair("net", T.net),
         P.pair("net_name", T.string),
         P.pair("name", T.string),
         P.pair("layer", T.string),
@@ -644,7 +666,7 @@ function parseLineSegment(expr: Parseable): B.I_LineSegment {
         P.vec2("end"),
         P.pair("width", T.number),
         P.pair("layer", T.string),
-        P.pair("net", T.number),
+        P.pair("net", T.net),
         P.atom("locked"),
         P.pair("tstamp", T.string),
         P.pair("uuid", T.string),
@@ -660,7 +682,7 @@ function parseArcSegment(expr: Parseable): B.I_ArcSegment {
         P.vec2("end"),
         P.pair("width", T.number),
         P.pair("layer", T.string),
-        P.pair("net", T.number),
+        P.pair("net", T.net),
         P.atom("locked"),
         P.pair("tstamp", T.string),
         P.pair("uuid", T.string),
@@ -679,7 +701,7 @@ function parseVia(expr: Parseable): B.I_Via {
         P.atom("keep_end_layers"),
         P.atom("locked"),
         P.atom("free"),
-        P.pair("net", T.number),
+        P.pair("net", T.net),
         P.pair("tstamp", T.string),
         P.pair("uuid", T.string),
         P.atom("type", ["blind", "micro", "through-hole"]),
@@ -699,13 +721,17 @@ function parseGroup(expr: Parseable): B.I_Group {
 
 export class BoardParser {
     public parse(text: string): B.I_KicadPCB {
+        const want_breakdown =
+            isEcadPerfLogEnabled() && text.length > 1_000_000;
+        const t0 = want_breakdown ? performance.now() : 0;
         const expr = listify(text); // Tokenize and listify here
+        const t1 = want_breakdown ? performance.now() : 0;
         // Need to handle if listify returns a list of expressions or a single root expression.
         // Typically kicad_pcb is the single root.
         const root =
             expr.length === 1 && Array.isArray(expr[0]) ? expr[0] : expr;
 
-        return parse_expr(
+        const result = parse_expr(
             root,
             P.start("kicad_pcb"),
             P.pair("version", T.number),
@@ -743,5 +769,12 @@ export class BoardParser {
             P.collection("drawings", "dimension", T.item(parseDimension)),
             P.collection("groups", "group", T.item(parseGroup)),
         ) as unknown as B.I_KicadPCB;
+        if (want_breakdown) {
+            const t2 = performance.now();
+            ecadPerfLog(
+                `PCB breakdown  ${(text.length / 1_048_576).toFixed(1)}MB  listify=${(t1 - t0).toFixed(0)}ms  parse_expr=${(t2 - t1).toFixed(0)}ms`,
+            );
+        }
+        return result;
     }
 }

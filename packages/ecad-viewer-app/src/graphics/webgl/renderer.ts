@@ -85,6 +85,8 @@ export class WebGL2Renderer extends Renderer {
     }
 
     override dispose() {
+        this.#size_observer?.disconnect();
+        this.#size_observer = undefined;
         for (const layer of this.layers) {
             layer.dispose();
         }
@@ -92,10 +94,26 @@ export class WebGL2Renderer extends Renderer {
         this.#shader_programs.clear();
     }
 
+    #size_dirty = true;
+    #size_observer?: ResizeObserver;
+
     override update_canvas_size() {
         if (!this.gl) {
             return;
         }
+
+        // Avoid getBoundingClientRect() every frame — it forces layout.
+        if (!this.#size_observer) {
+            this.#size_observer = new ResizeObserver(() => {
+                this.#size_dirty = true;
+                this.on_resize?.();
+            });
+            this.#size_observer.observe(this.canvas);
+        }
+        if (!this.#size_dirty) {
+            return;
+        }
+        this.#size_dirty = false;
 
         const dpr = window.devicePixelRatio;
         const rect = this.canvas.getBoundingClientRect();
@@ -108,6 +126,7 @@ export class WebGL2Renderer extends Renderer {
         if (this.canvas_size.x == pixel_w && this.canvas_size.y == pixel_h) {
             return;
         }
+        this.canvas_size.set(pixel_w, pixel_h);
 
         this.canvas.width = pixel_w;
         this.canvas.height = pixel_h;

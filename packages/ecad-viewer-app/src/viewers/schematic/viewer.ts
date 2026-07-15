@@ -66,6 +66,7 @@ export class SchematicViewer extends DocumentViewer<
     static InterActiveBBoxLineWidth = 0.265;
 
     #focus_net_item?: string;
+    #selected_bbox: BBox | null = null;
 
     get sch_name() {
         return this.document.filename;
@@ -109,6 +110,7 @@ export class SchematicViewer extends DocumentViewer<
                 new KiCanvasSelectEvent({
                     item: it,
                     previous: null,
+                    intent: "select",
                 }),
             );
 
@@ -132,6 +134,7 @@ export class SchematicViewer extends DocumentViewer<
         this.paint_selected(ct.bbox);
     }
     override on_dblclick(pos: Vec2): void {
+        // Hierarchical sheet symbols still navigate into the sheet.
         if (this.document.sheets)
             for (const item of this.document.sheets) {
                 if (item.bbox.contains_point(pos) && item.sheetfile) {
@@ -141,9 +144,22 @@ export class SchematicViewer extends DocumentViewer<
                             uuid: item.uuid,
                         }),
                     );
-                    break;
+                    return;
                 }
             }
+
+        const ct = this.find_item(pos);
+        if (!ct.item) return;
+        this.paint_selected(ct.bbox);
+        const uuid = (ct.item as { uuid?: string }).uuid;
+        if (uuid) this.zoom_fit_item(uuid);
+        this.dispatchEvent(
+            new KiCanvasSelectEvent({
+                item: ct.item,
+                previous: null,
+                intent: "crossprobe",
+            }),
+        );
     }
 
     protected override resolve_loaded(value: boolean) {
@@ -253,6 +269,13 @@ export class SchematicViewer extends DocumentViewer<
         }
     }
 
+    public override set_active(active: boolean) {
+        super.set_active(active);
+        if (active && this.#selected_bbox) {
+            this.paint_selected(this.#selected_bbox);
+        }
+    }
+
     protected override create_painter() {
         return new SchematicPainter(this.renderer, this.layers, this.theme);
     }
@@ -262,6 +285,7 @@ export class SchematicViewer extends DocumentViewer<
     }
 
     protected paint_selected(selected: BBox | null) {
+        this.#selected_bbox = selected;
         const layer = this.layers.selection_bg;
 
         layer.clear();
