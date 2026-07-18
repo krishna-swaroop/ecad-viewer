@@ -549,7 +549,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.#document_comparison_cache.set(prepared.document.path, {
             preparation: result,
             presentation,
-            comparisonDocument,
+            comparisonDocument: comparison_document,
         });
         this.#document_comparison = result;
         ecadPerfLog(
