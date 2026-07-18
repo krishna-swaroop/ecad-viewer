@@ -345,6 +345,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         }
     >();
     #document_comparison_request_id = 0;
+    #document_comparison_load_generation = 0;
     static readonly #DIFF_SELECTION_CHANNEL = ":document-diff:selection";
     get project() {
         return this.#project;
@@ -394,6 +395,15 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         request: EcadDocumentComparisonRequest,
     ): Promise<EcadDocumentComparisonPreparation> {
         const started = performance.now();
+        const load_generation = ++this.#document_comparison_load_generation;
+        const assert_current = () => {
+            if (load_generation !== this.#document_comparison_load_generation) {
+                throw new DOMException(
+                    "Document comparison load was superseded",
+                    "AbortError",
+                );
+            }
+        };
         const prepared = prepareComparisonDocument(
             request.diff,
             request.documentPath,
@@ -431,6 +441,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 cached.comparisonDocument as never,
                 cached.presentation,
             );
+            assert_current();
             const result = {
                 ...cached.preparation,
                 prepareMs: performance.now() - started,
@@ -451,6 +462,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 }),
                 this.replaceSources(request.comparison),
             ]);
+            assert_current();
             this.#document_comparison_key = request.comparisonKey;
             this.#document_comparison_revision_keys = {
                 reference: request.reference.revisionKey,
@@ -482,6 +494,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         } else if (this.#active_tab !== TabKind.pcb) {
             await this.#switchToTab(TabKind.pcb);
         }
+        assert_current();
 
         const viewer = this.#viewer_for_context(prepared.context);
         if (!viewer) {
@@ -498,6 +511,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             comparison_document as never,
             presentation,
         );
+        assert_current();
 
         const result: EcadDocumentComparisonPreparation = {
             comparisonKey: request.comparisonKey,
@@ -604,6 +618,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     public clearDocumentComparison(): void {
+        this.#document_comparison_load_generation += 1;
         this.#document_comparison_request_id += 1;
         this.#document_comparison = null;
         this.#document_comparison_key = null;
