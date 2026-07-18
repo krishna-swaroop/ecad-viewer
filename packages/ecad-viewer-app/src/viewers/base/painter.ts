@@ -21,7 +21,6 @@ const DIFF_COLOR_BYPASS_LAYERS = new Set([
     ":SelectionFG",
     ":SelectionMask",
     ":Grid",
-    ":DrawingSheet",
 ]);
 
 /**
