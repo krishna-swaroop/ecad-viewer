@@ -22,6 +22,7 @@ export type EcadDiffResolutionDiagnostic = {
 export type EcadDiffPresentation = {
     signature: string;
     statusByItem: ReadonlyMap<object, EcadDiffPaintStatus>;
+    itemsBySourceId: ReadonlyMap<string, readonly object[]>;
     removedItems: readonly object[];
     diagnostics: readonly EcadDiffResolutionDiagnostic[];
 };
@@ -37,8 +38,6 @@ const STATUS_COLORS: Record<
     modified: Color.from_css("#d9a619"),
     conflict: Color.from_css("#a633b3"),
 };
-
-const NEUTRAL = Color.from_css("#737373");
 
 export function source_id_of(item: unknown): string | undefined {
     if (!item || typeof item !== "object") return undefined;
@@ -112,6 +111,7 @@ export function build_diff_presentation(
     const reference_index = index_paint_items(reference);
     const comparison_index = index_paint_items(comparison);
     const status_by_item = new Map<object, EcadDiffPaintStatus>();
+    const items_by_source_id = new Map<string, readonly object[]>();
     const removed_items: object[] = [];
     const diagnostics: EcadDiffResolutionDiagnostic[] = [];
     const removed_change_ids = new Set(
@@ -145,6 +145,7 @@ export function build_diff_presentation(
         }
 
         status_by_item.set(item, status_for(entry));
+        items_by_source_id.set(entry.sourceId, [item]);
         if (
             entry.category === "removed" &&
             (!entry.parentId || !removed_change_ids.has(entry.parentId))
@@ -166,6 +167,7 @@ export function build_diff_presentation(
     return {
         signature,
         statusByItem: status_by_item,
+        itemsBySourceId: items_by_source_id,
         removedItems: removed_items,
         diagnostics,
     };
@@ -179,7 +181,18 @@ export function build_diff_presentation(
 export function apply_diff_color(
     color: Color,
     status: EcadDiffPaintStatus,
+    background = Color.black,
 ): Color {
-    const target = status === "unchanged" ? NEUTRAL : STATUS_COLORS[status];
+    const background_luminance =
+        background.r * 0.299 + background.g * 0.587 + background.b * 0.114;
+    const monochrome_background = new Color(
+        background_luminance,
+        background_luminance,
+        background_luminance,
+    );
+    const neutral = (
+        background_luminance < 0.5 ? Color.white : Color.black
+    ).mix(monochrome_background, 0.58);
+    const target = status === "unchanged" ? neutral : STATUS_COLORS[status];
     return target.with_alpha(target.a * color.a);
 }

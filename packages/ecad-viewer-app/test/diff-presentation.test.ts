@@ -113,16 +113,32 @@ suite("native diff presentation", () => {
         ]);
     });
 
-    test("uses fixed A/R/M colors while preserving source alpha", () => {
+    test("uses fixed A/R/M colors and contrasting monochrome context", () => {
         const source = Color.from_css("rgba(10, 20, 30, 0.4)");
         const added = apply_diff_color(source, "added");
         const removed = apply_diff_color(source, "removed");
         const modified = apply_diff_color(source, "modified");
-        const unchanged = apply_diff_color(source, "unchanged");
+        const darkContext = apply_diff_color(
+            source,
+            "unchanged",
+            Color.from_css("#001023"),
+        );
+        const lightContext = apply_diff_color(
+            source,
+            "unchanged",
+            Color.from_css("#ffffff"),
+        );
 
         expect(added.to_css()).to.equal("rgba(51, 153, 77, 0.4)");
         expect(removed.to_css()).to.equal("rgba(204, 51, 51, 0.4)");
         expect(modified.to_css()).to.equal("rgba(217, 166, 25, 0.4)");
-        expect(unchanged.to_css()).to.equal("rgba(115, 115, 115, 0.4)");
+        expect(darkContext.r).to.be.greaterThan(0.5);
+        expect(lightContext.r).to.be.lessThan(0.5);
+        expect(darkContext.r).to.equal(darkContext.g);
+        expect(darkContext.g).to.equal(darkContext.b);
+        expect(lightContext.r).to.equal(lightContext.g);
+        expect(lightContext.g).to.equal(lightContext.b);
+        expect(darkContext.a).to.equal(0.4);
+        expect(lightContext.a).to.equal(0.4);
     });
 });

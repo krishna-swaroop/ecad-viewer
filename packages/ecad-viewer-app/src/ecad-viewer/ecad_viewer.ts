@@ -67,10 +67,12 @@ import {
     type EcadDocumentComparisonRequest,
     type EcadDocumentComparisonSelection,
     type EcadDocumentComparisonSelectionResult,
+    type EcadPreparedDiffTarget,
 } from "./document-comparison";
 import { build_diff_presentation } from "../viewers/base/diff-presentation";
 import type { EcadDiffPresentation } from "../viewers/base/diff-presentation";
 import type { PaintableDocument } from "../viewers/base/painter";
+import type { DocumentViewer } from "../viewers/base/document-viewer";
 import { ecadPerfLog } from "../kicanvas/perf_log";
 
 export type {
@@ -327,6 +329,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     #is_full_screen = false;
     #host_active = true;
     #revision_key: string | null = null;
+    #source_manifest_key: string | null = null;
     #source_names = new Set<string>();
     #comment_overlay_scenes = new Map<EcadCommentContext, EcadOverlayScene>();
     #active_schematic_project_path: string | null = null;
@@ -360,9 +363,20 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     public async replaceSources(update: EcadSourceUpdate): Promise<void> {
-        if (this.#revision_key === update.revisionKey && this.loaded) return;
+        const source_manifest_key = update.sources
+            .map((source) => `${source.filename}\0${source.content.length}`)
+            .sort()
+            .join("\0");
+        if (
+            this.#revision_key === update.revisionKey &&
+            this.#source_manifest_key === source_manifest_key &&
+            this.loaded
+        ) {
+            return;
+        }
         this.#project.reset();
         this.#revision_key = update.revisionKey;
+        this.#source_manifest_key = source_manifest_key;
         this.#source_names = new Set(
             update.sources.map((source) => source.filename),
         );
@@ -442,6 +456,11 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 cached.presentation,
             );
             assert_current();
+            this.#hydrate_document_diff_targets(
+                cached.preparation.targets,
+                cached.presentation,
+                viewer,
+            );
             const result = {
                 ...cached.preparation,
                 prepareMs: performance.now() - started,
@@ -512,6 +531,11 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             presentation,
         );
         assert_current();
+        this.#hydrate_document_diff_targets(
+            prepared.targets,
+            presentation,
+            viewer,
+        );
 
         const result: EcadDocumentComparisonPreparation = {
             comparisonKey: request.comparisonKey,
@@ -615,6 +639,44 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         );
         this.dispatchEvent(new EcadDocumentComparisonFrameEvent(result));
         return result;
+    }
+
+    /**
+     * Prefer bounds from the retained native display list over adapter
+     * geometry. This runs once after the comparison document is painted, so a
+     * click only consumes the already-normalized target rectangle.
+     */
+    #hydrate_document_diff_targets(
+        targets: ReadonlyMap<string, EcadPreparedDiffTarget>,
+        presentation: EcadDiffPresentation,
+        viewer: DocumentViewer<any, any, any, any>,
+    ): void {
+        for (const target of targets.values()) {
+            const native_bounds: BBox[] = [];
+            for (const source_id of target.sourceIds) {
+                for (const item of
+                    presentation.itemsBySourceId.get(source_id) ?? []) {
+                    native_bounds.push(
+                        ...viewer.layers.query_item_bboxes(item),
+                    );
+                }
+            }
+            if (!native_bounds.length) continue;
+            const combined = BBox.combine(native_bounds);
+            if (
+                Number.isFinite(combined.x) &&
+                Number.isFinite(combined.y) &&
+                Number.isFinite(combined.w) &&
+                Number.isFinite(combined.h)
+            ) {
+                target.bounds = [
+                    combined.x,
+                    combined.y,
+                    combined.w,
+                    combined.h,
+                ];
+            }
+        }
     }
 
     public clearDocumentComparison(): void {
@@ -803,12 +865,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             }
         };
 
-        if (this.#board_app?.viewer) {
-            moveCamera(this.#board_app.viewer);
-        }
-        if (this.#schematic_app?.viewer) {
-            moveCamera(this.#schematic_app.viewer);
-        }
+        moveCamera(this.#safe_board_viewer());
+        moveCamera(this.#safe_schematic_viewer());
         this.#emit_camera_change();
     }
 
@@ -909,17 +967,16 @@ export class ECadViewer extends KCUIElement implements InputContainer {
 
     /** The inner viewer for the currently-active tab (or the only loaded one). */
     #active_inner_viewer(): any | null {
+        const board_viewer = this.#safe_board_viewer();
+        const schematic_viewer = this.#safe_schematic_viewer();
         const v =
-            this.#active_tab === TabKind.pcb && this.#board_app?.viewer
-                ? this.#board_app.viewer
-                : this.#active_tab === TabKind.sch &&
-                    this.#schematic_app?.viewer
-                  ? this.#schematic_app.viewer
-                  : (this.#board_app?.viewer ??
-                    this.#schematic_app?.viewer ??
-                    null);
-        this.#ensure_camera_hook(this.#board_app?.viewer);
-        this.#ensure_camera_hook(this.#schematic_app?.viewer);
+            this.#active_tab === TabKind.pcb && board_viewer
+                ? board_viewer
+                : this.#active_tab === TabKind.sch && schematic_viewer
+                  ? schematic_viewer
+                  : (board_viewer ?? schematic_viewer);
+        this.#ensure_camera_hook(board_viewer);
+        this.#ensure_camera_hook(schematic_viewer);
         return v;
     }
 
@@ -1229,16 +1286,14 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     ): { x: number; y: number } | null {
         const pos = new Vec2(x, y);
 
-        let viewer: any = null;
-        if (this.#active_tab === TabKind.pcb && this.#board_app) {
-            viewer = this.#board_app.viewer;
-        } else if (this.#active_tab === TabKind.sch && this.#schematic_app) {
-            viewer = this.#schematic_app.viewer;
-        } else {
-            // Fallback
-            viewer = (this.#board_app?.viewer ||
-                this.#schematic_app?.viewer) as any;
-        }
+        const board_viewer = this.#safe_board_viewer();
+        const schematic_viewer = this.#safe_schematic_viewer();
+        const viewer =
+            this.#active_tab === TabKind.pcb
+                ? board_viewer
+                : this.#active_tab === TabKind.sch
+                  ? schematic_viewer
+                  : (board_viewer ?? schematic_viewer);
 
         if (viewer?.viewport?.camera) {
             // Note: Camera2 uses snake_case world_to_screen
@@ -1846,8 +1901,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             // If the host already asked for a specific page via showPage/switchPage,
             // re-apply it after the post-load auto-activate of the root sheet.
             if (this.#desired_page) void this.#apply_desired_page();
-            this.#ensure_camera_hook(this.#board_app?.viewer);
-            this.#ensure_camera_hook(this.#schematic_app?.viewer);
+            this.#ensure_camera_hook(this.#safe_board_viewer());
+            this.#ensure_camera_hook(this.#safe_schematic_viewer());
             // Post-load autofit / first paint should notify camera consumers.
             this.#emit_camera_change();
         } catch (error) {
@@ -2225,8 +2280,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             });
             this.#tab_contents[tab.current]?.classList.add("active");
             this.#apply_viewer_activity();
-            this.#ensure_camera_hook(this.#board_app?.viewer);
-            this.#ensure_camera_hook(this.#schematic_app?.viewer);
+            this.#ensure_camera_hook(this.#safe_board_viewer());
+            this.#ensure_camera_hook(this.#safe_schematic_viewer());
             this.#emit_camera_change();
 
             if (tab.current === TabKind.step) {
@@ -2413,8 +2468,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         window.requestAnimationFrame(() => {
             this.#apply_viewer_activity();
             this.#restore_comment_overlay_scenes();
-            this.#ensure_camera_hook(this.#board_app?.viewer);
-            this.#ensure_camera_hook(this.#schematic_app?.viewer);
+            this.#ensure_camera_hook(this.#safe_board_viewer());
+            this.#ensure_camera_hook(this.#safe_schematic_viewer());
         });
     }
 }
