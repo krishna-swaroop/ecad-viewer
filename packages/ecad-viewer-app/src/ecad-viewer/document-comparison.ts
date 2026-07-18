@@ -49,6 +49,7 @@ export type EcadDocumentComparisonPreparation = {
         reason: "missing-source-id" | "item-not-found";
     }[];
     prepareMs: number;
+    sourceCacheHit: boolean;
 };
 
 export type EcadDocumentComparisonSelectionResult = {

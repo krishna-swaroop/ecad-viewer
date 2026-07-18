@@ -69,6 +69,8 @@ import {
     type EcadDocumentComparisonSelectionResult,
 } from "./document-comparison";
 import { build_diff_presentation } from "../viewers/base/diff-presentation";
+import type { EcadDiffPresentation } from "../viewers/base/diff-presentation";
+import type { PaintableDocument } from "../viewers/base/painter";
 import { ecadPerfLog } from "../kicanvas/perf_log";
 
 export type {
@@ -329,6 +331,19 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     #comment_overlay_scenes = new Map<EcadCommentContext, EcadOverlayScene>();
     #active_schematic_project_path: string | null = null;
     #document_comparison: EcadDocumentComparisonPreparation | null = null;
+    #document_comparison_key: string | null = null;
+    #document_comparison_revision_keys: {
+        reference: string;
+        comparison: string;
+    } | null = null;
+    #document_comparison_cache = new Map<
+        string,
+        {
+            preparation: EcadDocumentComparisonPreparation;
+            presentation: EcadDiffPresentation;
+            comparisonDocument: PaintableDocument & { filename: string };
+        }
+    >();
     #document_comparison_request_id = 0;
     static readonly #DIFF_SELECTION_CHANNEL = ":document-diff:selection";
     get project() {
@@ -385,15 +400,63 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         );
         this.#document_comparison_request_id += 1;
         this.#document_comparison = null;
-        this.#reference_project.reset();
+        const same_sources =
+            this.#document_comparison_key === request.comparisonKey &&
+            this.#document_comparison_revision_keys?.reference ===
+                request.reference.revisionKey &&
+            this.#document_comparison_revision_keys?.comparison ===
+                request.comparison.revisionKey;
+        const cached = same_sources
+            ? this.#document_comparison_cache.get(prepared.document.path)
+            : undefined;
+        if (cached) {
+            const viewer = this.#viewer_for_context(cached.preparation.context);
+            if (!viewer) {
+                throw new Error(
+                    `The ${cached.preparation.context} comparison viewer is not ready`,
+                );
+            }
+            if (
+                cached.preparation.context === "SCH" &&
+                this.#active_tab !== TabKind.sch
+            ) {
+                await this.#switchToTab(TabKind.sch);
+            } else if (
+                cached.preparation.context === "PCB" &&
+                this.#active_tab !== TabKind.pcb
+            ) {
+                await this.#switchToTab(TabKind.pcb);
+            }
+            await viewer.load_diff_document(
+                cached.comparisonDocument as never,
+                cached.presentation,
+            );
+            const result = {
+                ...cached.preparation,
+                prepareMs: performance.now() - started,
+                sourceCacheHit: true,
+            };
+            this.#document_comparison = result;
+            this.dispatchEvent(new EcadDocumentComparisonReadyEvent(result));
+            return result;
+        }
 
-        await Promise.all([
-            this.#reference_project.load({
-                urls: [],
-                blobs: request.reference.sources,
-            }),
-            this.replaceSources(request.comparison),
-        ]);
+        if (!same_sources) {
+            this.#reference_project.reset();
+            this.#document_comparison_cache.clear();
+            await Promise.all([
+                this.#reference_project.load({
+                    urls: [],
+                    blobs: request.reference.sources,
+                }),
+                this.replaceSources(request.comparison),
+            ]);
+            this.#document_comparison_key = request.comparisonKey;
+            this.#document_comparison_revision_keys = {
+                reference: request.reference.revisionKey,
+                comparison: request.comparison.revisionKey,
+            };
+        }
 
         const path = prepared.document.path.replace(/^\.?\//, "");
         const reference_document =
@@ -426,16 +489,15 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 `The ${prepared.context} comparison viewer is not ready`,
             );
         }
-        if (viewer.document !== comparison_document) {
-            await viewer.load(comparison_document as never);
-        }
-
         const presentation = build_diff_presentation(
             prepared.index,
             reference_document,
             comparison_document,
         );
-        viewer.set_diff_presentation(presentation);
+        await viewer.load_diff_document(
+            comparison_document as never,
+            presentation,
+        );
 
         const result: EcadDocumentComparisonPreparation = {
             comparisonKey: request.comparisonKey,
@@ -444,7 +506,13 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             targets: prepared.targets,
             diagnostics: presentation.diagnostics,
             prepareMs: performance.now() - started,
+            sourceCacheHit: same_sources,
         };
+        this.#document_comparison_cache.set(prepared.document.path, {
+            preparation: result,
+            presentation,
+            comparisonDocument,
+        });
         this.#document_comparison = result;
         ecadPerfLog(
             `document comparison ready context=${result.context} changes=${prepared.index.changes.length} targets=${result.targets.size} prepare=${result.prepareMs.toFixed(1)}ms diagnostics=${result.diagnostics.length}`,
@@ -538,6 +606,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     public clearDocumentComparison(): void {
         this.#document_comparison_request_id += 1;
         this.#document_comparison = null;
+        this.#document_comparison_key = null;
+        this.#document_comparison_revision_keys = null;
+        this.#document_comparison_cache.clear();
         for (const context of ["SCH", "PCB"] as const) {
             const viewer = this.#viewer_for_context(context);
             viewer?.clear_overlay_scene(ECadViewer.#DIFF_SELECTION_CHANNEL);

@@ -101,6 +101,27 @@ export abstract class DocumentViewer<
         return this.#paint_count;
     }
 
+    /**
+     * Activate a document and its prepared diff in one cold paint. Unlike
+     * set_diff_presentation()+load(), this never repaints the outgoing page.
+     */
+    public async load_diff_document(
+        src: DocumentT,
+        presentation: EcadDiffPresentation,
+    ): Promise<void> {
+        if (this.document === src && this.#diff_presentation === presentation) {
+            return;
+        }
+        const same_document = this.document === src;
+        this.#diff_presentation = presentation;
+        if (same_document) {
+            this.paint();
+            this.draw();
+            return;
+        }
+        await this.load(src);
+    }
+
     override async load(src: DocumentT) {
         await this.setup_finished;
 
