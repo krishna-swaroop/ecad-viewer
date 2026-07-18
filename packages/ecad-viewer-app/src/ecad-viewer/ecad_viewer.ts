@@ -349,6 +349,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     >();
     #document_comparison_request_id = 0;
     #document_comparison_load_generation = 0;
+    #document_comparison_load_tail: Promise<void> = Promise.resolve();
     static readonly #DIFF_SELECTION_CHANNEL = ":document-diff:selection";
     get project() {
         return this.#project;
@@ -408,8 +409,36 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     public async loadDocumentComparison(
         request: EcadDocumentComparisonRequest,
     ): Promise<EcadDocumentComparisonPreparation> {
-        const started = performance.now();
         const load_generation = ++this.#document_comparison_load_generation;
+        const previous_load = this.#document_comparison_load_tail;
+        let release_load!: () => void;
+        this.#document_comparison_load_tail = new Promise<void>((resolve) => {
+            release_load = resolve;
+        });
+        await previous_load.catch(() => undefined);
+        try {
+            if (
+                load_generation !== this.#document_comparison_load_generation
+            ) {
+                throw new DOMException(
+                    "Document comparison load was superseded",
+                    "AbortError",
+                );
+            }
+            return await this.#perform_document_comparison_load(
+                request,
+                load_generation,
+            );
+        } finally {
+            release_load();
+        }
+    }
+
+    async #perform_document_comparison_load(
+        request: EcadDocumentComparisonRequest,
+        load_generation: number,
+    ): Promise<EcadDocumentComparisonPreparation> {
+        const started = performance.now();
         const assert_current = () => {
             if (load_generation !== this.#document_comparison_load_generation) {
                 throw new DOMException(
@@ -620,9 +649,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                         kind: "bbox",
                         anchor: { kind: "bbox", bounds: target.bounds },
                         stroke: "#2f80ed",
-                        strokeWidth: 0.3,
-                        padding: Math.max(w, h) * 0.06,
-                        sizing: "world",
+                        strokeWidth: 2,
+                        padding: 8,
+                        sizing: "screen",
                     },
                 ],
             },
