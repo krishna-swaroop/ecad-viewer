@@ -33,6 +33,11 @@ export abstract class Renderer implements IDisposable {
     canvas_size: Vec2 = new Vec2(0, 0);
     state: RenderStateStack = new RenderStateStack();
     #background_color: Color = Color.white.copy();
+    /**
+     * Paint-pass-only color transform. Document comparison sets this while a
+     * native item is painted; overlays and camera frames never touch it.
+     */
+    color_transform?: (color: Color) => Color;
 
     constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
@@ -212,6 +217,9 @@ export abstract class Renderer implements IDisposable {
         if (!circle.color || circle.color.is_transparent_black) {
             circle.color = this.state.fill ?? Color.transparent_black;
         }
+        if (this.color_transform) {
+            circle.color = this.color_transform(circle.color);
+        }
 
         circle.center = this.state.matrix.transform(circle.center);
 
@@ -326,6 +334,9 @@ export abstract class Renderer implements IDisposable {
         if (!line.color || line.color.is_transparent_black) {
             line.color = this.state.stroke ?? Color.transparent_black;
         }
+        if (this.color_transform) {
+            line.color = this.color_transform(line.color);
+        }
 
         line.points = Array.from(this.state.matrix.transform_all(line.points));
 
@@ -356,6 +367,9 @@ export abstract class Renderer implements IDisposable {
 
         if (!polygon.color || polygon.color.is_transparent_black) {
             polygon.color = this.state.fill ?? Color.transparent_black;
+        }
+        if (this.color_transform) {
+            polygon.color = this.color_transform(polygon.color);
         }
 
         polygon.points = Array.from(

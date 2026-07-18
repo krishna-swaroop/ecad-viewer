@@ -18,6 +18,7 @@ import { later } from "../../base/async";
 import { DrawingSheetPainter } from "../drawing-sheet/painter";
 import { is_showing_design_block } from "../../ecad-viewer/ecad_viewer_global";
 import { Color } from "../../graphics";
+import type { EcadDiffPresentation } from "./diff-presentation";
 
 type ViewableDocument = DrawingSheetDocument &
     PaintableDocument & {
@@ -41,6 +42,8 @@ export abstract class DocumentViewer<
 
     protected painter: PainterT;
     protected grid: Grid;
+    #diff_presentation: EcadDiffPresentation | null = null;
+    #paint_count = 0;
 
     protected static FACTOR_zoom_fit_top_item = 1.6;
 
@@ -65,6 +68,37 @@ export abstract class DocumentViewer<
     protected abstract create_layer_set(): ViewLayerSetT;
     protected get grid_origin(): Vec2 {
         return new Vec2(0, 0);
+    }
+
+    /**
+     * Install a prepared native document-diff presentation. This is a cold
+     * operation and repaints once; selecting a change must use an overlay and
+     * camera update instead of calling this method.
+     */
+    public set_diff_presentation(
+        presentation: EcadDiffPresentation | null,
+    ): boolean {
+        if (
+            this.#diff_presentation?.signature === presentation?.signature &&
+            this.#diff_presentation === presentation
+        ) {
+            return false;
+        }
+        this.#diff_presentation = presentation;
+        if (this.document) {
+            this.paint();
+            this.draw();
+        }
+        return true;
+    }
+
+    public get diff_presentation(): EcadDiffPresentation | null {
+        return this.#diff_presentation;
+    }
+
+    /** Local-only benchmark counter; no data leaves the viewer. */
+    public get paint_count(): number {
+        return this.#paint_count;
     }
 
     override async load(src: DocumentT) {
@@ -98,6 +132,7 @@ export abstract class DocumentViewer<
         if (!this.document) {
             return;
         }
+        this.#paint_count += 1;
 
         // Update the renderer's background color to match the theme.
         this.renderer.background_color = is_showing_design_block()
@@ -117,7 +152,11 @@ export abstract class DocumentViewer<
 
         // Paint the board
         this.painter = this.create_painter();
-        this.painter.paint(this.document);
+        this.painter.diff_presentation = this.#diff_presentation;
+        this.painter.paint(
+            this.document,
+            this.#diff_presentation?.removedItems ?? [],
+        );
 
         // Paint the drawing sheet
         if (!this.document.is_converted_from_ad && !is_showing_design_block())

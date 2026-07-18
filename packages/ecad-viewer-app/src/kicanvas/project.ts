@@ -36,11 +36,7 @@ import {
     KICAD_WKS_EXT,
 } from "./file_ext";
 import { WorkerPool } from "./worker_pool";
-import {
-    ecadPerfLog,
-    formatBytes,
-    isEcadPerfLogEnabled,
-} from "./perf_log";
+import { ecadPerfLog, formatBytes, isEcadPerfLogEnabled } from "./perf_log";
 
 const log = new Logger("kicanvas:project");
 
@@ -71,20 +67,40 @@ function get_shared_pool(): WorkerPool {
     return _shared_pool;
 }
 
-// Parse de-duplication + result cache, keyed by (filename + content length +
-// a content sample). Identical file content requested by multiple viewers
-// (new+old sides, StrictMode) is parsed exactly once.
+// Parse de-duplication + result cache. Callers should supply a blob identity
+// (Git blob SHA in Prism); standalone callers fall back to a full-content hash.
+// Sampling a few characters is not safe for two revisions of the same file.
 const _parse_cache = new Map<string, Promise<unknown>>();
 const _PARSE_CACHE_MAX = 24;
+const _PARSER_CACHE_VERSION = "kicad-parser-v2";
+let _parse_cache_hits = 0;
+let _parser_invocations = 0;
+
+export type EcadParserPerfSnapshot = {
+    cacheHits: number;
+    parserInvocations: number;
+};
+
+export function getParserPerfSnapshot(): EcadParserPerfSnapshot {
+    return {
+        cacheHits: _parse_cache_hits,
+        parserInvocations: _parser_invocations,
+    };
+}
+
 function _parse_key(filename: string, content: string): string {
-    const n = content.length;
-    const s =
-        content.charCodeAt(0) +
-        "," +
-        content.charCodeAt(n >> 1) +
-        "," +
-        content.charCodeAt(n - 1);
-    return `${filename}:${n}:${s}`;
+    // Two independent 32-bit FNV-1a streams make accidental collisions
+    // vanishingly unlikely without making cache lookup asynchronous.
+    let first = 0x811c9dc5;
+    let second = 0x9e3779b9;
+    for (let index = 0; index < content.length; index++) {
+        const code = content.charCodeAt(index);
+        first = Math.imul(first ^ code, 0x01000193);
+        second = Math.imul(second ^ (code + index), 0x85ebca6b);
+    }
+    return `${_PARSER_CACHE_VERSION}:${filename}:${content.length}:${(
+        first >>> 0
+    ).toString(16)}:${(second >>> 0).toString(16)}`;
 }
 function dedup_parse<T>(
     filename: string,
@@ -94,9 +110,11 @@ function dedup_parse<T>(
     const key = _parse_key(filename, content);
     const cached = _parse_cache.get(key);
     if (cached) {
+        _parse_cache_hits += 1;
         ecadPerfLog(`cache=hit  ${filename}`);
         return cached as Promise<T>;
     }
+    _parser_invocations += 1;
     const p = run();
     p.catch(() => _parse_cache.delete(key));
     _parse_cache.set(key, p);
@@ -791,7 +809,9 @@ export class Project extends EventTarget implements IDisposable {
             : undefined;
         const root =
             (expected_root instanceof KicadSch ? expected_root : undefined) ??
-            schematics.find((schematic) => schematic.sheet_instances?.get("/")) ??
+            schematics.find((schematic) =>
+                schematic.sheet_instances?.get("/"),
+            ) ??
             first(schematics);
         if (!root) {
             this._root_schematic_page = undefined;

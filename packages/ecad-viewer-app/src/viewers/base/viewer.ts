@@ -298,7 +298,7 @@ export abstract class Viewer extends EventTarget {
         this.#overlay_scenes?.replace_layers(this.layers);
     }
 
-    public set_overlay_scene(scene: EcadOverlayScene) {
+    public set_overlay_scene(scene: EcadOverlayScene, draw = true) {
         if (!this.layers) return false;
         this.#overlay_scenes ??= new OverlaySceneManager(
             this.renderer,
@@ -307,7 +307,7 @@ export abstract class Viewer extends EventTarget {
             () => this.viewport?.camera.zoom ?? 1,
         );
         const changed = this.#overlay_scenes.set_scene(scene);
-        if (changed) this.draw();
+        if (changed && draw) this.draw();
         return changed;
     }
 

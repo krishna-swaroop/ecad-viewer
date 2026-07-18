@@ -10,20 +10,22 @@ import {
 } from "../base/web-components";
 import { KCUIElement } from "../kc-ui";
 import kc_ui_styles from "../kc-ui/kc-ui.css";
-import { AssertType, Project } from "../kicanvas/project";
+import {
+    AssertType,
+    Project,
+    getParserPerfSnapshot,
+} from "../kicanvas/project";
 import { type EcadBlob, type EcadSources } from "../kicanvas/services/vfs";
 import { KCBoardAppElement } from "../kicanvas/elements/kc-board/app";
 import { KCSchematicAppElement } from "../kicanvas/elements/kc-schematic/app";
 import { BomApp } from "../kicanvas/elements/bom/app";
-import { KicadSch } from "../kicad";
+import { KicadPCB, KicadSch } from "../kicad";
 
 import { is_3d_model, is_kicad, TabHeaderElement } from "./tab_header";
 import {
     BoardContentReady,
     EcadCommentAreaEvent,
     EcadOverlayClickEvent,
-    EcadOverlayHoverEvent,
-    EcadOverlayLeaveEvent,
     ImageExportRequestEvent,
     ImageExportResultEvent,
     KiCanvasSelectEvent,
@@ -39,6 +41,15 @@ import {
 } from "../viewers/base/events";
 import type { EcadOverlayScene } from "../viewers/base/overlay-scene";
 import {
+    COMMENT_OVERLAY_CHANNELS,
+    EcadCommentOverlayClickEvent,
+    comment_id_from_primitive,
+    comment_overlay_scene,
+    type EcadCommentContext,
+    type EcadCommentOverlayHitDetail,
+    type EcadCommentOverlaySet,
+} from "./comment-overlay";
+import {
     EcadCrossProbeEvent,
     EcadSemanticSelectionEvent,
     normalize_board_selection,
@@ -48,20 +59,71 @@ import {
     type EcadSemanticSelectionDetail,
     type EcadSourceUpdate,
 } from "./host-adapter";
+import {
+    EcadDocumentComparisonFrameEvent,
+    EcadDocumentComparisonReadyEvent,
+    prepareComparisonDocument,
+    type EcadDocumentComparisonPreparation,
+    type EcadDocumentComparisonRequest,
+    type EcadDocumentComparisonSelection,
+    type EcadDocumentComparisonSelectionResult,
+} from "./document-comparison";
+import { build_diff_presentation } from "../viewers/base/diff-presentation";
+import { ecadPerfLog } from "../kicanvas/perf_log";
 
 export type {
     EcadCrossProbeRequest,
     EcadHostContext,
-    EcadOverlaySceneInput,
     EcadSemanticSelectionDetail,
     EcadSourceUpdate,
 } from "./host-adapter";
-export { EcadCrossProbeEvent, EcadSemanticSelectionEvent } from "./host-adapter";
+export {
+    EcadCrossProbeEvent,
+    EcadSemanticSelectionEvent,
+} from "./host-adapter";
 export type {
-    EcadOverlayAnchor,
-    EcadOverlayPrimitive,
-    EcadOverlayScene,
-} from "../viewers/base/overlay-scene";
+    EcadCommentAnchor,
+    EcadCommentContext,
+    EcadCommentOverlay,
+    EcadCommentOverlayHitDetail,
+    EcadCommentOverlaySet,
+} from "./comment-overlay";
+export { EcadCommentOverlayClickEvent } from "./comment-overlay";
+export type {
+    EcadDocumentComparisonPreparation,
+    EcadDocumentComparisonRequest,
+    EcadDocumentComparisonSelection,
+    EcadDocumentComparisonSelectionResult,
+    EcadPreparedDiffTarget,
+} from "./document-comparison";
+export {
+    EcadDocumentComparisonFrameEvent,
+    EcadDocumentComparisonReadyEvent,
+    buildDocumentComparisonTargets,
+    prepareComparisonDocument,
+    selectComparisonDocument,
+} from "./document-comparison";
+export type {
+    EcadDocumentDiffIndex,
+    EcadDiffCategory,
+    EcadDiffGroup,
+    EcadIndexedChange,
+    KiCadChangeKind,
+    KiCadDiffValue,
+    KiCadDocumentDiff,
+    KiCadItemChange,
+    KiCadProjectDiff,
+    KiCadPropertyDelta,
+} from "./document-diff";
+export {
+    bbox_to_world,
+    buildDocumentDiffIndex,
+    change_category,
+    document_units,
+    parseKiCadDocumentDiff,
+    parseKiCadProjectDiff,
+    split_kiid_path,
+} from "./document-diff";
 
 export interface EcadSchematicPageState {
     projectPath: string;
@@ -207,6 +269,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     constructor() {
         super();
         this.addDisposable(this.#project);
+        this.addDisposable(this.#reference_project);
         this.provideContext("project", this.#project);
         this.addDisposable(
             listen(this.#project, "change", () => {
@@ -248,6 +311,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     #user_selected_tab = false;
     #initial_tab_set = false;
     #project: Project = new Project();
+    #reference_project: Project = new Project();
     #schematic_app: KCSchematicAppElement;
     #ov_d_app: Online3dViewer;
     #board_app: KCBoardAppElement;
@@ -262,8 +326,11 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     #host_active = true;
     #revision_key: string | null = null;
     #source_names = new Set<string>();
-    #overlay_scenes = new Map<string, EcadOverlayScene>();
+    #comment_overlay_scenes = new Map<EcadCommentContext, EcadOverlayScene>();
     #active_schematic_project_path: string | null = null;
+    #document_comparison: EcadDocumentComparisonPreparation | null = null;
+    #document_comparison_request_id = 0;
+    static readonly #DIFF_SELECTION_CHANNEL = ":document-diff:selection";
     get project() {
         return this.#project;
     }
@@ -303,6 +370,182 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         await this.#add_files_to_project(additions);
     }
 
+    /**
+     * Parse both immutable revisions concurrently, retain the comparison
+     * document as the only normal scene, inject removed native reference
+     * objects, and install the fixed KiCad-style A/R/M paint presentation.
+     */
+    public async loadDocumentComparison(
+        request: EcadDocumentComparisonRequest,
+    ): Promise<EcadDocumentComparisonPreparation> {
+        const started = performance.now();
+        const prepared = prepareComparisonDocument(
+            request.diff,
+            request.documentPath,
+        );
+        this.#document_comparison_request_id += 1;
+        this.#document_comparison = null;
+        this.#reference_project.reset();
+
+        await Promise.all([
+            this.#reference_project.load({
+                urls: [],
+                blobs: request.reference.sources,
+            }),
+            this.replaceSources(request.comparison),
+        ]);
+
+        const path = prepared.document.path.replace(/^\.?\//, "");
+        const reference_document =
+            this.#reference_project.file_by_name(path) ??
+            this.#reference_project.file_by_name(
+                path.split("/").at(-1) ?? path,
+            );
+        const comparison_document =
+            this.#project.file_by_name(path) ??
+            this.#project.file_by_name(path.split("/").at(-1) ?? path);
+        const expected_type = prepared.context === "SCH" ? KicadSch : KicadPCB;
+        if (
+            !(reference_document instanceof expected_type) ||
+            !(comparison_document instanceof expected_type)
+        ) {
+            throw new TypeError(
+                `Both revisions must contain ${prepared.document.path}`,
+            );
+        }
+
+        if (prepared.context === "SCH") {
+            await this.showPage(comparison_document.filename);
+        } else if (this.#active_tab !== TabKind.pcb) {
+            await this.#switchToTab(TabKind.pcb);
+        }
+
+        const viewer = this.#viewer_for_context(prepared.context);
+        if (!viewer) {
+            throw new Error(
+                `The ${prepared.context} comparison viewer is not ready`,
+            );
+        }
+        if (viewer.document !== comparison_document) {
+            await viewer.load(comparison_document as never);
+        }
+
+        const presentation = build_diff_presentation(
+            prepared.index,
+            reference_document,
+            comparison_document,
+        );
+        viewer.set_diff_presentation(presentation);
+
+        const result: EcadDocumentComparisonPreparation = {
+            comparisonKey: request.comparisonKey,
+            context: prepared.context,
+            document: prepared.document,
+            targets: prepared.targets,
+            diagnostics: presentation.diagnostics,
+            prepareMs: performance.now() - started,
+        };
+        this.#document_comparison = result;
+        ecadPerfLog(
+            `document comparison ready context=${result.context} changes=${prepared.index.changes.length} targets=${result.targets.size} prepare=${result.prepareMs.toFixed(1)}ms diagnostics=${result.diagnostics.length}`,
+        );
+        this.dispatchEvent(new EcadDocumentComparisonReadyEvent(result));
+        return result;
+    }
+
+    /**
+     * Apply one precomputed selection frame. This method never parses, repaints
+     * the document, or walks the diff tree.
+     */
+    public async selectDocumentDiff(
+        selection: EcadDocumentComparisonSelection,
+    ): Promise<EcadDocumentComparisonSelectionResult> {
+        const started = performance.now();
+        const requestId = ++this.#document_comparison_request_id;
+        const parserBefore = getParserPerfSnapshot().parserInvocations;
+        const comparison = this.#document_comparison;
+        const target = comparison?.targets.get(
+            `${selection.kind}:${selection.id}`,
+        );
+        const viewer = comparison
+            ? this.#viewer_for_context(comparison.context)
+            : null;
+        if (!comparison || !target || !viewer) {
+            return {
+                status: "missing",
+                requestId,
+                clickToFrameMs: performance.now() - started,
+                paintCount: viewer?.paint_count ?? 0,
+                parserCount:
+                    getParserPerfSnapshot().parserInvocations - parserBefore,
+            };
+        }
+
+        const paintBefore = viewer.paint_count;
+        const [x, y, w, h] = target.bounds;
+        viewer.set_overlay_scene(
+            {
+                channelId: ECadViewer.#DIFF_SELECTION_CHANNEL,
+                context: comparison.context,
+                placement: "foreground",
+                visible: true,
+                primitives: [
+                    {
+                        id: `selected:${target.kind}:${target.id}`,
+                        kind: "bbox",
+                        anchor: { kind: "bbox", bounds: target.bounds },
+                        stroke: "#2f80ed",
+                        fill: "#2f80ed16",
+                        strokeWidth: 0.3,
+                        padding: Math.max(w, h) * 0.06,
+                        sizing: "world",
+                    },
+                ],
+            },
+            false,
+        );
+        const padding = Math.max(Math.max(w, h) * 0.35, 2);
+        viewer.viewport.camera.bbox = new BBox(
+            x - padding,
+            y - padding,
+            w + padding * 2,
+            h + padding * 2,
+        );
+        viewer.draw();
+
+        await new Promise<void>((resolve) =>
+            requestAnimationFrame(() => resolve()),
+        );
+        const result: EcadDocumentComparisonSelectionResult = {
+            status:
+                requestId === this.#document_comparison_request_id
+                    ? "applied"
+                    : "superseded",
+            requestId,
+            target,
+            clickToFrameMs: performance.now() - started,
+            paintCount: viewer.paint_count - paintBefore,
+            parserCount:
+                getParserPerfSnapshot().parserInvocations - parserBefore,
+        };
+        ecadPerfLog(
+            `document diff frame request=${requestId} status=${result.status} target=${target.kind}:${target.id} clickToFrame=${result.clickToFrameMs.toFixed(1)}ms paint=${result.paintCount} parse=${result.parserCount}`,
+        );
+        this.dispatchEvent(new EcadDocumentComparisonFrameEvent(result));
+        return result;
+    }
+
+    public clearDocumentComparison(): void {
+        this.#document_comparison_request_id += 1;
+        this.#document_comparison = null;
+        for (const context of ["SCH", "PCB"] as const) {
+            const viewer = this.#viewer_for_context(context);
+            viewer?.clear_overlay_scene(ECadViewer.#DIFF_SELECTION_CHANNEL);
+            viewer?.set_diff_presentation(null);
+        }
+        this.#reference_project.reset();
+    }
+
     public setActive(active: boolean): void {
         this.#host_active = active;
         this.#apply_viewer_activity();
@@ -329,21 +572,26 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.#safe_schematic_viewer()?.clear_selection();
     }
 
-    public setOverlayScene(
-        channelId: string,
-        scene: Omit<EcadOverlayScene, "channelId">,
-    ): void {
-        const normalized = { ...scene, channelId };
-        this.#overlay_scenes.set(channelId, normalized);
-        this.#viewer_for_context(normalized.context)?.set_overlay_scene(
-            normalized,
-        );
+    /**
+     * Publish comment markers and optional comment areas. Arbitrary graphics
+     * are intentionally not exposed at the host boundary.
+     */
+    public setCommentOverlays(request: EcadCommentOverlaySet): void {
+        const scene = comment_overlay_scene(request);
+        this.#comment_overlay_scenes.set(request.context, scene);
+        this.#viewer_for_context(request.context)?.set_overlay_scene(scene);
     }
 
-    public clearOverlayScene(channelId: string): void {
-        this.#overlay_scenes.delete(channelId);
-        this.#safe_board_viewer()?.clear_overlay_scene(channelId);
-        this.#safe_schematic_viewer()?.clear_overlay_scene(channelId);
+    public clearCommentOverlays(context?: EcadCommentContext): void {
+        const contexts: EcadCommentContext[] = context
+            ? [context]
+            : ["SCH", "PCB"];
+        for (const target of contexts) {
+            this.#comment_overlay_scenes.delete(target);
+            this.#viewer_for_context(target)?.clear_overlay_scene(
+                COMMENT_OVERLAY_CHANNELS[target],
+            );
+        }
     }
 
     public requestCrossProbe(request: EcadCrossProbeRequest): boolean {
@@ -578,7 +826,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         const v =
             this.#active_tab === TabKind.pcb && this.#board_app?.viewer
                 ? this.#board_app.viewer
-                : this.#active_tab === TabKind.sch && this.#schematic_app?.viewer
+                : this.#active_tab === TabKind.sch &&
+                    this.#schematic_app?.viewer
                   ? this.#schematic_app.viewer
                   : (this.#board_app?.viewer ??
                     this.#schematic_app?.viewer ??
@@ -915,7 +1164,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
 
     public async exportImage(
         viewType: "SCH" | "PCB" | "3D" | "BOM" = this.#active_tab as
-            "SCH" | "PCB" | "3D" | "BOM",
+            | "SCH"
+            | "PCB"
+            | "3D"
+            | "BOM",
     ): Promise<{ image: string; width: number; height: number } | null> {
         await this.loaded;
 
@@ -1591,8 +1843,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.#safe_schematic_viewer()?.set_active(schematic_active);
     }
 
-    #restore_overlay_scenes() {
-        for (const scene of this.#overlay_scenes.values()) {
+    #restore_comment_overlay_scenes() {
+        for (const scene of this.#comment_overlay_scenes.values()) {
             this.#viewer_for_context(scene.context)?.set_overlay_scene(scene);
         }
     }
@@ -1686,14 +1938,21 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         detail.bounds = [bbox.x, bbox.y, bbox.w, bbox.h];
     }
 
-    #relay_overlay_event<D>(
-        EventClass: new (detail: D) => CustomEvent<D>,
-        event: Event,
-    ): void {
+    #relay_comment_overlay_click(event: Event): void {
         event.stopPropagation();
-        this.dispatchEvent(
-            new EventClass((event as CustomEvent<D>).detail),
-        );
+        const hit = (event as EcadOverlayClickEvent).detail;
+        const expected = COMMENT_OVERLAY_CHANNELS[hit.context];
+        if (hit.channelId !== expected) return;
+        const detail: EcadCommentOverlayHitDetail = {
+            commentId: comment_id_from_primitive(hit.primitiveId),
+            context: hit.context,
+            x: hit.resolvedAnchor.x,
+            y: hit.resolvedAnchor.y,
+            bounds: hit.resolvedAnchor.bounds,
+            page: hit.resolvedAnchor.page,
+            metadata: hit.metadata,
+        };
+        this.dispatchEvent(new EcadCommentOverlayClickEvent(detail));
     }
 
     #relay_comment_area_event(event: Event) {
@@ -1965,15 +2224,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             );
             this.#board_app.addEventListener(
                 EcadOverlayClickEvent.type,
-                (event) => this.#relay_overlay_event(EcadOverlayClickEvent, event),
-            );
-            this.#board_app.addEventListener(
-                EcadOverlayHoverEvent.type,
-                (event) => this.#relay_overlay_event(EcadOverlayHoverEvent, event),
-            );
-            this.#board_app.addEventListener(
-                EcadOverlayLeaveEvent.type,
-                (event) => this.#relay_overlay_event(EcadOverlayLeaveEvent, event),
+                (event) => this.#relay_comment_overlay_click(event),
             );
             this.#board_app.addEventListener(
                 EcadCommentAreaEvent.type,
@@ -2008,15 +2259,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             );
             this.#schematic_app.addEventListener(
                 EcadOverlayClickEvent.type,
-                (event) => this.#relay_overlay_event(EcadOverlayClickEvent, event),
-            );
-            this.#schematic_app.addEventListener(
-                EcadOverlayHoverEvent.type,
-                (event) => this.#relay_overlay_event(EcadOverlayHoverEvent, event),
-            );
-            this.#schematic_app.addEventListener(
-                EcadOverlayLeaveEvent.type,
-                (event) => this.#relay_overlay_event(EcadOverlayLeaveEvent, event),
+                (event) => this.#relay_comment_overlay_click(event),
             );
             this.#schematic_app.addEventListener(
                 EcadCommentAreaEvent.type,
@@ -2069,8 +2312,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             : "";
         if (this["hide-chrome"]) {
             if (this.#board_app)
-                (this.#board_app as unknown as { headless?: boolean }).headless =
-                    true;
+                (
+                    this.#board_app as unknown as { headless?: boolean }
+                ).headless = true;
             if (this.#schematic_app)
                 (
                     this.#schematic_app as unknown as { headless?: boolean }
@@ -2082,7 +2326,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     override renderedCallback() {
         window.requestAnimationFrame(() => {
             this.#apply_viewer_activity();
-            this.#restore_overlay_scenes();
+            this.#restore_comment_overlay_scenes();
             this.#ensure_camera_hook(this.#board_app?.viewer);
             this.#ensure_camera_hook(this.#schematic_app?.viewer);
         });

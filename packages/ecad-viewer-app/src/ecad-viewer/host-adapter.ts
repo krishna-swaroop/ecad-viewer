@@ -20,7 +20,6 @@ import {
     type KicadSch,
 } from "../kicad/schematic";
 import type { EcadBlob } from "../kicanvas/services/vfs";
-import type { EcadOverlayScene } from "../viewers/base/overlay-scene";
 
 export type EcadHostContext = "SCH" | "PCB" | "3D" | "BOM";
 
@@ -63,10 +62,6 @@ export type EcadCrossProbeRequest = {
     /** Additional SCH net item uuids (wires/labels) for deterministic focus. */
     uuids?: string[];
     pin?: string;
-};
-
-export type EcadOverlaySceneInput = Omit<EcadOverlayScene, "channelId"> & {
-    channelId?: string;
 };
 
 export class EcadSemanticSelectionEvent extends CustomEvent<EcadSemanticSelectionDetail> {
@@ -178,11 +173,7 @@ export function normalize_board_selection(
 ): EcadSemanticSelectionDetail | null {
     if (!item || typeof item !== "object") return null;
     const uuid = source_uuid(item);
-    if (
-        "net" in item &&
-        typeof item.net === "string" &&
-        item.net.trim()
-    ) {
+    if ("net" in item && typeof item.net === "string" && item.net.trim()) {
         return {
             sourceContext: "PCB",
             itemType: "net",

@@ -49,6 +49,7 @@
         "build:font": "node ./scripts/build-font.js",
         "build:sprites": "node ./scripts/build-sprites.js",
         "build": "node ./scripts/build.js",
+        "test": "web-test-runner --config scripts/web-test-runner.config.mjs",
         "build:3d": " node ./scripts/build-3d.js",
         "build:glyph": " node ./scripts/build-glyph.js",
         "build-all": "cd ../kicad-parser && npm install && npm run build && cd ../ecad-viewer-app && npm run build:no-check && npm run build:glyph && npm run build:3d",
