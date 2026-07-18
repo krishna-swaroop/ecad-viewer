@@ -601,7 +601,6 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                         kind: "bbox",
                         anchor: { kind: "bbox", bounds: target.bounds },
                         stroke: "#2f80ed",
-                        fill: "#2f80ed16",
                         strokeWidth: 0.3,
                         padding: Math.max(w, h) * 0.06,
                         sizing: "world",
