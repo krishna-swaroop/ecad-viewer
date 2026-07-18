@@ -503,8 +503,27 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             !(reference_document instanceof expected_type) ||
             !(comparison_document instanceof expected_type)
         ) {
+            const describe = (project: Project) =>
+                [...project.files()]
+                    .map(
+                        (file) =>
+                            `${file.filename}:${file.constructor.name}`,
+                    )
+                    .join(", ");
+            const missing = [
+                !(reference_document instanceof expected_type)
+                    ? "reference"
+                    : null,
+                !(comparison_document instanceof expected_type)
+                    ? "comparison"
+                    : null,
+            ]
+                .filter(Boolean)
+                .join(" and ");
             throw new TypeError(
-                `Both revisions must contain ${prepared.document.path}`,
+                `${missing} revision could not resolve ${prepared.document.path}. ` +
+                    `Reference files: [${describe(this.#reference_project)}]. ` +
+                    `Comparison files: [${describe(this.#project)}].`,
             );
         }
 
