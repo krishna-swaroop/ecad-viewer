@@ -1153,35 +1153,69 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     #resolve_schematic_page(pageId: string) {
-        const id = pageId.trim();
-        if (!id) return undefined;
-        const exact = this.#project.pages.find(
-            (candidate) =>
-                candidate.project_path === id ||
-                candidate.filename === id ||
-                candidate.name === id ||
-                candidate.page === id ||
-                candidate.sheet_path === id,
-        );
-        if (exact) return exact;
+        if (!pageId || pageId === "/") return undefined;
+        const pages = this.#project.pages;
 
-        // Filename without Subsheets/ prefix, or a trailing project_path suffix.
-        const by_suffix = this.#project.pages.find(
-            (candidate) =>
-                candidate.filename.endsWith(`/${id}`) ||
-                candidate.project_path.endsWith(id) ||
-                (id.includes(":") &&
-                    candidate.project_path.endsWith(id.slice(id.indexOf(":")))),
+        const by_project_path = pages.find(
+            (candidate) => candidate.project_path === pageId,
         );
-        if (by_suffix) return by_suffix;
+        if (by_project_path) return by_project_path;
 
-        // Compose filename + instance path when the host sent them separately
-        // historically as bare filename while pages are keyed filename:/path.
-        return this.#project.pages.find(
-            (candidate) =>
-                id === candidate.filename ||
-                `${candidate.filename}:${candidate.sheet_path}` === id,
+        const by_sheet_path = pages.find(
+            (candidate) => candidate.sheet_path === pageId,
         );
+        if (by_sheet_path) return by_sheet_path;
+
+        // Composite "filename:sheet_path" (Prism / semantic index project paths).
+        if (pageId.includes(":")) {
+            const colon = pageId.indexOf(":");
+            const filename = pageId.slice(0, colon);
+            const sheet_path = pageId.slice(colon + 1);
+            const composite = pages.find(
+                (candidate) =>
+                    candidate.project_path === pageId ||
+                    (candidate.filename === filename &&
+                        candidate.sheet_path === sheet_path) ||
+                    (candidate.filename.endsWith(filename) &&
+                        candidate.sheet_path === sheet_path),
+            );
+            if (composite) return composite;
+        }
+
+        const by_label = pages.filter(
+            (candidate) =>
+                candidate.name === pageId || candidate.page === pageId,
+        );
+        if (by_label.length === 1) return by_label[0];
+
+        // Filename alone is ambiguous when a sheet file is instantiated more
+        // than once — only accept a unique filename match.
+        const by_filename = pages.filter(
+            (candidate) =>
+                candidate.filename === pageId ||
+                candidate.filename.endsWith(`/${pageId}`),
+        );
+        return by_filename.length === 1 ? by_filename[0] : undefined;
+    }
+
+    #find_schematic_page_for_symbol(
+        designator?: string,
+        uuid?: string,
+    ): { page: (typeof this.#project.pages)[number]; uuid: string } | null {
+        if (!designator && !uuid) return null;
+        for (const page of this.#project.pages) {
+            const document = page.document;
+            if (!(document instanceof KicadSch)) continue;
+            if (uuid) {
+                const by_uuid = document.find_symbol(uuid);
+                if (by_uuid?.uuid) return { page, uuid: by_uuid.uuid };
+            }
+            if (designator) {
+                const by_ref = document.find_symbol(designator);
+                if (by_ref?.uuid) return { page, uuid: by_ref.uuid };
+            }
+        }
+        return null;
     }
 
     /**
@@ -2307,47 +2341,14 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 break;
             }
         }
-        if (!uuid && !(request.designator ?? value)) {
+        if (!uuid && !request.designator && !value) {
             return false;
         }
 
-        const designator = request.designator ?? value;
-        const resolve_target_page = () => {
-            if (sheet) {
-                const by_sheet = this.#resolve_schematic_page(sheet);
-                if (by_sheet) return by_sheet;
-            }
-            if (uuid) {
-                for (const page of this.#project.pages) {
-                    if (
-                        page.document instanceof KicadSch &&
-                        page.document.find_symbol(uuid!)
-                    ) {
-                        return page;
-                    }
-                }
-            }
-            if (designator) {
-                for (const page of this.#project.pages) {
-                    if (!(page.document instanceof KicadSch)) continue;
-                    const symbol = page.document.find_symbol(designator);
-                    if (!symbol) continue;
-                    uuid ??= symbol.uuid;
-                    return page;
-                }
-            }
-            return undefined;
-        };
-
-        const target_page = resolve_target_page();
-        if (!uuid) {
-            return false;
-        }
-
-        const focus = () => {
+        const focus = (target_uuid: string) => {
             const candidates = [
-                uuid!,
-                ...(request.uuids ?? []).filter((id) => id && id !== uuid),
+                target_uuid,
+                ...(request.uuids ?? []).filter((id) => id && id !== target_uuid),
             ];
             for (const id of candidates) {
                 const bbox = viewer.schematic_renderer.get_item_bbox(id);
@@ -2358,22 +2359,45 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             }
         };
 
-        const active = this.#active_schematic_page();
-        if (
-            target_page &&
-            target_page.project_path !== active?.project_path
-        ) {
-            const doc =
-                target_page.document instanceof KicadSch
-                    ? target_page.document
-                    : null;
-            if (doc) {
-                this.#activate_schematic_page(target_page.project_path);
-                void viewer.load(doc).then(focus);
+        // Resolve the hierarchical instance page. Filename equality with the
+        // currently loaded document is not enough — the same .kicad_sch can be
+        // instantiated multiple times.
+        let page = sheet ? this.#resolve_schematic_page(sheet) : undefined;
+        if (!page) {
+            const located = this.#find_schematic_page_for_symbol(
+                request.designator ?? value,
+                uuid,
+            );
+            if (located) {
+                page = located.page;
+                uuid = located.uuid;
+            }
+        } else if (!uuid) {
+            const located = this.#find_schematic_page_for_symbol(
+                request.designator ?? value,
+                undefined,
+            );
+            if (located) uuid = located.uuid;
+        }
+
+        if (!uuid) {
+            return false;
+        }
+
+        if (page) {
+            const active_path = this.#active_schematic_project_path;
+            if (page.project_path !== active_path) {
+                this.#activate_schematic_page(page.project_path);
+            }
+            const target =
+                page.document instanceof KicadSch ? page.document : null;
+            if (target) {
+                void viewer.load(target).then(() => focus(uuid!));
                 return true;
             }
         }
-        focus();
+
+        focus(uuid);
         return true;
     }
     get has_3d() {
