@@ -37,6 +37,7 @@ export class MoveAndZoom {
         public min_zoom = 0.5,
         public max_zoom = 10,
         public bounds?: BBox,
+        public is_active: () => boolean = () => true,
     ) {
         this.target.addEventListener(
             "wheel",
@@ -45,6 +46,7 @@ export class MoveAndZoom {
         );
 
         this.target.addEventListener("touchstart", (e: TouchEvent) => {
+            if (!this.is_active()) return;
             if (e.touches.length === 2) {
                 this.#startDistance = this.#getDistanceBetweenTouches(
                     e.touches,
@@ -55,6 +57,7 @@ export class MoveAndZoom {
         });
 
         this.target.addEventListener("touchmove", (e: TouchEvent) => {
+            if (!this.is_active()) return;
             if (e.touches.length === 2) {
                 if (this.#startDistance !== null) {
                     const currentDistance = this.#getDistanceBetweenTouches(
@@ -98,6 +101,7 @@ export class MoveAndZoom {
     }
 
     #on_wheel(e: WheelEvent) {
+        if (!this.is_active()) return;
         e.preventDefault();
 
         let dx = e.deltaX;
@@ -140,6 +144,7 @@ export class MoveAndZoom {
     }
 
     #handle_pan(dx: number, dy: number) {
+        if (!this.is_active()) return;
         const delta = new Vec2(dx * pan_speed, dy * pan_speed).multiply(
             1 / this.camera.zoom,
         );
@@ -159,6 +164,7 @@ export class MoveAndZoom {
     }
 
     #handle_zoom(delta: number, mouse?: Vec2) {
+        if (!this.is_active()) return;
         const mouse_world =
             mouse != null ? this.camera.screen_to_world(mouse) : null;
 

@@ -141,4 +141,21 @@ suite("native diff presentation", () => {
         expect(darkContext.a).to.equal(0.4);
         expect(lightContext.a).to.equal(0.4);
     });
+
+    test("leaves drawing-sheet paper white under unchanged remapping", () => {
+        // Paper is bypassed in DocumentPainter; apply_diff_color would otherwise
+        // collapse Color.white onto the same neutral as geometry. Assert the
+        // intended contrast target: muted gray must not equal pure white.
+        const paper = Color.white;
+        const muted = apply_diff_color(
+            Color.from_css("rgb(0, 0, 0)"),
+            "unchanged",
+            Color.from_css("rgb(194, 194, 194)"),
+        );
+        expect(paper.r).to.equal(1);
+        expect(paper.g).to.equal(1);
+        expect(paper.b).to.equal(1);
+        expect(muted.r).to.be.lessThan(0.5);
+        expect(muted.r).to.not.equal(paper.r);
+    });
 });

@@ -168,6 +168,30 @@ export interface CameraState {
     rotation: number;
 }
 
+/**
+ * Stand-in for a sheet/board that exists on only one side of a revision pair.
+ * Comparison remains the paint authority; an empty reference just means there
+ * are no removals to inject for that path.
+ */
+function empty_diff_document(
+    context: "SCH" | "PCB",
+    path: string,
+): KicadSch | KicadPCB {
+    if (context === "SCH") {
+        return new KicadSch(path, {
+            version: 20231120,
+            uuid: "00000000-0000-0000-0000-000000000000",
+            generator: "ecad-viewer-empty-diff",
+            generator_version: "0",
+        });
+    }
+    return new KicadPCB(path, {
+        version: 20240108,
+        generator: "ecad-viewer-empty-diff",
+        paper: { size: "A4", portrait: false },
+    });
+}
+
 export { TabActivateEvent, SheetLoadEvent } from "../viewers/base/events";
 
 import { TabKind } from "./constraint";
@@ -316,15 +340,15 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     #initial_tab_set = false;
     #project: Project = new Project();
     #reference_project: Project = new Project();
-    #schematic_app: KCSchematicAppElement;
+    #schematic_app: KCSchematicAppElement | undefined;
     #ov_d_app: Online3dViewer;
-    #board_app: KCBoardAppElement;
-    #bom_app: BomApp;
+    #board_app: KCBoardAppElement | undefined;
+    #bom_app: BomApp | undefined;
     #tab_header: TabHeaderElement;
     #file_input: HTMLInputElement;
     #spinner: HTMLElement;
     #content: HTMLElement;
-    #step_viewer_placeholder: HTMLElement;
+    #step_viewer_placeholder: HTMLElement | undefined;
     #viewers_container: HTMLDivElement;
     #is_full_screen = false;
     #host_active = true;
@@ -519,19 +543,19 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         }
 
         const path = prepared.document.path.replace(/^\.?\//, "");
-        const reference_document =
-            this.#reference_project.file_by_name(path) ??
-            this.#reference_project.file_by_name(
-                path.split("/").at(-1) ?? path,
-            );
-        const comparison_document =
-            this.#project.file_by_name(path) ??
-            this.#project.file_by_name(path.split("/").at(-1) ?? path);
         const expected_type = prepared.context === "SCH" ? KicadSch : KicadPCB;
-        if (
-            !(reference_document instanceof expected_type) ||
-            !(comparison_document instanceof expected_type)
-        ) {
+        const resolve_typed = (project: Project) => {
+            const candidate =
+                project.file_by_name(path) ??
+                project.file_by_name(path.split("/").at(-1) ?? path);
+            return candidate instanceof expected_type ? candidate : null;
+        };
+        // Added/renamed sheets exist on only one side. Comparison remains the
+        // paint authority; the missing side becomes an empty stub so removals
+        // (or an empty reference) still compile without failing the click path.
+        const reference_resolved = resolve_typed(this.#reference_project);
+        const comparison_resolved = resolve_typed(this.#project);
+        if (!reference_resolved && !comparison_resolved) {
             const describe = (project: Project) =>
                 [...project.files()]
                     .map(
@@ -539,26 +563,25 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                             `${file.filename}:${file.constructor.name}`,
                     )
                     .join(", ");
-            const missing = [
-                !(reference_document instanceof expected_type)
-                    ? "reference"
-                    : null,
-                !(comparison_document instanceof expected_type)
-                    ? "comparison"
-                    : null,
-            ]
-                .filter(Boolean)
-                .join(" and ");
             throw new TypeError(
-                `${missing} revision could not resolve ${prepared.document.path}. ` +
+                `Neither revision could resolve ${prepared.document.path}. ` +
                     `Reference files: [${describe(this.#reference_project)}]. ` +
                     `Comparison files: [${describe(this.#project)}].`,
             );
         }
+        const reference_document =
+            reference_resolved
+            ?? empty_diff_document(prepared.context, path);
+        const comparison_document =
+            comparison_resolved
+            ?? empty_diff_document(prepared.context, path);
 
-        if (prepared.context === "SCH") {
+        if (prepared.context === "SCH" && comparison_resolved) {
             await this.showPage(comparison_document.filename);
-        } else if (this.#active_tab !== TabKind.pcb) {
+        } else if (
+            prepared.context === "PCB"
+            && this.#active_tab !== TabKind.pcb
+        ) {
             await this.#switchToTab(TabKind.pcb);
         }
         assert_current();
@@ -578,6 +601,15 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             comparison_document as never,
             presentation,
         );
+        assert_current();
+        // load_diff paints the DocumentViewer directly; the app shell still
+        // starts with content_container.hidden until app.load runs. Await it
+        // so Composite settle is never a painted-but-invisible canvas.
+        if (prepared.context === "SCH" && this.#schematic_app) {
+            await this.#schematic_app.load(comparison_document);
+        } else if (prepared.context === "PCB" && this.#board_app) {
+            await this.#board_app.load(comparison_document);
+        }
         assert_current();
         this.#hydrate_document_diff_targets(
             prepared.targets,
@@ -726,9 +758,18 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         }
     }
 
-    public clearDocumentComparison(): void {
+    /**
+     * Supersede in-flight comparison loads without clearing the installed
+     * A/R/M presentation. Hosts use this on effect cleanup / mode hide so a
+     * retained composite scene is not forced back to full theme colors.
+     */
+    public abortDocumentComparisonLoad(): void {
         this.#document_comparison_load_generation += 1;
         this.#document_comparison_request_id += 1;
+    }
+
+    public clearDocumentComparison(): void {
+        this.abortDocumentComparisonLoad();
         this.#document_comparison = null;
         this.#document_comparison_key = null;
         this.#document_comparison_revision_keys = null;
@@ -739,6 +780,30 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             viewer?.set_diff_presentation(null);
         }
         this.#reference_project.reset();
+        for (const page of Object.values(this.#tab_contents)) {
+            page.classList.remove("active");
+        }
+        this.#safe_board_viewer()?.set_active(false);
+        this.#safe_schematic_viewer()?.set_active(false);
+        this.#apply_viewer_activity();
+    }
+
+    #activate_tab_content(tabKind: TabKind): void {
+        const previous = this.#active_tab;
+        this.#active_tab = tabKind;
+        if (previous === TabKind.pcb && this.#board_app) {
+            this.#board_app.tabMenuHidden = true;
+        } else if (previous === TabKind.sch && this.#schematic_app) {
+            this.#schematic_app.tabMenuHidden = true;
+        }
+        for (const page of Object.values(this.#tab_contents)) {
+            page.classList.remove("active");
+        }
+        this.#tab_contents[tabKind]?.classList.add("active");
+        this.#apply_viewer_activity();
+        this.#ensure_camera_hook(this.#safe_board_viewer());
+        this.#ensure_camera_hook(this.#safe_schematic_viewer());
+        this.#emit_camera_change();
     }
 
     public setActive(active: boolean): void {
@@ -1037,7 +1102,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         const orig = viewer.on_viewport_change.bind(viewer);
         viewer.on_viewport_change = () => {
             orig();
-            this.#emit_camera_change();
+            if (viewer.active) this.#emit_camera_change();
         };
         viewer.__camerachange_hooked = true;
     }
@@ -1119,6 +1184,11 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             await this.#switchToTab(TabKind.sch);
         }
         this.#activate_schematic_page(page.project_path);
+        // activate_sch only dispatches "change"; hosts must await the app
+        // load so content_container is unhidden before they mark ready.
+        if (page.document instanceof KicadSch) {
+            await this.#schematic_app.load(page.document);
+        }
     }
 
     /**
@@ -1663,25 +1733,48 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     async #switchToTab(tabKind: TabKind): Promise<void> {
-        return new Promise((resolve) => {
-            const tabButtons =
-                this.#tab_header?.shadowRoot?.querySelectorAll("tab-button");
-            if (tabButtons) {
-                tabButtons.forEach((btn) => {
-                    if (btn.textContent?.trim().toUpperCase() === tabKind) {
-                        (btn as HTMLElement).click();
-                    }
-                });
-            }
+        if (this.#active_tab === tabKind && this.#tab_contents[tabKind]) {
+            this.#activate_tab_content(tabKind);
+            return;
+        }
 
+        // Prefer direct activation so headless hosts (show-header=false) do not
+        // depend on clicking hidden tab-header buttons.
+        if (this.#tab_contents[tabKind]) {
+            this.#activate_tab_content(tabKind);
+            this.#user_selected_tab = true;
+            this.#initial_tab_set = true;
+            return;
+        }
+
+        const tabButtons =
+            this.#tab_header?.shadowRoot?.querySelectorAll("tab-button");
+        if (tabButtons) {
+            tabButtons.forEach((btn) => {
+                if (btn.textContent?.trim().toUpperCase() === tabKind) {
+                    (btn as HTMLElement).click();
+                }
+            });
+        }
+
+        const deadline = Date.now() + 2000;
+        await new Promise<void>((resolve, reject) => {
             const checkTab = () => {
                 if (this.#active_tab === tabKind) {
                     resolve();
-                } else {
-                    setTimeout(checkTab, 50);
+                    return;
                 }
+                if (Date.now() >= deadline) {
+                    reject(
+                        new Error(
+                            `Timed out switching ecad-viewer tab to ${tabKind}`,
+                        ),
+                    );
+                    return;
+                }
+                setTimeout(checkTab, 50);
             };
-            setTimeout(checkTab, 100);
+            setTimeout(checkTab, 50);
         });
     }
 
@@ -2266,6 +2359,12 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         if (!this.loaded) return this.#spinner;
         this.#spinner.hidden = true;
         this.#tab_contents = {};
+        // Drop stale apps from a previous project shape so SCH-only and PCB-only
+        // loads never keep both canvases stacked in .vertical.
+        if (!this.has_pcb) this.#board_app = undefined;
+        if (!this.has_sch) this.#schematic_app = undefined;
+        if (!this.has_3d) this.#step_viewer_placeholder = undefined;
+        if (!this.has_bom) this.#bom_app = undefined;
 
         this.#tab_header = new TabHeaderElement({
             has_3d: this.has_3d,
@@ -2372,12 +2471,16 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             const tab = (event as TabMenuClickEvent).detail;
             switch (tab) {
                 case TabKind.pcb:
-                    this.#board_app.tabMenuHidden =
-                        !this.#board_app.tabMenuHidden;
+                    if (this.#board_app) {
+                        this.#board_app.tabMenuHidden =
+                            !this.#board_app.tabMenuHidden;
+                    }
                     break;
                 case TabKind.sch:
-                    this.#schematic_app.tabMenuHidden =
-                        !this.#schematic_app.tabMenuHidden;
+                    if (this.#schematic_app) {
+                        this.#schematic_app.tabMenuHidden =
+                            !this.#schematic_app.tabMenuHidden;
+                    }
                     break;
                 case TabKind.bom:
                     break;
@@ -2402,22 +2505,24 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         };
 
         if (this.has_pcb) {
-            this.#board_app = html`<kc-board-app>
+            if (!this.#board_app) {
+                this.#board_app = html`<kc-board-app>
             </kc-board-app>` as KCBoardAppElement;
+                this.#board_app.addEventListener(
+                    KiCanvasSelectEvent.type,
+                    (event) => this.#relay_board_selection(event),
+                );
+                this.#board_app.addEventListener(
+                    EcadOverlayClickEvent.type,
+                    (event) => this.#relay_comment_overlay_click(event),
+                );
+                this.#board_app.addEventListener(
+                    EcadCommentAreaEvent.type,
+                    (event) => this.#relay_comment_area_event(event),
+                );
+            }
             this.#board_app.showPropertyPanel = this.showSelectionPanel;
             embed_to_tab(this.#board_app, TabKind.pcb);
-            this.#board_app.addEventListener(
-                KiCanvasSelectEvent.type,
-                (event) => this.#relay_board_selection(event),
-            );
-            this.#board_app.addEventListener(
-                EcadOverlayClickEvent.type,
-                (event) => this.#relay_comment_overlay_click(event),
-            );
-            this.#board_app.addEventListener(
-                EcadCommentAreaEvent.type,
-                (event) => this.#relay_comment_area_event(event),
-            );
             if (!this.#project.has_3d) {
                 try {
                     this.#project
@@ -2436,37 +2541,48 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         }
 
         if (this.has_sch) {
-            this.#schematic_app = html`<kc-schematic-app>
+            if (!this.#schematic_app) {
+                this.#schematic_app = html`<kc-schematic-app>
             </kc-schematic-app>` as KCSchematicAppElement;
+                this.#schematic_app.addEventListener(
+                    KiCanvasSelectEvent.type,
+                    (event) => this.#relay_schematic_selection(event),
+                );
+                this.#schematic_app.addEventListener(
+                    EcadOverlayClickEvent.type,
+                    (event) => this.#relay_comment_overlay_click(event),
+                );
+                this.#schematic_app.addEventListener(
+                    EcadCommentAreaEvent.type,
+                    (event) => this.#relay_comment_area_event(event),
+                );
+                this.#schematic_app.addEventListener(
+                    SheetLoadEvent.type,
+                    (e) => {
+                        this.#tab_header.dispatchEvent(
+                            new SheetLoadEvent(e.detail),
+                        );
+                        // Re-dispatch from viewer so visualizer can track active sheet
+                        this.dispatchEvent(new SheetLoadEvent(e.detail));
+                    },
+                );
+            }
             this.#schematic_app.showPropertyPanel = this.showSelectionPanel;
             this.#tab_contents[TabKind.sch] = this.#schematic_app;
             embed_to_tab(this.#schematic_app, TabKind.sch);
-            this.#schematic_app.addEventListener(
-                KiCanvasSelectEvent.type,
-                (event) => this.#relay_schematic_selection(event),
-            );
-            this.#schematic_app.addEventListener(
-                EcadOverlayClickEvent.type,
-                (event) => this.#relay_comment_overlay_click(event),
-            );
-            this.#schematic_app.addEventListener(
-                EcadCommentAreaEvent.type,
-                (event) => this.#relay_comment_area_event(event),
-            );
-            this.#schematic_app.addEventListener(SheetLoadEvent.type, (e) => {
-                this.#tab_header.dispatchEvent(new SheetLoadEvent(e.detail));
-                // Re-dispatch from viewer so visualizer can track active sheet
-                this.dispatchEvent(new SheetLoadEvent(e.detail));
-            });
         }
 
         if (this.has_3d) {
-            this.#step_viewer_placeholder =
-                html`<ecad-spinner></ecad-spinner>` as HTMLElement;
+            if (!this.#step_viewer_placeholder) {
+                this.#step_viewer_placeholder =
+                    html`<ecad-spinner></ecad-spinner>` as HTMLElement;
+            }
             embed_to_tab(this.#step_viewer_placeholder, TabKind.step);
         }
         if (this.has_bom) {
-            this.#bom_app = new BomApp();
+            if (!this.#bom_app) {
+                this.#bom_app = new BomApp();
+            }
             embed_to_tab(this.#bom_app, TabKind.bom);
         }
 

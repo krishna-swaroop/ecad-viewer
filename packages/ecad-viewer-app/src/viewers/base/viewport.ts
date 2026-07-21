@@ -72,7 +72,21 @@ export class Viewport {
         }
     }
 
-    enable_pan_and_zoom(min_zoom?: number, max_zoom?: number) {
+    /**
+     * Synchronously pull viewport_size from the canvas layout box.
+     * Hosts that unhide a viewer and immediately zoom-fit must call this
+     * before fit; otherwise Camera2.bbox sets zoom to 0 (0 / world size).
+     */
+    sync_from_canvas(): boolean {
+        this.#update_camera();
+        return this.width > 0 && this.height > 0;
+    }
+
+    enable_pan_and_zoom(
+        min_zoom?: number,
+        max_zoom?: number,
+        is_active: () => boolean = () => true,
+    ) {
         this.#pan_and_zoom = new MoveAndZoom(
             this.renderer.canvas,
             this.camera,
@@ -81,6 +95,8 @@ export class Viewport {
             },
             min_zoom,
             max_zoom,
+            undefined,
+            is_active,
         );
     }
 

@@ -106,24 +106,39 @@ export class WebGL2Renderer extends Renderer {
         if (!this.#size_observer) {
             this.#size_observer = new ResizeObserver(() => {
                 this.#size_dirty = true;
+                // Resize the GL backing store before notifying listeners so a
+                // re-paint (document comparison) does not run at 0×0 / 300×150.
+                this.update_canvas_size();
                 this.on_resize?.();
             });
             this.#size_observer.observe(this.canvas);
         }
-        if (!this.#size_dirty) {
-            return;
-        }
-        this.#size_dirty = false;
 
         const dpr = window.devicePixelRatio;
         const rect = this.canvas.getBoundingClientRect();
-
         const logical_w = rect.width;
         const logical_h = rect.height;
         const pixel_w = Math.round(rect.width * dpr);
         const pixel_h = Math.round(rect.height * dpr);
 
-        if (this.canvas_size.x == pixel_w && this.canvas_size.y == pixel_h) {
+        // Always sync when the backing store disagrees with layout — do not
+        // trust size_dirty alone (a prior 0×0 pass can clear the flag and leave
+        // the default 300×150 buffer while clientWidth is already real).
+        if (
+            !this.#size_dirty &&
+            this.canvas.width === pixel_w &&
+            this.canvas.height === pixel_h
+        ) {
+            return;
+        }
+        this.#size_dirty = false;
+
+        if (
+            this.canvas_size.x == pixel_w &&
+            this.canvas_size.y == pixel_h &&
+            this.canvas.width === pixel_w &&
+            this.canvas.height === pixel_h
+        ) {
             return;
         }
         this.canvas_size.set(pixel_w, pixel_h);

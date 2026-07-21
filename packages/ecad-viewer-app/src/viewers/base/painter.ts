@@ -21,6 +21,8 @@ const DIFF_COLOR_BYPASS_LAYERS = new Set([
     ":SelectionFG",
     ":SelectionMask",
     ":Grid",
+    // Keep schematic paper white so muted unchanged geometry stays readable.
+    ":DrawingSheet:Background",
 ]);
 
 /**

@@ -81,6 +81,18 @@ export class Camera2 {
      * view.
      */
     set bbox(bbox: BBox) {
+        // Fitting before the canvas has a real layout box yields zoom=0
+        // (0/bbox) and permanently blank draws until something fits again.
+        if (
+            this.viewport_size.x <= 0 ||
+            this.viewport_size.y <= 0 ||
+            !Number.isFinite(bbox.w) ||
+            !Number.isFinite(bbox.h) ||
+            bbox.w <= 0 ||
+            bbox.h <= 0
+        ) {
+            return;
+        }
         const zoom_w = this.viewport_size.x / bbox.w;
         const zoom_h = this.viewport_size.y / bbox.h;
         const center_x = bbox.x + bbox.w / 2;

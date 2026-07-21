@@ -55,8 +55,11 @@ export abstract class KCViewerAppElement<
                 display: flex;
                 position: relative;
                 width: 100%;
+                height: 100%;
                 max-height: 100%;
-                aspect-ratio: 1.414;
+                /* Do not force A4 aspect-ratio here: in sized Prism panes it
+                   shrinks the canvas and desyncs the first camera fit (same
+                   fix as ecad-viewer :host vs :host(.aspect-a4)). */
                 background-color: white;
                 color: var(--fg);
                 contain: layout paint;
@@ -159,6 +162,12 @@ export abstract class KCViewerAppElement<
                 }
             }),
         );
+        // Project "change" often fires during parent setup before this
+        // listener exists. Catch up so content_container is unhidden.
+        const first_page = this.project.get_first_page(this.assert_type());
+        if (first_page) {
+            void this.load(first_page);
+        }
 
         // Handle item selection in the viewers.
         this.addDisposable(
@@ -235,6 +244,33 @@ export abstract class KCViewerAppElement<
                 this.#content.hidden = false;
             }
             this.#placeholder.hidden = true;
+            // Load often paints while content_container is still hidden
+            // (0×0). Sync viewport size, then fit + draw immediately so we
+            // never leave Camera2.zoom at 0 from a pre-layout fit.
+            const settled = this.viewer as Viewer & {
+                document?: unknown;
+                paint?: () => void;
+                draw?: () => void;
+                draw_now?: () => void;
+                zoom_fit_top_item?: () => void;
+                renderer?: { update_canvas_size?: () => void };
+                canvas?: HTMLCanvasElement;
+                viewport?: {
+                    sync_from_canvas?: () => boolean;
+                    camera?: { zoom?: number; viewport_size?: { x: number; y: number } };
+                };
+            };
+            const settle_visible = () => {
+                if (!settled?.document) return;
+                settled.renderer?.update_canvas_size?.();
+                const sized = settled.viewport?.sync_from_canvas?.() ?? false;
+                settled.paint?.();
+                if (sized) {
+                    settled.zoom_fit_top_item?.();
+                }
+                settled.draw_now?.() ?? settled.draw?.();
+            };
+            settle_visible();
         } else {
             if (this.#content) {
                 this.#content.hidden = true;

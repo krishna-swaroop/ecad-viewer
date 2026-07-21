@@ -59,6 +59,10 @@ export abstract class Viewer extends EventTarget {
         return this.#page_mouse_pos;
     }
 
+    public get active(): boolean {
+        return this.#active;
+    }
+
     public loaded = new Barrier();
 
     abstract type: ViewerType;
@@ -125,8 +129,11 @@ export abstract class Viewer extends EventTarget {
     async setup() {
         this.renderer = this.disposables.add(this.create_renderer(this.canvas));
 
-        // When the canvas resizes (ResizeObserver, async), redraw at the new size.
-        this.renderer.on_resize = () => this.draw();
+        // When the canvas resizes (ResizeObserver, async), rebuild the scene if
+        // needed then redraw. Cold loads often paint before the host layout box
+        // is known (canvas 0×0 or default 300×150); draw-only leaves a blank
+        // or wrong-resolution scene after the first real resize.
+        this.renderer.on_resize = () => this.on_canvas_resize();
 
         await this.renderer.setup();
 
@@ -137,7 +144,11 @@ export abstract class Viewer extends EventTarget {
         );
 
         if (this.interactive) {
-            this.viewport.enable_pan_and_zoom(Viewer.MinZoom, Viewer.MaxZoom);
+            this.viewport.enable_pan_and_zoom(
+                Viewer.MinZoom,
+                Viewer.MaxZoom,
+                () => this.#active,
+            );
 
             this.disposables.add(
                 listen(this.canvas, "mousemove", (e) => {
@@ -217,6 +228,10 @@ export abstract class Viewer extends EventTarget {
         if (this.interactive) {
             this.draw();
         }
+    }
+
+    public notify_viewport_change(): void {
+        this.on_viewport_change();
     }
 
     #cached_rect: DOMRect | null = null;
@@ -404,6 +419,14 @@ export abstract class Viewer extends EventTarget {
 
     public abstract paint(): void;
 
+    /**
+     * Canvas backing-store size changed. Default is draw-only; DocumentViewer
+     * re-paints so cold loads that raced layout still settle correctly.
+     */
+    protected on_canvas_resize(): void {
+        this.draw();
+    }
+
     protected on_document_clicked(): void {}
 
     protected on_draw() {
@@ -462,6 +485,16 @@ export abstract class Viewer extends EventTarget {
             this.#draw_frame = null;
             this.on_draw();
         });
+    }
+
+    /** Immediate draw — used after unhide + zoom-fit so the first frame is not zoom=0. */
+    public draw_now() {
+        if (!this.viewport) return;
+        if (this.#draw_frame !== null) {
+            cancelAnimationFrame(this.#draw_frame);
+            this.#draw_frame = null;
+        }
+        this.on_draw();
     }
 
     abstract zoom_fit_top_item(): void;

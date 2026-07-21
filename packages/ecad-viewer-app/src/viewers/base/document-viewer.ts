@@ -112,31 +112,50 @@ export abstract class DocumentViewer<
         if (this.document === src && this.#diff_presentation === presentation) {
             return;
         }
-        const same_document = this.document === src;
         this.#diff_presentation = presentation;
-        if (same_document) {
+        if (this.document === src) {
             this.paint();
             this.draw();
             return;
         }
         await this.load(src);
+        // Concurrent project "change" loads can early-return after setting
+        // document without this presentation. Always finish on the installed
+        // presentation so the settled scene is never full-theme color.
+        if (this.#diff_presentation !== presentation) {
+            this.#diff_presentation = presentation;
+        }
+        await this.viewport.ready;
+        this.renderer.update_canvas_size();
+        this.paint();
+        this.draw();
     }
 
     override async load(src: DocumentT) {
         await this.setup_finished;
 
         if (this.document == src) {
+            // Same document object can arrive before presentation is installed.
+            // If a diff session is active, repaint so A/R/M is not skipped.
+            if (this.#diff_presentation) {
+                this.paint();
+                this.draw();
+            }
             return;
         }
 
         this.document = src;
         this.paint();
 
-        // Wait for a valid viewport size
+        // Wait for a valid viewport size, then re-paint. The first paint above
+        // often runs before the host flex layout sizes the canvas (0×0 or the
+        // browser default 300×150), which left comparison scenes blank/wrong.
         later(async () => {
             await this.viewport.ready;
             const c = this.document as unknown as any;
             this.viewport.bounds = c.bbox.grow(11);
+
+            this.paint();
 
             // Position the camera and draw the scene.
             this.zoom_fit_top_item();
@@ -147,6 +166,14 @@ export abstract class DocumentViewer<
             // Draw
             this.draw();
         });
+    }
+
+    protected override on_canvas_resize(): void {
+        this.renderer.update_canvas_size();
+        if (this.document) {
+            this.paint();
+        }
+        super.on_canvas_resize();
     }
 
     public override paint() {
