@@ -100,6 +100,8 @@ export class EcadCommentAreaEvent extends KiCanvasEvent<EcadCommentAreaEventDeta
 
 interface FitterSelections {
     items: unknown[];
+    /** Currently selected label uuid for sch label instance navigation. */
+    activeUuid?: string;
 }
 
 export class KiCanvasContextMenuEvent extends KiCanvasEvent<FitterSelections> {

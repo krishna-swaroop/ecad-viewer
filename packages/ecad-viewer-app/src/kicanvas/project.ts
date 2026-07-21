@@ -19,7 +19,12 @@ import {
 } from "../kicad/board_bom_visitor";
 import type { BomItem } from "../kicad/bom_item";
 import { ItemsGroupedByFpValueDNP } from "../kicad/ItemsGroupedByFpValueDNP";
-import { NetRef } from "../kicad/net_ref";
+import { NetRef, type LabelKind } from "../kicad/net_ref";
+import {
+    GlobalLabel,
+    HierarchicalLabel,
+    NetLabel,
+} from "../kicad/schematic";
 import { SchematicBomVisitor } from "../kicad/schematic_bom_visitor";
 import { NewStrokeGlyph } from "../kicad/text/newstroke-glyphs";
 
@@ -509,7 +514,18 @@ export class Project extends EventTarget implements IDisposable {
 
             for (const it of doc.labels) {
                 if (it.uuid) {
-                    const ref = new NetRef(doc.filename, it.text, it.uuid);
+                    let kind: LabelKind | undefined;
+                    if (it instanceof GlobalLabel) kind = "global";
+                    else if (it instanceof NetLabel) kind = "net";
+                    else if (it instanceof HierarchicalLabel)
+                        kind = "hierarchical";
+
+                    const ref = new NetRef(
+                        doc.filename,
+                        it.text,
+                        it.uuid,
+                        kind,
+                    );
                     this._net_item_refs.set(it.uuid, ref);
 
                     if (!this._label_name_refs.has(it.text))

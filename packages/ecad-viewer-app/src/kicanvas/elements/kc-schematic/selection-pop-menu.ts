@@ -18,39 +18,112 @@ export class SchSelectionPopMenu extends KCUIElement {
                 width: 100%;
                 background: transparent;
                 color: var(--pop-menu-fg);
-                z-index: 10; /* Set a higher z-index for the modal */
+                z-index: 10;
             }
 
-            /* Style the list inside the modal */
-            .modal-list {
+            .modal-panel {
                 background-color: var(--pop-menu-bg);
                 position: absolute;
-                display: block;
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
                 border-radius: 5px;
                 box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
-                list-style-type: none;
-                padding: 0;
+                padding: 8px 10px;
                 color: var(--pop-menu-fg);
-                z-index: 300; /* Set a higher z-index for the list */
+                z-index: 300;
+                min-width: 160px;
+                max-width: 280px;
+            }
+
+            .nav-header {
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+                border-bottom: 1px solid color-mix(in srgb, var(--pop-menu-fg) 20%, transparent);
+                padding-bottom: 6px;
+            }
+
+            .nav-title {
+                font-weight: 600;
+                font-size: 12px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            .nav-controls {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 8px;
+            }
+
+            .nav-controls button {
+                background: transparent;
+                border: 1px solid color-mix(in srgb, var(--pop-menu-fg) 35%, transparent);
+                color: var(--pop-menu-fg);
+                border-radius: 3px;
+                cursor: pointer;
+                padding: 2px 8px;
+                line-height: 1.2;
+            }
+
+            .nav-controls button:hover:not(:disabled) {
+                color: var(--pop-menu-fg-hover);
+                border-color: var(--pop-menu-fg-hover);
+            }
+
+            .nav-controls button:disabled {
+                opacity: 0.4;
+                cursor: default;
+            }
+
+            .nav-counter {
+                font-size: 11px;
+                font-variant-numeric: tabular-nums;
+            }
+
+            .modal-list {
+                list-style-type: none;
+                margin: 0;
+                padding: 0;
+                max-height: 220px;
+                overflow-y: auto;
             }
 
             .modal-list li {
                 color: var(--pop-menu-fg);
-                margin-bottom: 8px;
+                margin-bottom: 6px;
                 cursor: pointer;
-                transition: color 0.3s; /* Add transition for smooth hover effect */
+                padding: 2px 4px;
+                border-radius: 3px;
+                transition: color 0.3s, background-color 0.2s;
+            }
+
+            .modal-list li:last-child {
+                margin-bottom: 0;
             }
 
             .modal-list li:hover {
-                color: var(
-                    --pop-menu-fg-hover
-                ); /* Set your desired hover color */
+                color: var(--pop-menu-fg-hover);
+            }
+
+            .modal-list li.active {
+                color: var(--pop-menu-fg-hover);
+                background-color: color-mix(
+                    in srgb,
+                    var(--pop-menu-fg-hover) 18%,
+                    transparent
+                );
             }
         `,
     ];
     #net_items: NetRef[] = [];
+    #index = 0;
     #content: HTMLDivElement;
     #pos: Vec2 | null = null;
+    #anchor: Vec2 | null = null;
     viewer: SchematicViewer;
     constructor() {
         super();
@@ -68,11 +141,11 @@ export class SchSelectionPopMenu extends KCUIElement {
 
     private setup_events() {
         window.addEventListener("mousemove", (e) => {
-            this.#pos = new Vec2(e.offsetX, e.offsetY);
+            this.#pos = new Vec2(e.clientX, e.clientY);
         });
 
         this.addEventListener("click", (event: MouseEvent) => {
-            if (this.#content.contains(event.target as any)) {
+            if (this.#content?.contains(event.target as any)) {
                 return;
             }
 
@@ -85,37 +158,96 @@ export class SchSelectionPopMenu extends KCUIElement {
             this.#net_items = e.detail.items as NetRef[];
             if (!this.#net_items.length) {
                 this.hidden = true;
-            } else {
-                if (!this.#pos) return;
-                this.update();
-                this.#content.style.top = `${this.#pos.y - 10}px`;
-                this.#content.style.left = `${this.#pos.x}px`;
-                this.hidden = false;
+                return;
             }
+
+            const activeUuid = e.detail.activeUuid;
+            const found = activeUuid
+                ? this.#net_items.findIndex((it) => it.uuid === activeUuid)
+                : 0;
+            this.#index = found >= 0 ? found : 0;
+
+            if (!this.#pos) return;
+            this.#anchor = this.#pos.copy();
+            this.#apply_positioned_update();
+            this.hidden = false;
         });
+    }
+
+    #apply_positioned_update() {
+        this.update();
+        const anchor = this.#anchor ?? this.#pos;
+        if (!anchor || !this.#content) return;
+        this.#content.style.top = `${anchor.y - 10}px`;
+        this.#content.style.left = `${anchor.x}px`;
     }
 
     build_item_desc(itm: NetRef) {
         return `${itm.sheet_name}:${itm.name}`;
     }
 
-    override render() {
-        this.#content = html` <ul class="modal-list"></ul>` as HTMLDivElement;
+    #select_index(index: number, navigate: boolean) {
+        if (!this.#net_items.length) return;
+        const n = this.#net_items.length;
+        this.#index = ((index % n) + n) % n;
+        this.#apply_positioned_update();
+        if (!navigate) return;
+        const item = this.#net_items[this.#index];
+        this.viewer.dispatchEvent(
+            new NetItemSelectEvent({
+                sheet: item.sheet_name,
+                uuid: item.uuid,
+            }),
+        );
+    }
 
-        for (const i of this.#net_items) {
-            const selection = html` <li>${this.build_item_desc(i)}</li> `;
-            selection.addEventListener("click", () => {
-                this.viewer.dispatchEvent(
-                    new NetItemSelectEvent({
-                        sheet: i.sheet_name,
-                        uuid: i.uuid,
-                    }),
-                );
+    override render() {
+        const show_nav = this.#net_items.length >= 2;
+        const current = this.#net_items[this.#index];
+        const title = current?.name ?? "";
+
+        this.#content = html`<div class="modal-panel"></div>` as HTMLDivElement;
+
+        if (show_nav) {
+            const header = html`<div class="nav-header"></div>` as HTMLDivElement;
+            const title_el = html`<div class="nav-title">${title}</div>`;
+            const controls =
+                html`<div class="nav-controls"></div>` as HTMLDivElement;
+            const prev = html`<button type="button" title="Previous">‹</button>`;
+            const counter = html`<span class="nav-counter">${this.#index + 1} / ${this.#net_items.length}</span>`;
+            const next = html`<button type="button" title="Next">›</button>`;
+
+            prev.addEventListener("click", (e) => {
+                e.stopPropagation();
+                this.#select_index(this.#index - 1, true);
+            });
+            next.addEventListener("click", (e) => {
+                e.stopPropagation();
+                this.#select_index(this.#index + 1, true);
             });
 
-            this.#content.appendChild(selection);
+            controls.append(prev, counter, next);
+            header.append(title_el, controls);
+            this.#content.appendChild(header);
         }
-        return html` ${this.#content} `;
+
+        const list = html`<ul class="modal-list"></ul>` as HTMLUListElement;
+
+        for (let i = 0; i < this.#net_items.length; i++) {
+            const item = this.#net_items[i];
+            const selection = html`<li>${this.build_item_desc(item)}</li>`;
+            if (i === this.#index) {
+                selection.classList.add("active");
+            }
+            selection.addEventListener("click", (e) => {
+                e.stopPropagation();
+                this.#select_index(i, true);
+            });
+            list.appendChild(selection);
+        }
+
+        this.#content.appendChild(list);
+        return html`${this.#content}`;
     }
 }
 

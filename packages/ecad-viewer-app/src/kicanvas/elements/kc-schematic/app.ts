@@ -66,8 +66,8 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
         });
 
         this.viewer.addEventListener(SheetLoadEvent.type, (e) => {
-            if (this.#selection_pop_menu)
-                this.#selection_pop_menu.hidden = true;
+            // Keep the label-instance menu open across sheet loads so Next/Prev
+            // can continue cycling global labels on other pages.
             this.dispatchEvent(new SheetLoadEvent(e.detail));
         });
 
@@ -80,7 +80,7 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
             (e) => {
                 const it = this.project.find_net_item(e.detail.uuid);
                 if (!it) return;
-                this.pop_up_label_ref_menu([it]);
+                this.pop_up_label_ref_menu([it], e.detail.uuid);
             },
         );
 
@@ -168,12 +168,35 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
         });
 
         this.viewer.addEventListener(LabelClickEvent.type, (e) => {
-            const its = this.project.find_labels_by_name(e.detail.name);
-            if (!its) return;
+            // Prism hosts its own Selection inspector; skip the canvas popover
+            // when the embedded selection panel is disabled.
+            const host = this.closest("ecad-viewer");
+            if (host?.getAttribute("show-selection-panel") === "false") {
+                return;
+            }
 
-            this.pop_up_label_ref_menu(
-                its.filter((it) => it.uuid !== e.detail.uuid),
-            );
+            const its = this.project.find_labels_by_name(e.detail.name);
+            if (!its?.length) return;
+
+            const clicked = this.project.find_net_item(e.detail.uuid);
+            const kind = clicked?.kind;
+            let refs = its;
+
+            if (kind === "net") {
+                const sheet =
+                    clicked?.sheet_name ?? this.sch_viewer.sch_name;
+                refs = its.filter(
+                    (it) => it.kind === "net" && it.sheet_name === sheet,
+                );
+            } else if (kind === "global") {
+                refs = its.filter((it) => it.kind === "global");
+            } else if (kind === "hierarchical") {
+                refs = its.filter((it) => it.kind === "hierarchical");
+            }
+
+            if (refs.length < 2) return;
+
+            this.pop_up_label_ref_menu(refs, e.detail.uuid);
         });
 
         this.renderRoot.addEventListener("erc-jump", (e: any) => {
@@ -266,9 +289,9 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
         }
     }
 
-    pop_up_label_ref_menu(refs: NetRef[]) {
+    pop_up_label_ref_menu(refs: NetRef[], activeUuid?: string) {
         this.#selection_pop_menu.dispatchEvent(
-            new KiCanvasFitterMenuEvent({ items: refs }),
+            new KiCanvasFitterMenuEvent({ items: refs, activeUuid }),
         );
     }
 

@@ -28,6 +28,7 @@ import {
     EcadOverlayClickEvent,
     ImageExportRequestEvent,
     ImageExportResultEvent,
+    KiCanvasLoadEvent,
     KiCanvasSelectEvent,
     LoadZipEvent,
     LoadZipErrorEvent,
@@ -828,6 +829,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     public clearSelection(): void {
+        this.#probe_generation += 1;
         this.#safe_board_viewer()?.clear_selection();
         this.#safe_schematic_viewer()?.clear_selection();
     }
@@ -963,6 +965,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     // after the project finishes loading so a post-init auto-load can't override
     // the caller's choice.
     #desired_page?: string;
+    /** Bumped on clearSelection / new probe so late load().then focus is dropped. */
+    #probe_generation = 0;
 
     /**
      * Move the camera to a specific location (in world coordinates)
@@ -1032,6 +1036,90 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         await new Promise<void>((r) => requestAnimationFrame(() => r()));
         this.#emit_camera_change();
         return this.camera;
+    }
+
+    /**
+     * List schematic label / global-label / hierarchical-label instances that
+     * share the given text. Used by Prism's Selection inspector for Next/Prev.
+     * Accepts either bare label text or a hierarchical net path (uses the
+     * final path segment).
+     */
+    public findLabelInstances(name: string): Array<{
+        uuid: string;
+        sheet: string;
+        name: string;
+        kind?: "global" | "net" | "hierarchical";
+    }> {
+        const candidates = [name];
+        if (name.includes("/")) {
+            const bare = name.split("/").filter(Boolean).at(-1);
+            if (bare && bare !== name) candidates.push(bare);
+        }
+        for (const candidate of candidates) {
+            const refs = this.#project.find_labels_by_name(candidate) ?? [];
+            if (refs.length) {
+                return refs.map((ref) => ({
+                    uuid: ref.uuid,
+                    sheet: ref.sheet_name,
+                    name: ref.name,
+                    kind: ref.kind,
+                }));
+            }
+        }
+        return [];
+    }
+
+    /**
+     * Switch to the sheet containing a label instance (by uuid) and frame it.
+     * Emits `ecad-viewer:selection` so hosts can update their inspector.
+     */
+    public async focusLabelInstance(uuid: string): Promise<boolean> {
+        await this.ready;
+        const ref = this.#project.find_net_item(uuid);
+        if (!ref) return false;
+        const sch = this.#project.file_by_name(ref.sheet_name);
+        if (!(sch instanceof KicadSch)) return false;
+
+        if (this.#active_tab !== TabKind.sch && this.has_sch) {
+            await this.#switchToTab(TabKind.sch);
+        }
+
+        const page = this.#resolve_schematic_page(ref.sheet_name);
+        if (page) {
+            this.#desired_page = page.project_path;
+            this.#activate_schematic_page(page.project_path);
+        }
+
+        const sch_viewer = this.#safe_schematic_viewer();
+        if (!sch_viewer) return false;
+
+        if (sch_viewer.sch_name !== ref.sheet_name) {
+            sch_viewer.focus_net_item = uuid;
+            await sch_viewer.load(sch);
+        } else {
+            sch_viewer.zoom_fit_item(uuid);
+        }
+
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+
+        const schematic = sch_viewer.schematic;
+        if (schematic) {
+            const item =
+                schematic.global_labels.find((l) => l.uuid === uuid) ??
+                schematic.net_labels.find((l) => l.uuid === uuid) ??
+                schematic.hierarchical_labels.find((l) => l.uuid === uuid);
+            if (item) {
+                const detail = normalize_schematic_selection(item, schematic);
+                if (detail) {
+                    this.#attach_item_bounds_sch(detail, item, sch_viewer);
+                    this.dispatchEvent(new EcadSemanticSelectionEvent(detail));
+                }
+            }
+        }
+
+        this.#emit_camera_change();
+        this.#emit_view_state_change();
+        return true;
     }
 
     /**
@@ -1203,6 +1291,13 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         uuid?: string,
     ): { page: (typeof this.#project.pages)[number]; uuid: string } | null {
         if (!designator && !uuid) return null;
+        if (uuid) {
+            const net_ref = this.#project.find_net_item(uuid);
+            if (net_ref?.sheet_name) {
+                const page = this.#resolve_schematic_page(net_ref.sheet_name);
+                if (page) return { page, uuid: net_ref.uuid || uuid };
+            }
+        }
         for (const page of this.#project.pages) {
             const document = page.document;
             if (!(document instanceof KicadSch)) continue;
@@ -1231,6 +1326,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     async #apply_desired_page(): Promise<void> {
         const pageId = this.#desired_page;
         if (!pageId || !this.#schematic_app) return;
+        if (/\.kicad_pcb$/i.test(pageId)) {
+            console.warn(`showPage: Ignoring PCB path ${pageId}`);
+            return;
+        }
         const page = this.#resolve_schematic_page(pageId);
         if (!page) {
             console.warn(`showPage: Could not find page with ID ${pageId}`);
@@ -1359,7 +1458,13 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     public getPcbViewState(): EcadPcbViewState | null {
-        return this.#safe_board_viewer()?.get_host_view_state() ?? null;
+        try {
+            return this.#safe_board_viewer()?.get_host_view_state() ?? null;
+        } catch {
+            // Board canvas may not have painted layers yet during early project
+            // change events — treat as "not ready" instead of throwing.
+            return null;
+        }
     }
 
     public setPcbLayerVisibility(name: string, visible: boolean): boolean {
@@ -2308,14 +2413,34 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         const viewer = this.#safe_schematic_viewer();
         if (!viewer) return false;
 
+        const probe_gen = ++this.#probe_generation;
+
         let sheet = request.sheet ?? request.page;
         // Semantic indexes sometimes use "/" as a root sentinel — that is not
-        // a loadable schematic filename.
-        if (sheet === "/" || sheet === "") sheet = undefined;
+        // a loadable schematic filename. PCB anchors must never be treated as
+        // schematic pages (host used to pass "board.kicad_pcb").
+        if (
+            sheet === "/" ||
+            sheet === "" ||
+            (sheet != null && /\.kicad_pcb$/i.test(sheet))
+        ) {
+            sheet = undefined;
+        }
         let uuid = request.uuid ?? request.uuids?.[0];
         if (request.kind === "net") {
-            const refs =
-                this.#project.find_labels_by_name(request.net ?? value) ?? [];
+            const net_name = request.net ?? value;
+            const bare =
+                net_name.includes("/")
+                    ? net_name.split("/").filter(Boolean).at(-1)
+                    : undefined;
+            const name_candidates = [net_name, bare].filter(
+                (name): name is string => Boolean(name),
+            );
+            let refs: ReturnType<typeof this.#project.find_labels_by_name> = [];
+            for (const name of name_candidates) {
+                refs = this.#project.find_labels_by_name(name) ?? [];
+                if (refs.length) break;
+            }
             // Deterministic: prefer requested sheet, else first by sheet name.
             const preferred = sheet;
             const sorted = [...refs].sort((a, b) =>
@@ -2326,7 +2451,13 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                     ? sorted.find((entry) => entry.sheet_name === preferred)
                     : undefined) ?? sorted[0];
             sheet ??= ref?.sheet_name;
-            if (sheet === "/" || sheet === "") sheet = undefined;
+            if (
+                sheet === "/" ||
+                sheet === "" ||
+                (sheet != null && /\.kicad_pcb$/i.test(sheet))
+            ) {
+                sheet = undefined;
+            }
             uuid ??= ref?.uuid;
             // Fall back to any provided wire/label uuid list from the host.
             uuid ??= request.uuids?.find(Boolean);
@@ -2345,18 +2476,23 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             return false;
         }
 
-        const focus = (target_uuid: string) => {
+        const focus = (target_uuid: string): boolean => {
             const candidates = [
                 target_uuid,
                 ...(request.uuids ?? []).filter((id) => id && id !== target_uuid),
             ];
+            if (request.designator) {
+                const by_ref = viewer.schematic?.find_symbol(request.designator);
+                if (by_ref?.uuid) candidates.push(by_ref.uuid);
+            }
             for (const id of candidates) {
                 const bbox = viewer.schematic_renderer.get_item_bbox(id);
                 if (bbox) {
                     viewer.zoom_fit_item(id);
-                    return;
+                    return true;
                 }
             }
+            return false;
         };
 
         // Resolve the hierarchical instance page. Filename equality with the
@@ -2392,7 +2528,13 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             const target =
                 page.document instanceof KicadSch ? page.document : null;
             if (target) {
-                void viewer.load(target).then(() => focus(uuid!));
+                // Prefer the viewer's post-load focus hook — bbox maps are not
+                // always ready in the same turn as load() resolves.
+                viewer.focus_net_item = uuid;
+                void viewer.load(target).then(() => {
+                    if (probe_gen !== this.#probe_generation) return;
+                    focus(uuid!);
+                });
                 return true;
             }
         }
@@ -2603,6 +2745,11 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                     EcadCommentAreaEvent.type,
                     (event) => this.#relay_comment_area_event(event),
                 );
+                // Host layer/object panels need a refresh once the board paints —
+                // project "change" can fire before layers exist.
+                this.#board_app.addEventListener(KiCanvasLoadEvent.type, () => {
+                    this.#emit_view_state_change();
+                });
             }
             this.#board_app.showPropertyPanel = this.showSelectionPanel;
             embed_to_tab(this.#board_app, TabKind.pcb);
