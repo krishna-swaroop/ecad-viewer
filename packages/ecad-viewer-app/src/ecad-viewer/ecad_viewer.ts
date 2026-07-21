@@ -1153,12 +1153,34 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     #resolve_schematic_page(pageId: string) {
+        const id = pageId.trim();
+        if (!id) return undefined;
+        const exact = this.#project.pages.find(
+            (candidate) =>
+                candidate.project_path === id ||
+                candidate.filename === id ||
+                candidate.name === id ||
+                candidate.page === id ||
+                candidate.sheet_path === id,
+        );
+        if (exact) return exact;
+
+        // Filename without Subsheets/ prefix, or a trailing project_path suffix.
+        const by_suffix = this.#project.pages.find(
+            (candidate) =>
+                candidate.filename.endsWith(`/${id}`) ||
+                candidate.project_path.endsWith(id) ||
+                (id.includes(":") &&
+                    candidate.project_path.endsWith(id.slice(id.indexOf(":")))),
+        );
+        if (by_suffix) return by_suffix;
+
+        // Compose filename + instance path when the host sent them separately
+        // historically as bare filename while pages are keyed filename:/path.
         return this.#project.pages.find(
             (candidate) =>
-                candidate.project_path === pageId ||
-                candidate.filename === pageId ||
-                candidate.name === pageId ||
-                candidate.page === pageId,
+                id === candidate.filename ||
+                `${candidate.filename}:${candidate.sheet_path}` === id,
         );
     }
 
@@ -2285,6 +2307,39 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 break;
             }
         }
+        if (!uuid && !(request.designator ?? value)) {
+            return false;
+        }
+
+        const designator = request.designator ?? value;
+        const resolve_target_page = () => {
+            if (sheet) {
+                const by_sheet = this.#resolve_schematic_page(sheet);
+                if (by_sheet) return by_sheet;
+            }
+            if (uuid) {
+                for (const page of this.#project.pages) {
+                    if (
+                        page.document instanceof KicadSch &&
+                        page.document.find_symbol(uuid!)
+                    ) {
+                        return page;
+                    }
+                }
+            }
+            if (designator) {
+                for (const page of this.#project.pages) {
+                    if (!(page.document instanceof KicadSch)) continue;
+                    const symbol = page.document.find_symbol(designator);
+                    if (!symbol) continue;
+                    uuid ??= symbol.uuid;
+                    return page;
+                }
+            }
+            return undefined;
+        };
+
+        const target_page = resolve_target_page();
         if (!uuid) {
             return false;
         }
@@ -2302,17 +2357,21 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 }
             }
         };
-        if (sheet && sheet !== viewer.sch_name) {
-            const page = this.#resolve_schematic_page(sheet);
-            const target =
-                (page?.document instanceof KicadSch ? page.document : null) ??
-                this.#project.file_by_name(sheet);
-            if (target instanceof KicadSch) {
-                if (page) this.#activate_schematic_page(page.project_path);
-                void viewer.load(target).then(focus);
+
+        const active = this.#active_schematic_page();
+        if (
+            target_page &&
+            target_page.project_path !== active?.project_path
+        ) {
+            const doc =
+                target_page.document instanceof KicadSch
+                    ? target_page.document
+                    : null;
+            if (doc) {
+                this.#activate_schematic_page(target_page.project_path);
+                void viewer.load(doc).then(focus);
                 return true;
             }
-            // Invalid sheet sentinel — still focus on the current sheet.
         }
         focus();
         return true;
