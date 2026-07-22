@@ -39,8 +39,7 @@ export function is_array<T = unknown>(value: unknown): value is T[] {
     return Array.isArray(value);
 }
 
-// eslint-disable-next-line @typescript-eslint/ban-types
-export function is_object(value: unknown): value is Object {
+export function is_object(value: unknown): value is object {
     return (
         typeof value === "object" &&
         value !== null &&

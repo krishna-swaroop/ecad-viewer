@@ -228,18 +228,56 @@ export abstract class KCViewerAppElement<
 
     protected abstract can_load(src: KicadAssert): boolean;
 
+    /**
+     * Unhide the loaded viewer shell without re-entering DocumentViewer.load.
+     * Used by document-comparison cold paths that already painted via
+     * load_diff_document.
+     */
+    public revealLoadedContent(): void {
+        if (this.#content) {
+            this.#content.hidden = false;
+        }
+        if (this.#placeholder) {
+            this.#placeholder.hidden = true;
+        }
+    }
+
     override async load(src: KicadAssert) {
         await this.viewerReady;
+        const documentViewer = this.viewer as Viewer & {
+            is_disposed?: boolean;
+            set_drawing_sheet?: (
+                sheet: ReturnType<Project["drawing_sheet_for"]>,
+            ) => void;
+        };
+        if (documentViewer?.is_disposed) {
+            return;
+        }
         if (this.can_load(src)) {
-            const documentViewer = this.viewer as Viewer & {
-                set_drawing_sheet?: (
-                    sheet: ReturnType<Project["drawing_sheet_for"]>,
-                ) => void;
-            };
             documentViewer.set_drawing_sheet?.(
                 this.project.drawing_sheet_for(this.assert_type(), src),
             );
+            if (
+                "document" in documentViewer
+                && (documentViewer as Viewer & { document?: unknown }).document
+                    === src
+            ) {
+                this.revealLoadedContent();
+                const settled = documentViewer as Viewer & {
+                    renderer?: { update_canvas_size?: () => void };
+                    viewport?: { sync_from_canvas?: () => boolean };
+                    draw_now?: () => void;
+                    draw?: () => void;
+                };
+                settled.renderer?.update_canvas_size?.();
+                settled.viewport?.sync_from_canvas?.();
+                settled.draw_now?.() ?? settled.draw?.();
+                return;
+            }
             await this.#viewer_elm.load(src);
+            if (documentViewer.is_disposed) {
+                return;
+            }
             if (this.#content) {
                 this.#content.hidden = false;
             }
@@ -259,9 +297,13 @@ export abstract class KCViewerAppElement<
                     sync_from_canvas?: () => boolean;
                     camera?: { zoom?: number; viewport_size?: { x: number; y: number } };
                 };
+                is_disposed?: boolean;
             };
+            if (settled?.is_disposed) {
+                return;
+            }
             const settle_visible = () => {
-                if (!settled?.document) return;
+                if (!settled?.document || settled.is_disposed) return;
                 settled.renderer?.update_canvas_size?.();
                 const sized = settled.viewport?.sync_from_canvas?.() ?? false;
                 settled.paint?.();

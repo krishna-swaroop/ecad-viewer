@@ -16,6 +16,7 @@ import {
 } from "../../../kicad/text";
 import { LayerNames, ViewLayer } from "../layers";
 import { SchematicItemPainter } from "./base";
+import { get_symbol_transform } from "./symbol";
 
 /**
  * Implements KiCAD rendering logic for symbol pins.
@@ -51,8 +52,14 @@ export class PinPainter extends SchematicItemPainter {
             orientation: angle_to_orientation(p.definition.at.rotation),
         };
 
+        // Pin instances normally inherit a transform cached while their
+        // owning symbol is painted. Derived/retained comparison targets can
+        // legitimately reach this painter independently, so recover the same
+        // transform from the parent instead of crashing the whole document.
         const current_symbol_transform =
-            this.view_painter.pin_transform.get(p)!;
+            this.view_painter.pin_transform.get(p) ??
+            get_symbol_transform(p.parent);
+        this.view_painter.pin_transform.set(p, current_symbol_transform);
 
         const color = this.dim_if_needed(this.theme.pin);
 

@@ -9,6 +9,20 @@ import { Matrix3 } from "./matrix3";
 import { Angle, type AngleLike } from "./angle";
 import { BBox } from "./bbox";
 
+export interface CameraViewportInsets {
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+}
+
+const empty_viewport_insets = (): CameraViewportInsets => ({
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+});
+
 /**
  * A camera in 2d space.
  *
@@ -18,6 +32,8 @@ import { BBox } from "./bbox";
  * graphics backend you're using.
  */
 export class Camera2 {
+    #fit_insets = empty_viewport_insets();
+
     /**
      * Create a camera
      * @param {Vec2} viewport_size - The width and height of the viewport
@@ -31,6 +47,53 @@ export class Camera2 {
         public zoom: number = 1,
         public rotation: Angle = new Angle(0),
     ) {}
+
+    public get fit_insets(): CameraViewportInsets {
+        return { ...this.#fit_insets };
+    }
+
+    public set fit_insets(value: Partial<CameraViewportInsets> | null) {
+        const non_negative = (candidate: number | undefined) =>
+            Math.max(0, Number.isFinite(candidate) ? (candidate ?? 0) : 0);
+        this.#fit_insets = {
+            left: non_negative(value?.left),
+            right: non_negative(value?.right),
+            top: non_negative(value?.top),
+            bottom: non_negative(value?.bottom),
+        };
+    }
+
+    /** Screen-space center of the unobscured viewport used by bbox fitting. */
+    public get fit_viewport_center(): Vec2 {
+        const available = this.fit_viewport_size;
+        return new Vec2(
+            this.#fit_insets.left + available.x / 2,
+            this.#fit_insets.top + available.y / 2,
+        );
+    }
+
+    /** Unobscured viewport size after host-owned overlay rails are removed. */
+    public get fit_viewport_size(): Vec2 {
+        return new Vec2(
+            Math.max(
+                1,
+                this.viewport_size.x -
+                    this.#fit_insets.left -
+                    this.#fit_insets.right,
+            ),
+            Math.max(
+                1,
+                this.viewport_size.y -
+                    this.#fit_insets.top -
+                    this.#fit_insets.bottom,
+            ),
+        );
+    }
+
+    public zoom_for_bbox(bbox: BBox): number {
+        const available = this.fit_viewport_size;
+        return Math.min(available.x / bbox.w, available.y / bbox.h);
+    }
 
     /**
      * Relative translation
@@ -93,12 +156,17 @@ export class Camera2 {
         ) {
             return;
         }
-        const zoom_w = this.viewport_size.x / bbox.w;
-        const zoom_h = this.viewport_size.y / bbox.h;
+        const fit_center = this.fit_viewport_center;
         const center_x = bbox.x + bbox.w / 2;
         const center_y = bbox.y + bbox.h / 2;
-        this.zoom = Math.min(zoom_w, zoom_h);
-        this.center.set(center_x, center_y);
+        this.zoom = this.zoom_for_bbox(bbox);
+        // The camera matrix still spans the full canvas. Offset its world
+        // center so the fitted object lands in the visible region between
+        // host-owned overlay rails rather than underneath them.
+        this.center.set(
+            center_x + (this.viewport_size.x / 2 - fit_center.x) / this.zoom,
+            center_y + (this.viewport_size.y / 2 - fit_center.y) / this.zoom,
+        );
     }
 
     get top() {

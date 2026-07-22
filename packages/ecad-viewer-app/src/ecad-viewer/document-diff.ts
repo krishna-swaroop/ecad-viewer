@@ -31,6 +31,8 @@ export type KiCadItemChange = {
     properties: KiCadPropertyDelta[];
     bbox: [number, number, number, number];
     refdes?: string;
+    sourceSide?: "reference" | "comparison";
+    retainReference?: boolean;
     children: KiCadItemChange[];
 };
 
@@ -56,8 +58,10 @@ export type EcadIndexedChange = {
     path: string[];
     change: KiCadItemChange;
     category: EcadDiffCategory;
+    sourceSide: "reference" | "comparison";
     worldBounds: BBox;
     parentId?: string;
+    rootId: string;
 };
 
 export type EcadDiffGroup = {
@@ -176,6 +180,25 @@ function parse_change(value: unknown, label: string): KiCadItemChange {
         ...(record["refdes"] === undefined
             ? {}
             : { refdes: as_string(record["refdes"], `${label}.refdes`) }),
+        ...(record["sourceSide"] === undefined
+            ? {}
+            : record["sourceSide"] === "reference" ||
+                record["sourceSide"] === "comparison"
+              ? { sourceSide: record["sourceSide"] }
+              : (() => {
+                    throw new TypeError(
+                        `${label}.sourceSide must be reference or comparison`,
+                    );
+                })()),
+        ...(record["retainReference"] === undefined
+            ? {}
+            : typeof record["retainReference"] === "boolean"
+              ? { retainReference: record["retainReference"] }
+              : (() => {
+                    throw new TypeError(
+                        `${label}.retainReference must be a boolean`,
+                    );
+                })()),
         children: record["children"].map((child, index) =>
             parse_change(child, `${label}.children[${index}]`),
         ),
@@ -279,7 +302,11 @@ export function buildDocumentDiffIndex(
     const byId = new Map<string, EcadIndexedChange[]>();
     const bySourceId = new Map<string, EcadIndexedChange[]>();
 
-    const visit = (change: KiCadItemChange, parentId?: string) => {
+    const visit = (
+        change: KiCadItemChange,
+        parentId?: string,
+        rootId = change.id,
+    ) => {
         const path = split_kiid_path(change.id);
         const sourceId = path.at(-1);
         const indexed: EcadIndexedChange = {
@@ -288,13 +315,17 @@ export function buildDocumentDiffIndex(
             path,
             change,
             category: change_category(change.kind),
+            sourceSide:
+                change.sourceSide ??
+                (change.kind === "removed" ? "reference" : "comparison"),
             worldBounds: bbox_to_world(change.bbox, units),
             parentId,
+            rootId,
         };
         changes.push(indexed);
         add_to_index(byId, indexed.id, indexed);
         if (sourceId) add_to_index(bySourceId, sourceId, indexed);
-        for (const child of change.children) visit(child, change.id);
+        for (const child of change.children) visit(child, change.id, rootId);
     };
 
     for (const change of document.changes) visit(change);

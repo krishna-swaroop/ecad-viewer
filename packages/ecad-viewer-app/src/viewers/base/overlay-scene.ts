@@ -25,6 +25,8 @@ export type EcadOverlayStyle = {
     opacity?: number;
     strokeWidth?: number;
     dash?: number[];
+    dashOffset?: number;
+    fitAdaptiveStroke?: boolean;
     blend?: GlobalCompositeOperation;
 };
 
@@ -111,6 +113,17 @@ type CompiledPrimitive = {
 
 const GRID_SIZE = 20;
 
+export function fit_adaptive_stroke_width(
+    base_width: number,
+    zoom: number,
+    fit_zoom: number,
+): number {
+    const ratio = zoom / Math.max(fit_zoom, 0.0001);
+    if (ratio <= 1) return 5;
+    if (ratio >= 3) return base_width;
+    return 5 - ((ratio - 1) / 2) * (5 - base_width);
+}
+
 export class OverlaySceneManager {
     #scenes = new Map<string, { signature: string; scene: EcadOverlayScene }>();
     #compiled = new Map<string, CompiledPrimitive[]>();
@@ -122,6 +135,7 @@ export class OverlaySceneManager {
         private layers: ViewLayerSet,
         private readonly resolve_anchor: OverlayAnchorResolver,
         private readonly get_zoom: () => number,
+        private readonly get_fit_zoom: () => number,
     ) {}
 
     replace_layers(layers: ViewLayerSet) {
@@ -233,11 +247,21 @@ export class OverlaySceneManager {
                 ? primitive.fill
                 : "#3388ff33",
         ).with_alpha(opacity);
-        const width = (primitive.strokeWidth ?? 0.25) * scale;
+        const base_width = primitive.strokeWidth ?? 0.25;
+        const fit_zoom = Math.max(this.get_fit_zoom() || zoom, 0.0001);
+        const adaptive_width = primitive.fitAdaptiveStroke
+            ? fit_adaptive_stroke_width(base_width, zoom, fit_zoom)
+            : base_width;
+        const width = adaptive_width * scale;
         if (primitive.kind === "marker") {
             const radius = (primitive.radius ?? 4) * scale;
             if (primitive.glyph === "comment") {
-                this.#paint_comment_glyph(anchor.point, radius, primitive, opacity);
+                this.#paint_comment_glyph(
+                    anchor.point,
+                    radius,
+                    primitive,
+                    opacity,
+                );
             } else {
                 this.renderer.circle(anchor.point, radius, fill);
             }
@@ -259,9 +283,12 @@ export class OverlaySceneManager {
             if (primitive.dash && primitive.dash.length) {
                 this.#paint_dashed_rect(
                     bounds,
-                    primitive.dash.map((segment) => Math.max(segment * scale, 0.01)),
+                    primitive.dash.map((segment) =>
+                        Math.max(segment * scale, 0.01),
+                    ),
                     width,
                     stroke,
+                    (primitive.dashOffset ?? 0) * scale,
                 );
             } else {
                 this.renderer.line(Polyline.from_BBox(bounds, width, stroke));
@@ -272,7 +299,19 @@ export class OverlaySceneManager {
             const points = primitive.points.map(([x, y]) =>
                 anchor.point.add(new Vec2(x, y)),
             );
-            this.renderer.line(new Polyline(points, width, stroke));
+            if (primitive.dash && primitive.dash.length) {
+                this.#paint_dashed_polyline(
+                    points,
+                    primitive.dash.map((segment) =>
+                        Math.max(segment * scale, 0.01),
+                    ),
+                    width,
+                    stroke,
+                    (primitive.dashOffset ?? 0) * scale,
+                );
+            } else {
+                this.renderer.line(new Polyline(points, width, stroke));
+            }
             return BBox.from_points(points).grow(width);
         }
         if (primitive.kind === "polygon") {
@@ -315,6 +354,7 @@ export class OverlaySceneManager {
         dash: number[],
         width: number,
         color: Color,
+        offset = 0,
     ) {
         const corners = [
             bounds.top_left,
@@ -323,13 +363,36 @@ export class OverlaySceneManager {
             bounds.bottom_left,
             bounds.top_left,
         ];
+        this.#paint_dashed_polyline(corners, dash, width, color, offset);
+    }
+
+    #paint_dashed_polyline(
+        points: Vec2[],
+        dash: number[],
+        width: number,
+        color: Color,
+        offset = 0,
+    ) {
         const pattern = dash.length ? dash : [width * 4, width * 2];
         let pattern_index = 0;
         let remaining = pattern[0] ?? 1;
         let drawing = true;
-        for (let i = 0; i < corners.length - 1; i++) {
-            const start = corners[i]!;
-            const end = corners[i + 1]!;
+        const cycle = pattern.reduce((sum, value) => sum + value, 0);
+        let phase = cycle > 0 ? ((offset % cycle) + cycle) % cycle : 0;
+        while (phase > 0 && pattern.length) {
+            if (phase < remaining) {
+                remaining -= phase;
+                phase = 0;
+            } else {
+                phase -= remaining;
+                pattern_index = (pattern_index + 1) % pattern.length;
+                remaining = pattern[pattern_index] ?? 1;
+                drawing = !drawing;
+            }
+        }
+        for (let i = 0; i < points.length - 1; i++) {
+            const start = points[i]!;
+            const end = points[i + 1]!;
             const segment = end.sub(start);
             const segment_length = segment.magnitude;
             if (segment_length === 0) continue;

@@ -23,20 +23,26 @@ export type EcadDiffPresentation = {
     signature: string;
     statusByItem: ReadonlyMap<object, EcadDiffPaintStatus>;
     itemsBySourceId: ReadonlyMap<string, readonly object[]>;
-    removedItems: readonly object[];
+    itemsBySideAndSourceId: ReadonlyMap<string, readonly object[]>;
+    referenceItems: readonly object[];
     diagnostics: readonly EcadDiffResolutionDiagnostic[];
 };
 
 type SourceIndex = Map<string, object[]>;
 
+type PaintItemIndex = {
+    bySourceId: SourceIndex;
+    rootByItem: ReadonlyMap<object, object>;
+};
+
 const STATUS_COLORS: Record<
     Exclude<EcadDiffPaintStatus, "unchanged">,
     Color
 > = {
-    added: Color.from_css("#33994d"),
-    removed: Color.from_css("#cc3333"),
-    modified: Color.from_css("#d9a619"),
-    conflict: Color.from_css("#a633b3"),
+    added: Color.from_css("#2BE481"),
+    removed: Color.from_css("#FF4D67"),
+    modified: Color.from_css("#FFC928"),
+    conflict: Color.from_css("#D76BFF"),
 };
 
 export function source_id_of(item: unknown): string | undefined {
@@ -61,13 +67,15 @@ function add_index(map: SourceIndex, id: string, item: object): void {
  * pads/graphics through items(); schematic symbols expose children through
  * the painter and inherit their parent's status when not directly indexed.
  */
-export function index_paint_items(document: PaintableDocument): SourceIndex {
+function build_paint_item_index(document: PaintableDocument): PaintItemIndex {
     const index: SourceIndex = new Map();
     const visited = new Set<object>();
+    const root_by_item = new Map<object, object>();
 
-    const visit = (item: unknown) => {
+    const visit = (item: unknown, root: object) => {
         if (!item || typeof item !== "object" || visited.has(item)) return;
         visited.add(item);
+        root_by_item.set(item, root);
         const id = source_id_of(item);
         if (id) add_index(index, id, item);
 
@@ -78,13 +86,23 @@ export function index_paint_items(document: PaintableDocument): SourceIndex {
             for (const child of (
                 item as { items(): Iterable<unknown> }
             ).items()) {
-                visit(child);
+                visit(child, root);
             }
         }
     };
 
-    for (const item of document.items()) visit(item);
-    return index;
+    for (const item of document.items()) {
+        if (!item || typeof item !== "object") continue;
+        visit(item, item);
+    }
+    return {
+        bySourceId: index,
+        rootByItem: root_by_item,
+    };
+}
+
+export function index_paint_items(document: PaintableDocument): SourceIndex {
+    return build_paint_item_index(document).bySourceId;
 }
 
 function status_for(change: EcadIndexedChange): EcadDiffPaintStatus {
@@ -108,20 +126,24 @@ export function build_diff_presentation(
     reference: PaintableDocument,
     comparison: PaintableDocument,
 ): EcadDiffPresentation {
-    const reference_index = index_paint_items(reference);
-    const comparison_index = index_paint_items(comparison);
+    const reference_item_index = build_paint_item_index(reference);
+    const comparison_item_index = build_paint_item_index(comparison);
+    const reference_index = reference_item_index.bySourceId;
+    const comparison_index = comparison_item_index.bySourceId;
     const status_by_item = new Map<object, EcadDiffPaintStatus>();
     const items_by_source_id = new Map<string, readonly object[]>();
-    const removed_items: object[] = [];
+    const items_by_side_and_source_id = new Map<string, readonly object[]>();
+    const reference_items: object[] = [];
+    const retained_reference_items = new Set<object>();
     const diagnostics: EcadDiffResolutionDiagnostic[] = [];
-    const removed_change_ids = new Set(
+    const reference_change_ids = new Set(
         diff.changes
-            .filter((entry) => entry.category === "removed")
+            .filter((entry) => entry.sourceSide === "reference")
             .map((entry) => entry.id),
     );
 
     for (const entry of diff.changes) {
-        const side = entry.category === "removed" ? "reference" : "comparison";
+        const side = entry.sourceSide;
         if (!entry.sourceId) {
             diagnostics.push({
                 changeId: entry.id,
@@ -144,14 +166,39 @@ export function build_diff_presentation(
             continue;
         }
 
-        status_by_item.set(item, status_for(entry));
-        items_by_source_id.set(entry.sourceId, [item]);
+        let presentation_item = item;
         if (
-            entry.category === "removed" &&
-            (!entry.parentId || !removed_change_ids.has(entry.parentId))
+            entry.sourceSide === "reference" &&
+            (entry.change.retainReference ||
+                !entry.parentId ||
+                !reference_change_ids.has(entry.parentId))
         ) {
-            removed_items.push(item);
+            const root = reference_item_index.rootByItem.get(item);
+            // Some dependent items (notably schematic PinInstance) are
+            // yielded by both their owning symbol and document.items(). The
+            // first recursive visit records the actual independently
+            // paintable owner; do not mistake the later document-level yield
+            // for proof that the child can be painted on its own.
+            const paint_item = root ?? item;
+            // Nested library text, pins, and graphics depend on their owning
+            // symbol's paint transform. Promote them to the top-level owner so
+            // Composite paints a safe, visible whole-symbol halo instead of a
+            // transform-less child that can blank the view.
+            if (paint_item) {
+                presentation_item = paint_item;
+                if (!retained_reference_items.has(paint_item)) {
+                    retained_reference_items.add(paint_item);
+                    reference_items.push(paint_item);
+                }
+            }
         }
+        status_by_item.set(item, status_for(entry));
+        status_by_item.set(presentation_item, status_for(entry));
+        items_by_source_id.set(entry.sourceId, [presentation_item]);
+        items_by_side_and_source_id.set(
+            `${entry.sourceSide}:${entry.sourceId}`,
+            [presentation_item],
+        );
     }
 
     const signature = JSON.stringify({
@@ -168,31 +215,33 @@ export function build_diff_presentation(
         signature,
         statusByItem: status_by_item,
         itemsBySourceId: items_by_source_id,
-        removedItems: removed_items,
+        itemsBySideAndSourceId: items_by_side_and_source_id,
+        referenceItems: reference_items,
         diagnostics,
     };
 }
 
 /**
- * KiCad-style paint transform: normal document colors become a fixed neutral
- * context; changed native items use the category palette while preserving the
- * primitive's original alpha.
+ * Comparison paint transform:
+ * - unchanged: softly mute theme/layer hues toward the page while preserving
+ *   enough original color to keep schematic and copper context readable;
+ * - A/R/M/conflict: tint the original color toward the status palette so
+ *   geometry stays readable while status stays vivid.
  */
 export function apply_diff_color(
     color: Color,
     status: EcadDiffPaintStatus,
     background = Color.black,
 ): Color {
-    const background_luminance =
-        background.r * 0.299 + background.g * 0.587 + background.b * 0.114;
-    const monochrome_background = new Color(
-        background_luminance,
-        background_luminance,
-        background_luminance,
+    if (status === "unchanged") {
+        const partially_desaturated = color.mix(color.grayscale, 0.45);
+        const muted = partially_desaturated.mix(background, 0.72);
+        return muted.with_alpha(color.a * 0.76);
+    }
+    const status_color = STATUS_COLORS[status];
+    // Bias toward status (~62%) while retaining some original layer identity.
+    const tinted = color.mix(status_color, 0.25);
+    return tinted.with_alpha(
+        Math.min(1, Math.max(color.a, 0.72) * status_color.a),
     );
-    const neutral = (
-        background_luminance < 0.5 ? Color.white : Color.black
-    ).mix(monochrome_background, 0.58);
-    const target = status === "unchanged" ? neutral : STATUS_COLORS[status];
-    return target.with_alpha(target.a * color.a);
 }

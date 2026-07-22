@@ -13,8 +13,10 @@ import kc_ui_styles from "../kc-ui/kc-ui.css";
 import {
     AssertType,
     Project,
+    type ProjectPage,
     getParserPerfSnapshot,
 } from "../kicanvas/project";
+import type { NetRef } from "../kicad/net_ref";
 import { type EcadBlob, type EcadSources } from "../kicanvas/services/vfs";
 import { KCBoardAppElement } from "../kicanvas/elements/kc-board/app";
 import { KCSchematicAppElement } from "../kicanvas/elements/kc-schematic/app";
@@ -40,7 +42,10 @@ import {
     TabMenuClickEvent,
     TabMenuVisibleChangeEvent,
 } from "../viewers/base/events";
-import type { EcadOverlayScene } from "../viewers/base/overlay-scene";
+import type {
+    EcadOverlayPrimitive,
+    EcadOverlayScene,
+} from "../viewers/base/overlay-scene";
 import {
     COMMENT_OVERLAY_CHANNELS,
     EcadCommentOverlayClickEvent,
@@ -63,14 +68,20 @@ import {
 import {
     EcadDocumentComparisonFrameEvent,
     EcadDocumentComparisonReadyEvent,
+    EcadTransitionTraceEvent,
     prepareComparisonDocument,
     type EcadDocumentComparisonPreparation,
     type EcadDocumentComparisonRequest,
     type EcadDocumentComparisonSelection,
     type EcadDocumentComparisonSelectionResult,
     type EcadPreparedDiffTarget,
+    type EcadRevisionDiffPresentationRequest,
+    type EcadTransitionTraceDetail,
 } from "./document-comparison";
-import { build_diff_presentation } from "../viewers/base/diff-presentation";
+import {
+    build_diff_presentation,
+    index_paint_items,
+} from "../viewers/base/diff-presentation";
 import type { EcadDiffPresentation } from "../viewers/base/diff-presentation";
 import type { PaintableDocument } from "../viewers/base/painter";
 import type { DocumentViewer } from "../viewers/base/document-viewer";
@@ -100,10 +111,15 @@ export type {
     EcadDocumentComparisonSelection,
     EcadDocumentComparisonSelectionResult,
     EcadPreparedDiffTarget,
+    EcadRevisionDiffPresentationRequest,
+    EcadRevisionDiffTarget,
+    EcadRevisionDiffVisualTarget,
+    EcadTransitionTraceDetail,
 } from "./document-comparison";
 export {
     EcadDocumentComparisonFrameEvent,
     EcadDocumentComparisonReadyEvent,
+    EcadTransitionTraceEvent,
     buildDocumentComparisonTargets,
     prepareComparisonDocument,
     selectComparisonDocument,
@@ -146,6 +162,20 @@ export interface EcadPcbLayerState {
     visible: boolean;
     highlighted: boolean;
 }
+
+export interface EcadViewportInsets {
+    left?: number;
+    right?: number;
+    top?: number;
+    bottom?: number;
+}
+
+const DIFF_STATUS_COLORS = {
+    added: "#2BE481",
+    removed: "#FF4D67",
+    modified: "#FFC928",
+    conflict: "#D76BFF",
+} as const;
 
 export interface EcadPcbViewState {
     layers: EcadPcbLayerState[];
@@ -190,6 +220,21 @@ function empty_diff_document(
         version: 20240108,
         generator: "ecad-viewer-empty-diff",
         paper: { size: "A4", portrait: false },
+        title_block: {
+            title: "",
+            date: "",
+            rev: "",
+            company: "",
+            comment: {},
+        },
+        layers: [],
+        nets: [],
+        footprints: [],
+        zones: [],
+        segments: [],
+        vias: [],
+        drawings: [],
+        groups: [],
     });
 }
 
@@ -375,7 +420,83 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     #document_comparison_request_id = 0;
     #document_comparison_load_generation = 0;
     #document_comparison_load_tail: Promise<void> = Promise.resolve();
+    #source_replace_generation = 0;
+    #source_replace_tail: Promise<void> = Promise.resolve();
+    #visible_ready: Promise<void> = Promise.resolve();
+    #transition_trace_sequence = 0;
     static readonly #DIFF_SELECTION_CHANNEL = ":document-diff:selection";
+    static readonly #DIFF_HALO_CHANNEL = ":document-diff:halos";
+    #selected_document_diff: EcadDocumentComparisonSelection | null = null;
+    #preview_document_diff: EcadDocumentComparisonSelection | null = null;
+    #revision_diff_presentation: {
+        context: "SCH" | "PCB";
+        targets: Map<string, EcadPreparedDiffTarget>;
+    } | null = null;
+    #selected_revision_diff: string | null = null;
+    #preview_revision_diff: string | null = null;
+    #diff_animation_frame: number | null = null;
+    #diff_animation_started = 0;
+    #viewport_insets: Required<EcadViewportInsets> = {
+        left: 0,
+        right: 0,
+        top: 0,
+        bottom: 0,
+    };
+
+    #apply_viewport_insets(): void {
+        this.#safe_board_viewer()?.set_viewport_insets(this.#viewport_insets);
+        this.#safe_schematic_viewer()?.set_viewport_insets(
+            this.#viewport_insets,
+        );
+    }
+
+    /**
+     * Reserve host-owned overlay rails while retaining a full-size canvas.
+     * This is camera-only: it never reparses or repaints the document.
+     */
+    public setViewportInsets(insets: EcadViewportInsets | null): void {
+        const non_negative = (value: number | undefined) =>
+            Math.max(0, Number.isFinite(value) ? (value ?? 0) : 0);
+        this.#viewport_insets = {
+            left: non_negative(insets?.left),
+            right: non_negative(insets?.right),
+            top: non_negative(insets?.top),
+            bottom: non_negative(insets?.bottom),
+        };
+        this.#apply_viewport_insets();
+    }
+
+    #trace_transition(
+        event: string,
+        detail: Omit<
+            EcadTransitionTraceDetail,
+            "sequence" | "timestamp" | "event"
+        > = {},
+    ): void {
+        this.dispatchEvent(
+            new EcadTransitionTraceEvent({
+                sequence: this.#transition_trace_sequence++,
+                timestamp: new Date().toISOString(),
+                event,
+                revisionKey: this.#revision_key,
+                activePage: this.#active_schematic_project_path,
+                ...detail,
+            }),
+        );
+    }
+
+    #page_trace(page: ProjectPage | undefined | null) {
+        return page
+            ? {
+                  projectPath: page.project_path,
+                  sheetPath: page.sheet_path,
+                  filename: page.filename,
+                  name: page.name,
+                  page: page.page,
+              }
+            : null;
+    }
+
     get project() {
         return this.#project;
     }
@@ -389,6 +510,14 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     public async replaceSources(update: EcadSourceUpdate): Promise<void> {
+        this.#trace_transition("sources.replace.request", {
+            status: "start",
+            revisionKey: update.revisionKey,
+            detail: {
+                sourceCount: update.sources.length,
+                sourceNames: update.sources.map((source) => source.filename),
+            },
+        });
         const source_manifest_key = update.sources
             .map((source) => `${source.filename}\0${source.content.length}`)
             .sort()
@@ -398,15 +527,117 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             this.#source_manifest_key === source_manifest_key &&
             this.loaded
         ) {
-            return;
+            this.#trace_transition("sources.replace.cached", {
+                status: "ready",
+                revisionKey: update.revisionKey,
+            });
+            return this.#visible_ready;
         }
-        this.#project.reset();
+        const generation = ++this.#source_replace_generation;
+        const previous = this.#source_replace_tail;
+        const operation = previous
+            .catch(() => undefined)
+            .then(() =>
+                this.#perform_source_replacement(
+                    update,
+                    source_manifest_key,
+                    generation,
+                ),
+            );
+        const traced = operation
+            .then(() => {
+                this.#trace_transition("sources.replace.complete", {
+                    status: "ready",
+                    generation,
+                    revisionKey: update.revisionKey,
+                    resolvedPage: this.#page_trace(
+                        this.#active_schematic_page(),
+                    ),
+                });
+            })
+            .catch((error: unknown) => {
+                this.#trace_transition("sources.replace.failed", {
+                    status:
+                        error instanceof DOMException &&
+                        error.name === "AbortError"
+                            ? "superseded"
+                            : "error",
+                    generation,
+                    revisionKey: update.revisionKey,
+                    detail: {
+                        error:
+                            error instanceof Error
+                                ? { name: error.name, message: error.message }
+                                : String(error),
+                    },
+                });
+                throw error;
+            });
+        this.#source_replace_tail = traced.catch(() => undefined);
+        this.#visible_ready = traced;
+        return traced;
+    }
+
+    async #perform_source_replacement(
+        update: EcadSourceUpdate,
+        source_manifest_key: string,
+        generation: number,
+    ): Promise<void> {
+        const assert_current = () => {
+            if (generation !== this.#source_replace_generation) {
+                throw new DOMException(
+                    "Source replacement was superseded",
+                    "AbortError",
+                );
+            }
+        };
+        assert_current();
+
+        if (!this.loaded) {
+            this.#project.reset();
+            await this.#setup_project({ urls: [], blobs: update.sources });
+            assert_current();
+        } else {
+            const preferred_page =
+                this.#desired_page ??
+                this.#active_schematic_project_path ??
+                this.#project.active_sch_name;
+            const previous_shape = {
+                sch: this.has_sch,
+                pcb: this.has_pcb,
+                bom: this.has_bom,
+            };
+            this.loading = true;
+            try {
+                this.#project.reset();
+                await this.#project.load({ urls: [], blobs: update.sources });
+                assert_current();
+                const shape_changed =
+                    previous_shape.sch !== this.has_sch ||
+                    previous_shape.pcb !== this.has_pcb ||
+                    previous_shape.bom !== this.has_bom;
+                if (shape_changed) {
+                    await this.update();
+                    assert_current();
+                }
+                await this.#settle_project_apps(preferred_page);
+                assert_current();
+            } finally {
+                this.loading = false;
+            }
+        }
+
         this.#revision_key = update.revisionKey;
         this.#source_manifest_key = source_manifest_key;
         this.#source_names = new Set(
             update.sources.map((source) => source.filename),
         );
-        await this.#setup_project({ urls: [], blobs: update.sources });
+        this.#document_comparison_cache.clear();
+        this.#ensure_camera_hook(this.#safe_board_viewer());
+        this.#ensure_camera_hook(this.#safe_schematic_viewer());
+        this.#apply_viewport_insets();
+        this.#emit_view_state_change();
+        this.#emit_camera_change();
     }
 
     public async appendSources(update: EcadSourceUpdate): Promise<void> {
@@ -435,6 +666,17 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         request: EcadDocumentComparisonRequest,
     ): Promise<EcadDocumentComparisonPreparation> {
         const load_generation = ++this.#document_comparison_load_generation;
+        this.#trace_transition("comparison.load.request", {
+            status: "start",
+            generation: load_generation,
+            requestedPage: request.documentPath ?? null,
+            detail: {
+                comparisonKey: request.comparisonKey,
+                activeSheetPath: request.activeSheetPath ?? null,
+                referenceRevision: request.reference.revisionKey,
+                comparisonRevision: request.comparison.revisionKey,
+            },
+        });
         const previous_load = this.#document_comparison_load_tail;
         let release_load!: () => void;
         this.#document_comparison_load_tail = new Promise<void>((resolve) => {
@@ -442,18 +684,47 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         });
         await previous_load.catch(() => undefined);
         try {
-            if (
-                load_generation !== this.#document_comparison_load_generation
-            ) {
+            if (load_generation !== this.#document_comparison_load_generation) {
                 throw new DOMException(
                     "Document comparison load was superseded",
                     "AbortError",
                 );
             }
-            return await this.#perform_document_comparison_load(
+            const result = await this.#perform_document_comparison_load(
                 request,
                 load_generation,
             );
+            this.#trace_transition("comparison.load.complete", {
+                status: "ready",
+                generation: load_generation,
+                requestedPage: request.documentPath ?? null,
+                resolvedPage: this.#page_trace(this.#active_schematic_page()),
+                detail: {
+                    documentPath: result.document.path,
+                    context: result.context,
+                    missingReference: result.missingReference,
+                    missingComparison: result.missingComparison,
+                    targetCount: result.targets.size,
+                },
+            });
+            return result;
+        } catch (error) {
+            this.#trace_transition("comparison.load.failed", {
+                status:
+                    error instanceof DOMException && error.name === "AbortError"
+                        ? "superseded"
+                        : "error",
+                generation: load_generation,
+                requestedPage: request.documentPath ?? null,
+                detail: {
+                    activeSheetPath: request.activeSheetPath ?? null,
+                    error:
+                        error instanceof Error
+                            ? { name: error.name, message: error.message }
+                            : String(error),
+                },
+            });
+            throw error;
         } finally {
             release_load();
         }
@@ -477,6 +748,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             request.documentPath,
         );
         this.#document_comparison_request_id += 1;
+        this.#cancel_diff_animation();
+        this.#selected_document_diff = null;
+        this.#preview_document_diff = null;
         this.#document_comparison = null;
         const same_sources =
             this.#document_comparison_key === request.comparisonKey &&
@@ -505,6 +779,17 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             ) {
                 await this.#switchToTab(TabKind.pcb);
             }
+            if (
+                cached.preparation.context === "SCH" &&
+                request.activeSheetPath
+            ) {
+                await this.#activate_comparison_sheet(
+                    request.activeSheetPath,
+                    cached.comparisonDocument as { filename?: string },
+                );
+            }
+            // Warm path: same prepared presentation — overlay/camera only when
+            // the document+presentation are already installed.
             await viewer.load_diff_document(
                 cached.comparisonDocument as never,
                 cached.presentation,
@@ -515,6 +800,17 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 cached.presentation,
                 viewer,
             );
+            this.#install_document_diff_halos(
+                cached.preparation.targets,
+                cached.preparation.context,
+                viewer,
+            );
+            await this.#reveal_comparison_shell(
+                cached.preparation.context,
+                cached.comparisonDocument,
+                viewer,
+                /* alreadyPainted */ true,
+            );
             const result = {
                 ...cached.preparation,
                 prepareMs: performance.now() - started,
@@ -522,6 +818,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             };
             this.#document_comparison = result;
             this.dispatchEvent(new EcadDocumentComparisonReadyEvent(result));
+            this.#emit_view_state_change();
             return result;
         }
 
@@ -559,10 +856,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         if (!reference_resolved && !comparison_resolved) {
             const describe = (project: Project) =>
                 [...project.files()]
-                    .map(
-                        (file) =>
-                            `${file.filename}:${file.constructor.name}`,
-                    )
+                    .map((file) => `${file.filename}:${file.constructor.name}`)
                     .join(", ");
             throw new TypeError(
                 `Neither revision could resolve ${prepared.document.path}. ` +
@@ -571,18 +865,25 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             );
         }
         const reference_document =
-            reference_resolved
-            ?? empty_diff_document(prepared.context, path);
+            reference_resolved ?? empty_diff_document(prepared.context, path);
         const comparison_document =
-            comparison_resolved
-            ?? empty_diff_document(prepared.context, path);
+            comparison_resolved ?? empty_diff_document(prepared.context, path);
+        const missingReference = !reference_resolved;
+        const missingComparison = !comparison_resolved;
 
-        if (prepared.context === "SCH" && comparison_resolved) {
-            await this.showPage(comparison_document.filename);
-        } else if (
-            prepared.context === "PCB"
-            && this.#active_tab !== TabKind.pcb
-        ) {
+        // Activate tab/sheet without a pre-load paint. Cold path settles once
+        // via load_diff_document + reveal (not showPage/app.load round-trips).
+        if (prepared.context === "SCH") {
+            if (this.#active_tab !== TabKind.sch && this.has_sch) {
+                await this.#switchToTab(TabKind.sch);
+            }
+            if (comparison_resolved) {
+                await this.#activate_comparison_sheet(
+                    request.activeSheetPath ?? comparison_document.filename,
+                    comparison_document,
+                );
+            }
+        } else if (this.#active_tab !== TabKind.pcb) {
             await this.#switchToTab(TabKind.pcb);
         }
         assert_current();
@@ -603,18 +904,21 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             presentation,
         );
         assert_current();
-        // load_diff paints the DocumentViewer directly; the app shell still
-        // starts with content_container.hidden until app.load runs. Await it
-        // so Composite settle is never a painted-but-invisible canvas.
-        if (prepared.context === "SCH" && this.#schematic_app) {
-            await this.#schematic_app.load(comparison_document);
-        } else if (prepared.context === "PCB" && this.#board_app) {
-            await this.#board_app.load(comparison_document);
-        }
+        await this.#reveal_comparison_shell(
+            prepared.context,
+            comparison_document,
+            viewer,
+            /* alreadyPainted */ true,
+        );
         assert_current();
         this.#hydrate_document_diff_targets(
             prepared.targets,
             presentation,
+            viewer,
+        );
+        this.#install_document_diff_halos(
+            prepared.targets,
+            prepared.context,
             viewer,
         );
 
@@ -626,6 +930,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             diagnostics: presentation.diagnostics,
             prepareMs: performance.now() - started,
             sourceCacheHit: same_sources,
+            missingReference,
+            missingComparison,
         };
         this.#document_comparison_cache.set(prepared.document.path, {
             preparation: result,
@@ -637,18 +943,253 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             `document comparison ready context=${result.context} changes=${prepared.index.changes.length} targets=${result.targets.size} prepare=${result.prepareMs.toFixed(1)}ms diagnostics=${result.diagnostics.length}`,
         );
         this.dispatchEvent(new EcadDocumentComparisonReadyEvent(result));
+        this.#emit_view_state_change();
         return result;
+    }
+
+    /**
+     * Prefer hierarchical sheet identity when present; fall back to filename.
+     * Does not await a full app.load — comparison settle owns the paint.
+     */
+    async #activate_comparison_sheet(
+        pageId: string,
+        fallbackDocument: { filename?: string },
+    ): Promise<void> {
+        if (!this.#schematic_app) {
+            this.#trace_transition("page.comparison.missing-app", {
+                status: "missing",
+                requestedPage: pageId,
+            });
+            return;
+        }
+        this.#desired_page = pageId;
+        const page =
+            this.#resolve_schematic_page(pageId) ??
+            (fallbackDocument.filename
+                ? this.#resolve_schematic_page(fallbackDocument.filename)
+                : null);
+        if (!page) {
+            this.#trace_transition("page.comparison.unresolved", {
+                status: "missing",
+                requestedPage: pageId,
+                detail: {
+                    fallbackFilename: fallbackDocument.filename ?? null,
+                    availablePages: this.#project.pages.map((candidate) => ({
+                        projectPath: candidate.project_path,
+                        sheetPath: candidate.sheet_path,
+                        filename: candidate.filename,
+                        name: candidate.name,
+                        page: candidate.page,
+                    })),
+                },
+            });
+            return;
+        }
+        this.#activate_schematic_page(page.project_path);
+        this.#trace_transition("page.comparison.activated", {
+            status: "ready",
+            requestedPage: pageId,
+            resolvedPage: this.#page_trace(page),
+        });
+    }
+
+    /**
+     * Unhide the SCH/PCB shell and fit the camera once. When alreadyPainted,
+     * skips DocumentViewer.load / app.load so the comparison cold path does
+     * not multi-paint the same retained scene.
+     */
+    async #reveal_comparison_shell(
+        context: "SCH" | "PCB",
+        document: unknown,
+        viewer: {
+            document?: unknown;
+            paint?: () => void;
+            draw?: () => void;
+            draw_now?: () => void;
+            zoom_fit_top_item?: () => void;
+            renderer?: { update_canvas_size?: () => void };
+            viewport?: {
+                ready?: PromiseLike<unknown>;
+                sync_from_canvas?: () => boolean;
+            };
+        },
+        alreadyPainted: boolean,
+    ): Promise<void> {
+        const app = context === "SCH" ? this.#schematic_app : this.#board_app;
+        if (!app) return;
+        if (!alreadyPainted || viewer.document !== document) {
+            await app.load(document as never);
+            return;
+        }
+        // Same document already painted by load_diff_document — reveal only.
+        const shell = app as {
+            revealLoadedContent?: () => void;
+        };
+        if (typeof shell.revealLoadedContent === "function") {
+            shell.revealLoadedContent();
+        } else {
+            await app.load(document as never);
+            return;
+        }
+        await viewer.viewport?.ready;
+        viewer.renderer?.update_canvas_size?.();
+        const sized = viewer.viewport?.sync_from_canvas?.() ?? false;
+        if (sized) {
+            viewer.zoom_fit_top_item?.();
+        }
+        viewer.draw_now?.() ?? viewer.draw?.();
     }
 
     /**
      * Apply one precomputed selection frame. This method never parses, repaints
      * the document, or walks the diff tree.
      */
+    #cancel_diff_animation(): void {
+        if (this.#diff_animation_frame !== null) {
+            cancelAnimationFrame(this.#diff_animation_frame);
+            this.#diff_animation_frame = null;
+        }
+    }
+
+    #active_diff_target(): {
+        context: "SCH" | "PCB";
+        target: EcadPreparedDiffTarget;
+    } | null {
+        const revision_id =
+            this.#preview_revision_diff ?? this.#selected_revision_diff;
+        if (revision_id && this.#revision_diff_presentation) {
+            const target =
+                this.#revision_diff_presentation.targets.get(revision_id);
+            if (target) {
+                return {
+                    context: this.#revision_diff_presentation.context,
+                    target,
+                };
+            }
+        }
+        const selection =
+            this.#preview_document_diff ?? this.#selected_document_diff;
+        const comparison = this.#document_comparison;
+        if (!selection || !comparison) return null;
+        const target = comparison.targets.get(
+            `${selection.kind}:${selection.id}`,
+        );
+        return target ? { context: comparison.context, target } : null;
+    }
+
+    #paint_diff_emphasis(offset = 0): EcadPreparedDiffTarget | null {
+        const active = this.#active_diff_target();
+        const viewer = active ? this.#viewer_for_context(active.context) : null;
+        if (!active || !viewer) {
+            this.#safe_schematic_viewer()?.clear_overlay_scene(
+                ECadViewer.#DIFF_SELECTION_CHANNEL,
+            );
+            this.#safe_board_viewer()?.clear_overlay_scene(
+                ECadViewer.#DIFF_SELECTION_CHANNEL,
+            );
+            return null;
+        }
+        const { target } = active;
+        const primitives: EcadOverlayPrimitive[] = [];
+        target.visuals.forEach((visual, visualIndex) => {
+            const color = DIFF_STATUS_COLORS[visual.category];
+            if (visual.routing && visual.overlayLines.length) {
+                visual.overlayLines.forEach((points, index) => {
+                    primitives.push({
+                        id: `emphasis:${target.id}:${visualIndex}:${index}`,
+                        kind: "polyline",
+                        anchor: { kind: "world", x: 0, y: 0 },
+                        points,
+                        stroke: color,
+                        opacity: 1,
+                        strokeWidth: 3,
+                        fitAdaptiveStroke: true,
+                        sizing: "screen",
+                        dash: [10, 7],
+                        dashOffset: offset,
+                    });
+                });
+            } else {
+                primitives.push({
+                    id: `emphasis:${target.id}:${visualIndex}`,
+                    kind: "bbox",
+                    anchor: { kind: "bbox", bounds: visual.bounds },
+                    stroke: color,
+                    opacity: 1,
+                    strokeWidth: 3,
+                    padding: 8,
+                    sizing: "screen",
+                    ...(visual.routing
+                        ? {
+                              dash: [10, 7],
+                              dashOffset: offset,
+                              fitAdaptiveStroke: true,
+                          }
+                        : {}),
+                });
+            }
+        });
+        viewer.set_overlay_scene(
+            {
+                channelId: ECadViewer.#DIFF_SELECTION_CHANNEL,
+                context: active.context,
+                placement: "foreground",
+                visible: true,
+                primitives,
+            },
+            false,
+        );
+        viewer.draw();
+        return target;
+    }
+
+    #restart_diff_animation(): void {
+        this.#cancel_diff_animation();
+        const target = this.#paint_diff_emphasis();
+        if (
+            !target?.routing ||
+            !this.#host_active ||
+            document.hidden ||
+            window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ) {
+            return;
+        }
+        this.#diff_animation_started = performance.now();
+        const tick = (time: number) => {
+            if (
+                !this.#host_active ||
+                document.hidden ||
+                window.matchMedia("(prefers-reduced-motion: reduce)").matches
+            ) {
+                this.#diff_animation_frame = null;
+                return;
+            }
+            this.#paint_diff_emphasis(
+                -((time - this.#diff_animation_started) / 1000) * 36,
+            );
+            this.#diff_animation_frame = requestAnimationFrame(tick);
+        };
+        this.#diff_animation_frame = requestAnimationFrame(tick);
+    }
+
+    /** Preview a change without moving the camera; null restores selection. */
+    public previewDocumentDiff(
+        selection: EcadDocumentComparisonSelection | null,
+    ): void {
+        this.#preview_document_diff = selection;
+        this.#restart_diff_animation();
+    }
+
     public async selectDocumentDiff(
         selection: EcadDocumentComparisonSelection,
     ): Promise<EcadDocumentComparisonSelectionResult> {
         const started = performance.now();
         const requestId = ++this.#document_comparison_request_id;
+        this.#trace_transition("selection.composite.request", {
+            status: "start",
+            generation: requestId,
+            detail: selection,
+        });
         const parserBefore = getParserPerfSnapshot().parserInvocations;
         const comparison = this.#document_comparison;
         const target = comparison?.targets.get(
@@ -658,6 +1199,16 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             ? this.#viewer_for_context(comparison.context)
             : null;
         if (!comparison || !target || !viewer) {
+            this.#trace_transition("selection.composite.missing", {
+                status: "missing",
+                generation: requestId,
+                detail: {
+                    ...selection,
+                    hasComparison: Boolean(comparison),
+                    hasTarget: Boolean(target),
+                    hasViewer: Boolean(viewer),
+                },
+            });
             return {
                 status: "missing",
                 requestId,
@@ -670,26 +1221,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
 
         const paintBefore = viewer.paint_count;
         const [x, y, w, h] = target.bounds;
-        viewer.set_overlay_scene(
-            {
-                channelId: ECadViewer.#DIFF_SELECTION_CHANNEL,
-                context: comparison.context,
-                placement: "foreground",
-                visible: true,
-                primitives: [
-                    {
-                        id: `selected:${target.kind}:${target.id}`,
-                        kind: "bbox",
-                        anchor: { kind: "bbox", bounds: target.bounds },
-                        stroke: "#2f80ed",
-                        strokeWidth: 2,
-                        padding: 8,
-                        sizing: "screen",
-                    },
-                ],
-            },
-            false,
-        );
+        this.#selected_document_diff = selection;
+        this.#preview_document_diff = null;
+        this.#restart_diff_animation();
         const padding = Math.max(Math.max(w, h) * 0.35, 2);
         viewer.viewport.camera.bbox = new BBox(
             x - padding,
@@ -718,6 +1252,19 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             `document diff frame request=${requestId} status=${result.status} target=${target.kind}:${target.id} clickToFrame=${result.clickToFrameMs.toFixed(1)}ms paint=${result.paintCount} parse=${result.parserCount}`,
         );
         this.dispatchEvent(new EcadDocumentComparisonFrameEvent(result));
+        this.#trace_transition("selection.composite.complete", {
+            status: result.status === "applied" ? "ready" : result.status,
+            generation: requestId,
+            detail: {
+                ...selection,
+                targetId: target.id,
+                memberIds: target.memberIds,
+                sourceIds: target.sourceIds,
+                bounds: target.bounds,
+                clickToFrameMs: result.clickToFrameMs,
+                paintCount: result.paintCount,
+            },
+        });
         return result;
     }
 
@@ -726,6 +1273,212 @@ export class ECadViewer extends KCUIElement implements InputContainer {
      * geometry. This runs once after the comparison document is painted, so a
      * click only consumes the already-normalized target rectangle.
      */
+    static #overlay_line_for_item(
+        item: object,
+    ): Array<[number, number]> | null {
+        const point = (value: unknown): [number, number] | null => {
+            if (
+                value &&
+                typeof value === "object" &&
+                "x" in value &&
+                "y" in value &&
+                typeof value.x === "number" &&
+                typeof value.y === "number"
+            ) {
+                return [value.x, value.y];
+            }
+            return null;
+        };
+        if ("pts" in item && Array.isArray(item.pts)) {
+            const points = item.pts
+                .map(point)
+                .filter((value) => value !== null);
+            return points.length >= 2 ? points : null;
+        }
+        if ("start" in item && "end" in item) {
+            const start = point(item.start);
+            const middle = "mid" in item ? point(item.mid) : null;
+            const end = point(item.end);
+            const points = [start, middle, end].filter(
+                (value): value is [number, number] => value !== null,
+            );
+            return points.length >= 2 ? points : null;
+        }
+        return null;
+    }
+
+    /** Install typed A/R/M targets on a normal single-revision viewer. */
+    public setRevisionDiffPresentation(
+        request: EcadRevisionDiffPresentationRequest | null,
+    ): void {
+        this.#cancel_diff_animation();
+        this.#selected_revision_diff = null;
+        this.#preview_revision_diff = null;
+        if (!request) {
+            this.#trace_transition("revision-overlay.clear", {
+                status: "ready",
+            });
+            this.#revision_diff_presentation = null;
+            for (const context of ["SCH", "PCB"] as const) {
+                const viewer = this.#viewer_for_context(context);
+                viewer?.clear_overlay_scene(ECadViewer.#DIFF_SELECTION_CHANNEL);
+                viewer?.clear_overlay_scene(ECadViewer.#DIFF_HALO_CHANNEL);
+            }
+            return;
+        }
+        const viewer = this.#viewer_for_context(request.context);
+        if (!viewer?.document) {
+            this.#trace_transition("revision-overlay.missing-viewer", {
+                status: "missing",
+                detail: {
+                    context: request.context,
+                    requestedTargetCount: request.targets.length,
+                },
+            });
+            return;
+        }
+        const source_index = index_paint_items(viewer.document);
+        const targets = new Map<string, EcadPreparedDiffTarget>();
+        for (const requested of request.targets) {
+            const visuals: EcadPreparedDiffTarget["visuals"] = [];
+            for (const visual of requested.visuals) {
+                const source_items = source_index.get(visual.sourceId) ?? [];
+                const parent_items = visual.parentSourceId
+                    ? (source_index.get(visual.parentSourceId) ?? [])
+                    : [];
+                const items = source_items.length ? source_items : parent_items;
+                const bounds = items.flatMap((item) => [
+                    ...viewer.layers.query_item_bboxes(item),
+                ]);
+                const overlayLines = items
+                    .map((item) => ECadViewer.#overlay_line_for_item(item))
+                    .filter(
+                        (line): line is Array<[number, number]> =>
+                            line !== null,
+                    );
+                const combined = bounds.length ? BBox.combine(bounds) : null;
+                const fallback = visual.bounds;
+                if (
+                    !combined &&
+                    (!fallback || (fallback[2] <= 0 && fallback[3] <= 0))
+                ) {
+                    continue;
+                }
+                visuals.push({
+                    sourceId: visual.sourceId,
+                    category: visual.status,
+                    sourceSide: "comparison",
+                    routing: visual.routing ?? overlayLines.length > 0,
+                    bounds: combined
+                        ? [combined.x, combined.y, combined.w, combined.h]
+                        : fallback!,
+                    overlayLines,
+                });
+            }
+            if (!visuals.length) continue;
+            const combined = BBox.combine(
+                visuals.map((visual) => new BBox(...visual.bounds)),
+            );
+            targets.set(requested.id, {
+                id: requested.id,
+                kind: "change",
+                category: visuals[0]!.category,
+                label: requested.label ?? requested.id,
+                memberIds: [requested.id],
+                sourceIds: visuals.map((visual) => visual.sourceId),
+                bounds: [combined.x, combined.y, combined.w, combined.h],
+                sourceSide: "comparison",
+                routing: visuals.some((visual) => visual.routing),
+                overlayLines: visuals.flatMap((visual) => visual.overlayLines),
+                visuals,
+            });
+        }
+        this.#revision_diff_presentation = {
+            context: request.context,
+            targets,
+        };
+        this.#install_document_diff_halos(targets, request.context, viewer);
+        viewer.draw();
+        this.#trace_transition("revision-overlay.installed", {
+            status: "ready",
+            detail: {
+                context: request.context,
+                requestedTargetCount: request.targets.length,
+                resolvedTargetCount: targets.size,
+                resolvedIds: [...targets.keys()],
+            },
+        });
+    }
+
+    public previewRevisionDiff(id: string | null): void {
+        this.#preview_revision_diff = id;
+        this.#restart_diff_animation();
+    }
+
+    public async selectRevisionDiff(
+        id: string | null,
+        options: { focus?: boolean } = {},
+    ): Promise<boolean> {
+        this.#trace_transition("selection.revision.request", {
+            status: "start",
+            detail: { id, focus: options.focus !== false },
+        });
+        this.#selected_revision_diff = id;
+        this.#preview_revision_diff = null;
+        this.#restart_diff_animation();
+        if (!id || !this.#revision_diff_presentation) {
+            this.#trace_transition("selection.revision.missing", {
+                status: "missing",
+                detail: {
+                    id,
+                    hasPresentation: Boolean(this.#revision_diff_presentation),
+                },
+            });
+            return false;
+        }
+        const target = this.#revision_diff_presentation.targets.get(id);
+        const viewer = this.#viewer_for_context(
+            this.#revision_diff_presentation.context,
+        );
+        if (!target || !viewer) {
+            this.#trace_transition("selection.revision.missing", {
+                status: "missing",
+                detail: {
+                    id,
+                    hasTarget: Boolean(target),
+                    hasViewer: Boolean(viewer),
+                    availableTargetIds: [
+                        ...this.#revision_diff_presentation.targets.keys(),
+                    ],
+                },
+            });
+            return false;
+        }
+        if (options.focus !== false) {
+            const [x, y, w, h] = target.bounds;
+            const padding = Math.max(Math.max(w, h) * 0.35, 2);
+            viewer.viewport.camera.bbox = new BBox(
+                x - padding,
+                y - padding,
+                w + padding * 2,
+                h + padding * 2,
+            );
+            viewer.draw();
+            await new Promise<void>((resolve) =>
+                requestAnimationFrame(() => resolve()),
+            );
+        }
+        this.#trace_transition("selection.revision.complete", {
+            status: "ready",
+            detail: {
+                id,
+                bounds: target.bounds,
+                sourceIds: target.sourceIds,
+            },
+        });
+        return true;
+    }
+
     #hydrate_document_diff_targets(
         targets: ReadonlyMap<string, EcadPreparedDiffTarget>,
         presentation: EcadDiffPresentation,
@@ -733,14 +1486,39 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     ): void {
         for (const target of targets.values()) {
             const native_bounds: BBox[] = [];
-            for (const source_id of target.sourceIds) {
-                for (const item of
-                    presentation.itemsBySourceId.get(source_id) ?? []) {
-                    native_bounds.push(
-                        ...viewer.layers.query_item_bboxes(item),
-                    );
+            const overlay_lines: Array<Array<[number, number]>> = [];
+            for (const visual of target.visuals) {
+                const visual_bounds: BBox[] = [];
+                const visual_lines: Array<Array<[number, number]>> = [];
+                const source_id = visual.sourceId;
+                const visual_items =
+                    presentation.itemsBySideAndSourceId.get(
+                        `${visual.sourceSide}:${source_id}`,
+                    ) ??
+                    presentation.itemsBySourceId.get(source_id) ??
+                    [];
+                for (const item of visual_items) {
+                    const line = ECadViewer.#overlay_line_for_item(item);
+                    if (line) {
+                        overlay_lines.push(line);
+                        visual_lines.push(line);
+                    }
+                    const item_bounds = viewer.layers.query_item_bboxes(item);
+                    native_bounds.push(...item_bounds);
+                    visual_bounds.push(...item_bounds);
+                }
+                visual.overlayLines = visual_lines;
+                if (visual_bounds.length) {
+                    const combined = BBox.combine(visual_bounds);
+                    visual.bounds = [
+                        combined.x,
+                        combined.y,
+                        combined.w,
+                        combined.h,
+                    ];
                 }
             }
+            target.overlayLines = overlay_lines;
             if (!native_bounds.length) continue;
             const combined = BBox.combine(native_bounds);
             if (
@@ -759,6 +1537,80 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         }
     }
 
+    #install_document_diff_halos(
+        targets: ReadonlyMap<string, EcadPreparedDiffTarget>,
+        context: "SCH" | "PCB",
+        viewer: DocumentViewer<any, any, any, any>,
+    ): void {
+        const primitives: EcadOverlayPrimitive[] = [];
+        for (const target of targets.values()) {
+            if (target.kind !== "change") continue;
+            target.visuals.forEach((visual, visualIndex) => {
+                const color = DIFF_STATUS_COLORS[visual.category];
+                const lines = visual.overlayLines;
+                if (lines.length) {
+                    lines.forEach((points, index) => {
+                        primitives.push(
+                            {
+                                id: `halo:${target.id}:${visualIndex}:${index}`,
+                                kind: "polyline",
+                                anchor: { kind: "world", x: 0, y: 0 },
+                                points,
+                                stroke: color,
+                                opacity: 0.24,
+                                strokeWidth: 6,
+                                sizing: "screen",
+                            },
+                            {
+                                id: `core:${target.id}:${visualIndex}:${index}`,
+                                kind: "polyline",
+                                anchor: { kind: "world", x: 0, y: 0 },
+                                points,
+                                stroke: color,
+                                opacity: 0.95,
+                                strokeWidth: 2.25,
+                                sizing: "screen",
+                            },
+                        );
+                    });
+                } else {
+                    primitives.push(
+                        {
+                            id: `halo:${target.id}:${visualIndex}`,
+                            kind: "bbox",
+                            anchor: { kind: "bbox", bounds: visual.bounds },
+                            stroke: color,
+                            opacity: 0.24,
+                            strokeWidth: 6,
+                            padding: 4,
+                            sizing: "screen",
+                        },
+                        {
+                            id: `core:${target.id}:${visualIndex}`,
+                            kind: "bbox",
+                            anchor: { kind: "bbox", bounds: visual.bounds },
+                            stroke: color,
+                            opacity: 0.95,
+                            strokeWidth: 2.25,
+                            padding: 4,
+                            sizing: "screen",
+                        },
+                    );
+                }
+            });
+        }
+        viewer.set_overlay_scene(
+            {
+                channelId: ECadViewer.#DIFF_HALO_CHANNEL,
+                context,
+                placement: "content-overlay",
+                visible: true,
+                primitives,
+            },
+            false,
+        );
+    }
+
     /**
      * Supersede in-flight comparison loads without clearing the installed
      * A/R/M presentation. Hosts use this on effect cleanup / mode hide so a
@@ -771,6 +1623,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
 
     public clearDocumentComparison(): void {
         this.abortDocumentComparisonLoad();
+        this.#cancel_diff_animation();
+        this.#selected_document_diff = null;
+        this.#preview_document_diff = null;
         this.#document_comparison = null;
         this.#document_comparison_key = null;
         this.#document_comparison_revision_keys = null;
@@ -778,6 +1633,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         for (const context of ["SCH", "PCB"] as const) {
             const viewer = this.#viewer_for_context(context);
             viewer?.clear_overlay_scene(ECadViewer.#DIFF_SELECTION_CHANNEL);
+            viewer?.clear_overlay_scene(ECadViewer.#DIFF_HALO_CHANNEL);
             viewer?.set_diff_presentation(null);
         }
         this.#reference_project.reset();
@@ -810,6 +1666,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     public setActive(active: boolean): void {
         this.#host_active = active;
         this.#apply_viewer_activity();
+        if (active) this.#restart_diff_animation();
+        else this.#cancel_diff_animation();
     }
 
     /**
@@ -976,7 +1834,13 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         // Helper to move camera on a viewer
         const moveCamera = (viewer: any) => {
             if (viewer?.viewport?.camera) {
-                viewer.viewport.camera.center.set(pos.x, pos.y);
+                const camera = viewer.viewport.camera;
+                const safeCenter = camera.fit_viewport_center;
+                const viewport = camera.viewport_size;
+                camera.center.set(
+                    pos.x + (viewport.x / 2 - safeCenter.x) / camera.zoom,
+                    pos.y + (viewport.y / 2 - safeCenter.y) / camera.zoom,
+                );
                 viewer.draw();
             }
         };
@@ -1237,59 +2101,108 @@ export class ECadViewer extends KCUIElement implements InputContainer {
      * Resolves once the project has finished loading (parse + first paint).
      */
     public get ready(): Promise<void> {
-        return this.#project.loaded.then(() => undefined);
+        return this.#visible_ready;
+    }
+
+    /**
+     * Settle the active canvas after a host-side flex/grid resize. Keeping this
+     * synchronous avoids a frame where the GL projection has the new size but
+     * the camera still uses the previous pane's aspect ratio.
+     */
+    public resize(): void {
+        this.#apply_viewport_insets();
+        for (const viewer of [
+            this.#safe_board_viewer(),
+            this.#safe_schematic_viewer(),
+        ]) {
+            if (!viewer) continue;
+            viewer.renderer?.update_canvas_size?.();
+            viewer.viewport?.sync_from_canvas?.();
+            if (viewer.active) viewer.draw?.();
+        }
     }
 
     #resolve_schematic_page(pageId: string) {
         if (!pageId || pageId === "/") return undefined;
         const pages = this.#project.pages;
+        const normalize = (value: string) =>
+            value.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+        const requested = normalize(pageId);
+        const same = (value?: string) =>
+            Boolean(value && normalize(value) === requested);
 
-        const by_project_path = pages.find(
-            (candidate) => candidate.project_path === pageId,
+        const by_project_path = pages.find((candidate) =>
+            same(candidate.project_path),
         );
         if (by_project_path) return by_project_path;
 
-        const by_sheet_path = pages.find(
-            (candidate) => candidate.sheet_path === pageId,
+        const by_sheet_path = pages.find((candidate) =>
+            same(candidate.sheet_path),
         );
         if (by_sheet_path) return by_sheet_path;
 
         // Composite "filename:sheet_path" (Prism / semantic index project paths).
-        if (pageId.includes(":")) {
-            const colon = pageId.indexOf(":");
-            const filename = pageId.slice(0, colon);
-            const sheet_path = pageId.slice(colon + 1);
+        if (requested.includes(":")) {
+            const colon = requested.indexOf(":");
+            const filename = requested.slice(0, colon);
+            const sheet_path = requested.slice(colon + 1);
             const composite = pages.find(
                 (candidate) =>
-                    candidate.project_path === pageId ||
-                    (candidate.filename === filename &&
-                        candidate.sheet_path === sheet_path) ||
-                    (candidate.filename.endsWith(filename) &&
-                        candidate.sheet_path === sheet_path),
+                    same(candidate.project_path) ||
+                    (normalize(candidate.filename) === filename &&
+                        normalize(candidate.sheet_path) === sheet_path) ||
+                    (normalize(candidate.filename).endsWith(filename) &&
+                        normalize(candidate.sheet_path) === sheet_path),
             );
             if (composite) return composite;
         }
 
         const by_label = pages.filter(
-            (candidate) =>
-                candidate.name === pageId || candidate.page === pageId,
+            (candidate) => same(candidate.name) || same(candidate.page),
         );
         if (by_label.length === 1) return by_label[0];
 
-        // Filename alone is ambiguous when a sheet file is instantiated more
-        // than once — only accept a unique filename match.
+        // A sheet file may be instantiated more than once in the hierarchy.
+        // A filename request is document-scoped, so every such instance has
+        // the same paintable contents and native UUIDs. Prefer the active
+        // instance when possible, then use project traversal order instead of
+        // failing a valid cross-probe solely because the filename is reused.
         const by_filename = pages.filter(
             (candidate) =>
-                candidate.filename === pageId ||
-                candidate.filename.endsWith(`/${pageId}`),
+                same(candidate.filename) ||
+                normalize(candidate.filename).endsWith(`/${requested}`) ||
+                requested.endsWith(`/${normalize(candidate.filename)}`),
         );
-        return by_filename.length === 1 ? by_filename[0] : undefined;
+        if (by_filename.length) {
+            return (
+                by_filename.find(
+                    (candidate) =>
+                        candidate.project_path ===
+                        this.#active_schematic_project_path,
+                ) ?? by_filename[0]
+            );
+        }
+
+        // Human hierarchy paths are not native KiCad sheet-instance UUID
+        // paths. Match their final named segment only when it is unique; the
+        // native filename remains the preferred unambiguous identity.
+        const label = requested.split("/").filter(Boolean).at(-1);
+        const by_hierarchy_label = label
+            ? pages.filter(
+                  (candidate) =>
+                      normalize(candidate.name ?? "") === label ||
+                      normalize(candidate.page ?? "") === label,
+              )
+            : [];
+        return by_hierarchy_label.length === 1
+            ? by_hierarchy_label[0]
+            : undefined;
     }
 
     #find_schematic_page_for_symbol(
         designator?: string,
         uuid?: string,
-    ): { page: (typeof this.#project.pages)[number]; uuid: string } | null {
+    ): { page: ProjectPage; uuid: string } | null {
         if (!designator && !uuid) return null;
         if (uuid) {
             const net_ref = this.#project.find_net_item(uuid);
@@ -1318,22 +2231,50 @@ export class ECadViewer extends KCUIElement implements InputContainer {
      * Awaits project readiness first. Uses the instance-tree page model.
      */
     public async showPage(pageId: string): Promise<void> {
+        this.#trace_transition("page.show.request", {
+            status: "start",
+            requestedPage: pageId,
+        });
         this.#desired_page = pageId;
-        await this.ready;
-        await this.#apply_desired_page();
+        try {
+            await this.ready;
+            await this.#apply_desired_page();
+            this.#trace_transition("page.show.complete", {
+                status: "ready",
+                requestedPage: pageId,
+                resolvedPage: this.#page_trace(this.#active_schematic_page()),
+            });
+        } catch (error) {
+            this.#trace_transition("page.show.failed", {
+                status: "error",
+                requestedPage: pageId,
+                detail: {
+                    error:
+                        error instanceof Error
+                            ? { name: error.name, message: error.message }
+                            : String(error),
+                    availablePages: this.#project.pages.map((page) => ({
+                        projectPath: page.project_path,
+                        sheetPath: page.sheet_path,
+                        filename: page.filename,
+                        name: page.name,
+                        page: page.page,
+                    })),
+                },
+            });
+            throw error;
+        }
     }
 
     async #apply_desired_page(): Promise<void> {
         const pageId = this.#desired_page;
         if (!pageId || !this.#schematic_app) return;
         if (/\.kicad_pcb$/i.test(pageId)) {
-            console.warn(`showPage: Ignoring PCB path ${pageId}`);
-            return;
+            throw new TypeError(`showPage cannot activate PCB path ${pageId}`);
         }
         const page = this.#resolve_schematic_page(pageId);
         if (!page) {
-            console.warn(`showPage: Could not find page with ID ${pageId}`);
-            return;
+            throw new TypeError(`Could not resolve schematic page ${pageId}`);
         }
         if (this.#active_tab !== TabKind.sch && this.has_sch) {
             await this.#switchToTab(TabKind.sch);
@@ -1628,8 +2569,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 break;
             }
             case "SCH": {
-                const schViewer = this.#schematic_app?.viewer;
-                if (schViewer?.canvas) {
+                const schematicApp = this.#schematic_app;
+                const schViewer = schematicApp?.viewer;
+                if (schematicApp && schViewer?.canvas) {
                     const schematics = Array.from(
                         this.#project?.schematics() || [],
                     );
@@ -1645,7 +2587,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
 
                         for (const sch of schematics) {
                             if (sch instanceof KicadSch) {
-                                await this.#schematic_app.viewer.load(sch);
+                                await schematicApp.viewer.load(sch);
                                 await new Promise((resolve) =>
                                     requestAnimationFrame(resolve),
                                 );
@@ -1665,9 +2607,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                             const originalSch =
                                 this.#project.file_by_name(originalSheet);
                             if (originalSch instanceof KicadSch) {
-                                await this.#schematic_app.viewer.load(
-                                    originalSch,
-                                );
+                                await schematicApp.viewer.load(originalSch);
                             }
                         }
 
@@ -1941,12 +2881,26 @@ export class ECadViewer extends KCUIElement implements InputContainer {
 
     override initialContentCallback() {
         this.#setup_events();
+        // Prism supplies immutable in-memory sources through replaceSources().
+        // Do not race that transaction with the legacy window/child-source
+        // auto-loader, which otherwise performs a second empty project render.
+        if (this.getAttribute("source-mode") === "host") {
+            return;
+        }
         later(() => {
-            this.load_src();
+            this.#visible_ready = Promise.resolve(this.load_src()).then(
+                () => undefined,
+            );
         });
     }
 
     async #setup_events() {
+        this.addDisposable(
+            listen(document, "visibilitychange", () => {
+                if (document.hidden) this.#cancel_diff_animation();
+                else this.#restart_diff_animation();
+            }),
+        );
         // Listen for ZIP blob received via postMessage
         this.addDisposable(
             listen(window, LoadZipEvent.type, async (event) => {
@@ -2175,6 +3129,43 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         await this.#setup_project({ urls, blobs });
     }
 
+    async #settle_project_apps(preferredPage?: string): Promise<void> {
+        const loads: Promise<unknown>[] = [];
+        if (this.has_sch && this.#schematic_app) {
+            const page =
+                (preferredPage
+                    ? this.#resolve_schematic_page(preferredPage)
+                    : undefined) ??
+                this.#project.root_schematic_page ??
+                this.#project.pages[0];
+            if (page?.document instanceof KicadSch) {
+                this.#active_schematic_project_path = page.project_path;
+                this.#desired_page = page.project_path;
+                this.#project.active_sch_name = page.project_path;
+                loads.push(this.#schematic_app.load(page.document));
+            }
+        } else {
+            this.#active_schematic_project_path = null;
+        }
+        if (this.has_pcb && this.#board_app) {
+            const board = this.#project.get_first_page(AssertType.PCB);
+            if (board instanceof KicadPCB) {
+                loads.push(this.#board_app.load(board));
+            }
+        }
+        await Promise.all(loads);
+        // Notify panels and any secondary consumers after the authoritative
+        // awaited loads. Same-document app loads are a fast reveal-only path.
+        this.#project.on_loaded();
+        await new Promise<void>((resolve) =>
+            requestAnimationFrame(() => resolve()),
+        );
+        const viewer = this.#active_inner_viewer();
+        viewer?.renderer?.update_canvas_size?.();
+        viewer?.viewport?.sync_from_canvas?.();
+        viewer?.draw_now?.() ?? viewer?.draw?.();
+    }
+
     async #setup_project(sources: EcadSources) {
         console.log(
             "[ECadViewer] #setup_project() called, has_sch:",
@@ -2198,10 +3189,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 this.#active_tab,
             );
             await this.update();
-            this.#project.on_loaded();
-            // If the host already asked for a specific page via showPage/switchPage,
-            // re-apply it after the post-load auto-activate of the root sheet.
-            if (this.#desired_page) void this.#apply_desired_page();
+            await this.#settle_project_apps(this.#desired_page);
             this.#ensure_camera_hook(this.#safe_board_viewer());
             this.#ensure_camera_hook(this.#safe_schematic_viewer());
             // Post-load autofit / first paint should notify camera consumers.
@@ -2429,14 +3417,13 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         let uuid = request.uuid ?? request.uuids?.[0];
         if (request.kind === "net") {
             const net_name = request.net ?? value;
-            const bare =
-                net_name.includes("/")
-                    ? net_name.split("/").filter(Boolean).at(-1)
-                    : undefined;
+            const bare = net_name.includes("/")
+                ? net_name.split("/").filter(Boolean).at(-1)
+                : undefined;
             const name_candidates = [net_name, bare].filter(
                 (name): name is string => Boolean(name),
             );
-            let refs: ReturnType<typeof this.#project.find_labels_by_name> = [];
+            let refs: NetRef[] = [];
             for (const name of name_candidates) {
                 refs = this.#project.find_labels_by_name(name) ?? [];
                 if (refs.length) break;
@@ -2479,10 +3466,14 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         const focus = (target_uuid: string): boolean => {
             const candidates = [
                 target_uuid,
-                ...(request.uuids ?? []).filter((id) => id && id !== target_uuid),
+                ...(request.uuids ?? []).filter(
+                    (id) => id && id !== target_uuid,
+                ),
             ];
             if (request.designator) {
-                const by_ref = viewer.schematic?.find_symbol(request.designator);
+                const by_ref = viewer.schematic?.find_symbol(
+                    request.designator,
+                );
                 if (by_ref?.uuid) candidates.push(by_ref.uuid);
             }
             for (const id of candidates) {
@@ -2663,21 +3654,32 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                     }
                 } else {
                     (async () => {
-                        // @ts-expect-error its imported from map
-                        await import("3d-viewer");
-                        this.#ov_d_app =
+                        // Resolved by the host import map. Keeping this
+                        // non-literal also lets browser-unit transforms load
+                        // the custom element without bundling the optional 3D app.
+                        const onlineViewerModule =
+                            (
+                                window as Window & {
+                                    ecad3dModuleName?: string;
+                                }
+                            ).ecad3dModuleName ?? "3d-viewer";
+                        await import(onlineViewerModule);
+                        const onlineViewer =
                             html`<ecad-3d-viewer></ecad-3d-viewer>` as Online3dViewer;
-                        this.#viewers_container.appendChild(this.#ov_d_app);
-                        const page = embed_to_tab(this.#ov_d_app, TabKind.step);
+                        this.#ov_d_app = onlineViewer;
+                        this.#viewers_container.appendChild(onlineViewer);
+                        const page = embed_to_tab(onlineViewer, TabKind.step);
                         page.classList.add("active");
                         page.style.display = "none";
                         const onLoaded = () => {
                             console.log(
                                 "[ECadViewer] Online3dViewerLoaded received, showing 3D viewer",
                             );
-                            this.#step_viewer_placeholder.hidden = true;
-                            this.#ov_d_app.style.display = "";
-                            this.#ov_d_app.on_show();
+                            if (this.#step_viewer_placeholder) {
+                                this.#step_viewer_placeholder.hidden = true;
+                            }
+                            onlineViewer.style.display = "";
+                            onlineViewer.on_show();
                             this.project.removeEventListener(
                                 Online3dViewerLoaded.type,
                                 onLoaded,
@@ -2732,7 +3734,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         if (this.has_pcb) {
             if (!this.#board_app) {
                 this.#board_app = html`<kc-board-app>
-            </kc-board-app>` as KCBoardAppElement;
+                </kc-board-app>` as KCBoardAppElement;
                 this.#board_app.addEventListener(
                     KiCanvasSelectEvent.type,
                     (event) => this.#relay_board_selection(event),
@@ -2773,7 +3775,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         if (this.has_sch) {
             if (!this.#schematic_app) {
                 this.#schematic_app = html`<kc-schematic-app>
-            </kc-schematic-app>` as KCSchematicAppElement;
+                </kc-schematic-app>` as KCSchematicAppElement;
                 this.#schematic_app.addEventListener(
                     KiCanvasSelectEvent.type,
                     (event) => this.#relay_schematic_selection(event),
@@ -2860,6 +3862,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     override renderedCallback() {
         window.requestAnimationFrame(() => {
             this.#apply_viewer_activity();
+            this.#apply_viewport_insets();
             this.#restore_comment_overlay_scenes();
             this.#ensure_camera_hook(this.#safe_board_viewer());
             this.#ensure_camera_hook(this.#safe_schematic_viewer());

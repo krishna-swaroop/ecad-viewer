@@ -239,7 +239,7 @@ export class KicadPCB implements BoardNode {
         }
         for (const zone of this.zones) {
             if (typeof (zone as { net?: number | string }).net === "string") {
-                const name = (zone as { net: string }).net;
+                const name = (zone as unknown as { net: string }).net;
                 zone.net = intern(name);
                 zone.net_name = zone.net_name || name;
             } else {
@@ -370,6 +370,7 @@ export class ArcSegment implements BoardNode {
     net: number;
     locked = false;
     tstamp: string;
+    uuid?: string;
 
     constructor(data: B.I_ArcSegment) {
         this.start = new Vec2(data.start.x, data.start.y);
@@ -380,6 +381,7 @@ export class ArcSegment implements BoardNode {
         this.net = data.net as number;
         this.locked = data.locked;
         this.tstamp = data.tstamp ?? "";
+        this.uuid = data.uuid;
     }
 
     get bbox() {

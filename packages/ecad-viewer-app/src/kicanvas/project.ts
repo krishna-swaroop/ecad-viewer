@@ -6,7 +6,7 @@
 
 import { Barrier } from "../base/async";
 import { type IDisposable } from "../base/disposable";
-import { first, length, map } from "../base/iterator";
+import { first, length } from "../base/iterator";
 import { Logger } from "../base/log";
 import { dirname } from "../base/paths";
 
@@ -260,7 +260,10 @@ export class Project extends EventTarget implements IDisposable {
 
     public static async import_cjk_glyphs() {
         // @ts-expect-error It's imported in the import map
-        await import("glyph-full").then((mod) => {
+        const glyphModule = (window as Window & {
+            ecadGlyphModuleName?: string;
+        }).ecadGlyphModuleName ?? "glyph-full";
+        await import(glyphModule).then((mod) => {
             NewStrokeGlyph.glyph_data = mod.glyph_data;
         });
     }

@@ -7,7 +7,7 @@
 import { Barrier } from "../../base/async";
 import { Disposables, type IDisposable } from "../../base/disposable";
 import { listen } from "../../base/events";
-import { Vec2 } from "../../base/math";
+import { Vec2, type CameraViewportInsets } from "../../base/math";
 import { Renderer } from "../../graphics";
 import {
     EcadCommentAreaEvent,
@@ -234,6 +234,53 @@ export abstract class Viewer extends EventTarget {
         this.on_viewport_change();
     }
 
+    /**
+     * Reserve screen-space edges for host-owned overlay rails without
+     * changing the canvas layout box. The current visible focal point is kept
+     * centered in the remaining safe area and the retained scene is redrawn.
+     */
+    public set_viewport_insets(
+        insets: Partial<CameraViewportInsets> | null,
+    ): void {
+        const camera = this.viewport?.camera;
+        if (!camera) return;
+        const normalized = {
+            left: Math.max(0, insets?.left ?? 0),
+            right: Math.max(0, insets?.right ?? 0),
+            top: Math.max(0, insets?.top ?? 0),
+            bottom: Math.max(0, insets?.bottom ?? 0),
+        };
+        const current = camera.fit_insets;
+        if (
+            current.left === normalized.left &&
+            current.right === normalized.right &&
+            current.top === normalized.top &&
+            current.bottom === normalized.bottom
+        ) {
+            return;
+        }
+        const viewport = camera.viewport_size;
+        const can_preserve =
+            viewport.x > 0 &&
+            viewport.y > 0 &&
+            Number.isFinite(camera.zoom) &&
+            camera.zoom > 0;
+        const focal = can_preserve
+            ? camera.screen_to_world(camera.fit_viewport_center)
+            : null;
+
+        camera.fit_insets = normalized;
+        if (focal) {
+            const safe_center = camera.fit_viewport_center;
+            camera.center.set(
+                focal.x + (viewport.x / 2 - safe_center.x) / camera.zoom,
+                focal.y + (viewport.y / 2 - safe_center.y) / camera.zoom,
+            );
+        }
+        this.#cached_rect = null;
+        this.draw();
+    }
+
     #cached_rect: DOMRect | null = null;
     #rect_invalidator_installed = false;
 
@@ -313,6 +360,11 @@ export abstract class Viewer extends EventTarget {
         this.#overlay_scenes?.replace_layers(this.layers);
     }
 
+    /** Zoom used by fit-normalized screen-space comparison emphasis. */
+    public get fit_zoom(): number {
+        return this.viewport?.camera.zoom ?? 1;
+    }
+
     public set_overlay_scene(scene: EcadOverlayScene, draw = true) {
         if (!this.layers) return false;
         this.#overlay_scenes ??= new OverlaySceneManager(
@@ -320,6 +372,7 @@ export abstract class Viewer extends EventTarget {
             this.layers,
             (anchor) => this.resolve_overlay_anchor(anchor),
             () => this.viewport?.camera.zoom ?? 1,
+            () => this.fit_zoom,
         );
         const changed = this.#overlay_scenes.set_scene(scene);
         if (changed && draw) this.draw();

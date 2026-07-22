@@ -54,11 +54,21 @@ export class PreferencesChangeEvent extends CustomEvent<PreferencesChangeEventDe
     }
 }
 
+export interface PreferencesHost {
+    readonly preferences: Preferences;
+    preferenceChangeCallback(preferences: Preferences): Promise<void>;
+}
+
+type PreferencesHostConstructor<T extends Constructor<KCUIElement>> = T &
+    Constructor<InstanceType<T> & PreferencesHost>;
+
 /**
  * Mixin used to add provideContext and requestContext methods.
  */
-export function WithPreferences<T extends Constructor<KCUIElement>>(Base: T) {
-    return class WithPreferences extends Base {
+export function WithPreferences<T extends Constructor<KCUIElement>>(
+    Base: T,
+): PreferencesHostConstructor<T> {
+    class WithPreferencesHost extends Base {
         constructor(...args: any[]) {
             super(...args);
 
@@ -78,5 +88,6 @@ export function WithPreferences<T extends Constructor<KCUIElement>>(Base: T) {
         }
 
         async preferenceChangeCallback(preferences: Preferences) {}
-    };
+    }
+    return WithPreferencesHost as unknown as PreferencesHostConstructor<T>;
 }

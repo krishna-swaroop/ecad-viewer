@@ -84,4 +84,38 @@ suite("document comparison preparation", () => {
             bounds: [0, 0, 1, 2],
         });
     });
+
+    test("aggregates native child targets into one logical change target", () => {
+        const root = change(
+            "/label-a",
+            "removed",
+            [0, 0, 10_000, 10_000],
+            "PF_01",
+        );
+        root.sourceSide = "reference";
+        root.children = [
+            {
+                ...change(
+                    "/label-b",
+                    "removed",
+                    [20_000, 0, 10_000, 10_000],
+                    "PF_01",
+                ),
+                sourceSide: "reference",
+            },
+        ];
+        const prepared = prepareComparisonDocument({
+            ...schematic,
+            changes: [root],
+        });
+        const target = prepared.targets.get("change:/label-a");
+
+        expect(target?.sourceIds).to.deep.equal(["label-a", "label-b"]);
+        expect(target?.memberIds).to.deep.equal(["/label-a", "/label-b"]);
+        expect(target?.bounds).to.deep.equal([0, 0, 3, 1]);
+        expect(target?.visuals.map((visual) => visual.category)).to.deep.equal([
+            "removed",
+            "removed",
+        ]);
+    });
 });

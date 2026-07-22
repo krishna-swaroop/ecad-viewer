@@ -402,10 +402,14 @@ export class ViewLayerSet implements IDisposable {
     }
 
     /**
-     * @yields bboxes on interactive layers for the given item.
+     * @yields visible painted bboxes for the given item. Diff overlays also
+     * target non-interactive graphics such as schematic text and notes, so
+     * limiting this lookup to hit-test layers collapses those halos to their
+     * adapter fallback point.
      */
     *query_item_bboxes(item: any) {
-        for (const layer of this.interactive_layers()) {
+        for (const layer of this.in_order()) {
+            if (!layer.visible) continue;
             const bbox = layer.bboxes.get(item);
             if (bbox) {
                 yield bbox;

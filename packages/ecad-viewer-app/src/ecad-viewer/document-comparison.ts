@@ -1,4 +1,5 @@
 import type { EcadSourceUpdate } from "./host-adapter";
+import { BBox } from "../base/math";
 import {
     buildDocumentDiffIndex,
     parseKiCadDocumentDiff,
@@ -21,6 +22,8 @@ export type EcadDocumentComparisonRequest = {
     diff: unknown;
     /** Required when a PROJECT_DIFF contains more than one matching document. */
     documentPath?: string;
+    /** Prefer this hierarchical schematic project path when activating SCH. */
+    activeSheetPath?: string;
 };
 
 export type EcadDocumentComparisonSelection =
@@ -35,6 +38,17 @@ export type EcadPreparedDiffTarget = {
     memberIds: string[];
     sourceIds: string[];
     bounds: [number, number, number, number];
+    sourceSide: "reference" | "comparison";
+    routing: boolean;
+    overlayLines: Array<Array<[number, number]>>;
+    visuals: Array<{
+        sourceId: string;
+        category: EcadDiffCategory;
+        sourceSide: "reference" | "comparison";
+        routing: boolean;
+        bounds: [number, number, number, number];
+        overlayLines: Array<Array<[number, number]>>;
+    }>;
 };
 
 export type EcadDocumentComparisonPreparation = {
@@ -50,6 +64,10 @@ export type EcadDocumentComparisonPreparation = {
     }[];
     prepareMs: number;
     sourceCacheHit: boolean;
+    /** True when the reference revision has no matching document file. */
+    missingReference: boolean;
+    /** True when the comparison revision has no matching document file. */
+    missingComparison: boolean;
 };
 
 export type EcadDocumentComparisonSelectionResult = {
@@ -60,6 +78,56 @@ export type EcadDocumentComparisonSelectionResult = {
     paintCount: number;
     parserCount: number;
 };
+
+export type EcadRevisionDiffVisualTarget = {
+    sourceId: string;
+    parentSourceId?: string | null;
+    status: EcadDiffCategory;
+    bounds?: [number, number, number, number];
+    routing?: boolean;
+};
+
+export type EcadRevisionDiffTarget = {
+    id: string;
+    label?: string;
+    visuals: EcadRevisionDiffVisualTarget[];
+};
+
+export type EcadRevisionDiffPresentationRequest = {
+    context: "SCH" | "PCB";
+    targets: EcadRevisionDiffTarget[];
+};
+
+export type EcadTransitionTraceDetail = {
+    sequence: number;
+    timestamp: string;
+    event: string;
+    status?: "start" | "ready" | "missing" | "superseded" | "error";
+    generation?: number;
+    revisionKey?: string | null;
+    requestedPage?: string | null;
+    resolvedPage?: {
+        projectPath: string;
+        sheetPath: string;
+        filename: string;
+        name?: string;
+        page?: string;
+    } | null;
+    activePage?: string | null;
+    detail?: Record<string, unknown>;
+};
+
+export class EcadTransitionTraceEvent extends CustomEvent<EcadTransitionTraceDetail> {
+    static readonly type = "ecad-viewer:transition-trace";
+
+    constructor(detail: EcadTransitionTraceDetail) {
+        super(EcadTransitionTraceEvent.type, {
+            detail,
+            bubbles: true,
+            composed: true,
+        });
+    }
+}
 
 export class EcadDocumentComparisonReadyEvent extends CustomEvent<EcadDocumentComparisonPreparation> {
     static readonly type = "ecad-viewer:document-comparison-ready";
@@ -138,7 +206,27 @@ function bounds_tuple(
     return [bounds.x, bounds.y, bounds.w, bounds.h];
 }
 
-function change_target(change: EcadIndexedChange): EcadPreparedDiffTarget {
+function visual_target(change: EcadIndexedChange) {
+    return {
+        sourceId: change.sourceId ?? "",
+        category: change.category,
+        sourceSide: change.sourceSide,
+        routing: ["SCH_LINE", "PCB_TRACK", "PCB_ARC", "PCB_VIA"].includes(
+            change.change.typeName,
+        ),
+        bounds: bounds_tuple(change.worldBounds),
+        overlayLines: [] as Array<Array<[number, number]>>,
+    };
+}
+
+function change_target(
+    change: EcadIndexedChange,
+    members: EcadIndexedChange[] = [change],
+): EcadPreparedDiffTarget {
+    const visuals = members
+        .map(visual_target)
+        .filter((entry) => entry.sourceId);
+    const bounds = BBox.combine(members.map((entry) => entry.worldBounds));
     return {
         id: change.id,
         kind: "change",
@@ -146,13 +234,20 @@ function change_target(change: EcadIndexedChange): EcadPreparedDiffTarget {
         label: change.change.refdes
             ? `${change.change.typeName} [${change.change.refdes}]`
             : change.change.typeName,
-        memberIds: [change.id],
-        sourceIds: change.sourceId ? [change.sourceId] : [],
-        bounds: bounds_tuple(change.worldBounds),
+        memberIds: members.map((entry) => entry.id),
+        sourceIds: visuals.map((entry) => entry.sourceId),
+        bounds: bounds_tuple(bounds),
+        sourceSide: change.sourceSide,
+        routing: visuals.some((entry) => entry.routing),
+        overlayLines: [],
+        visuals,
     };
 }
 
 function group_target(group: EcadDiffGroup): EcadPreparedDiffTarget {
+    const visuals = group.members
+        .map(visual_target)
+        .filter((entry) => entry.sourceId);
     return {
         id: group.id,
         kind: "group",
@@ -163,6 +258,14 @@ function group_target(group: EcadDiffGroup): EcadPreparedDiffTarget {
             member.sourceId ? [member.sourceId] : [],
         ),
         bounds: bounds_tuple(group.worldBounds),
+        sourceSide: group.members[0]?.sourceSide ?? "comparison",
+        routing: group.members.some((member) =>
+            ["SCH_LINE", "PCB_TRACK", "PCB_ARC", "PCB_VIA"].includes(
+                member.change.typeName,
+            ),
+        ),
+        overlayLines: [],
+        visuals,
     };
 }
 
@@ -174,8 +277,11 @@ export function buildDocumentComparisonTargets(
     index: EcadDocumentDiffIndex,
 ): ReadonlyMap<string, EcadPreparedDiffTarget> {
     const targets = new Map<string, EcadPreparedDiffTarget>();
-    for (const change of index.changes) {
-        targets.set(`change:${change.id}`, change_target(change));
+    for (const change of index.changes.filter((entry) => !entry.parentId)) {
+        const members = index.changes.filter(
+            (entry) => entry === change || entry.rootId === change.id,
+        );
+        targets.set(`change:${change.id}`, change_target(change, members));
     }
     for (const group of index.groups) {
         targets.set(`group:${group.id}`, group_target(group));

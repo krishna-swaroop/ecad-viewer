@@ -23,6 +23,10 @@ const DIFF_COLOR_BYPASS_LAYERS = new Set([
     ":Grid",
     // Keep schematic paper white so muted unchanged geometry stays readable.
     ":DrawingSheet:Background",
+    // Keep board outline authoritative on PCB composite reviews.
+    "Edge.Cuts",
+    "Edge.Cuts.User",
+    "Margin",
 ]);
 
 /**

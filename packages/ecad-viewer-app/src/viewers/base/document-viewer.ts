@@ -48,11 +48,19 @@ export abstract class DocumentViewer<
     protected static FACTOR_zoom_fit_top_item = 1.6;
 
     public set_drawing_sheet(sheet: DrawingSheet) {
+        if (this.disposables.isDisposed) {
+            return;
+        }
         this.drawing_sheet = sheet;
         if (this.document) {
             this.paint();
             this.draw();
         }
+    }
+
+    /** True after the host custom element disconnected and disposed this viewer. */
+    public get is_disposed(): boolean {
+        return this.disposables.isDisposed;
     }
 
     constructor(
@@ -78,6 +86,9 @@ export abstract class DocumentViewer<
     public set_diff_presentation(
         presentation: EcadDiffPresentation | null,
     ): boolean {
+        if (this.disposables.isDisposed) {
+            return false;
+        }
         if (
             this.#diff_presentation?.signature === presentation?.signature &&
             this.#diff_presentation === presentation
@@ -170,9 +181,12 @@ export abstract class DocumentViewer<
 
     protected override on_canvas_resize(): void {
         this.renderer.update_canvas_size();
-        if (this.document) {
-            this.paint();
-        }
+        this.viewport.sync_from_canvas();
+        // Retained WebGL document layers are world-space and survive a canvas
+        // backing-store resize. Repainting here rebuilds every PCB layer for
+        // each ResizeObserver tick (including every frame of a host panel
+        // transition). Cold loads already perform an explicit valid-size paint
+        // after viewport.ready, so settled resizes only need a draw.
         super.on_canvas_resize();
     }
 
@@ -193,7 +207,11 @@ export abstract class DocumentViewer<
         }
         this.drawing_sheet.document = this.document;
 
-        // Setup graphical layers
+        // Setup graphical layers. Skip if the host already disconnected —
+        // replaceSources can race an in-flight app.load against dispose.
+        if (this.disposables.isDisposed) {
+            return;
+        }
         this.disposables.disposeAndRemove(this.layers);
         this.layers = this.disposables.add(this.create_layer_set());
         this.rebind_overlay_layers();
@@ -203,7 +221,7 @@ export abstract class DocumentViewer<
         this.painter.diff_presentation = this.#diff_presentation;
         this.painter.paint(
             this.document,
-            this.#diff_presentation?.removedItems ?? [],
+            this.#diff_presentation?.referenceItems ?? [],
         );
 
         // Paint the drawing sheet
@@ -251,6 +269,23 @@ export abstract class DocumentViewer<
             DocumentViewer.FACTOR_zoom_fit_top_item,
         );
         this.draw();
+    }
+
+    public override get fit_zoom(): number {
+        const bounds = this.document.bbox.grow(
+            DocumentViewer.FACTOR_zoom_fit_top_item,
+        );
+        const camera = this.viewport.camera;
+        const viewport = camera.fit_viewport_size;
+        if (
+            bounds.w <= 0 ||
+            bounds.h <= 0 ||
+            viewport.x <= 0 ||
+            viewport.y <= 0
+        ) {
+            return super.fit_zoom;
+        }
+        return camera.zoom_for_bbox(bounds);
     }
 
     public override draw(): void {
