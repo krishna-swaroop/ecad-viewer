@@ -1539,7 +1539,15 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                         overlay_lines.push(line);
                         visual_lines.push(line);
                     }
-                    const item_bounds = viewer.layers.query_item_bboxes(item);
+                    // query_item_bboxes is a generator. Spreading it twice
+                    // fed the second consumer an exhausted iterator, so
+                    // visual.bounds silently kept whatever the caller
+                    // supplied -- for Prism, a constant 5.08 mm box -- while
+                    // target.bounds got the real painted extent. Materialize
+                    // once and share.
+                    const item_bounds = [
+                        ...viewer.layers.query_item_bboxes(item),
+                    ];
                     native_bounds.push(...item_bounds);
                     visual_bounds.push(...item_bounds);
                 }
