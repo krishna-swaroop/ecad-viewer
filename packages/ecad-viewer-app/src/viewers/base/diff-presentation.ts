@@ -12,12 +12,73 @@ export type EcadDiffPaintStatus =
     | "modified"
     | "conflict";
 
+export type EcadDiffResolutionReason =
+    /** The change carried no native source id, so nothing could be resolved. */
+    | "missing-source-id"
+    /** The source id resolved against neither parsed revision. */
+    | "item-not-found"
+    /** More than one paint item in the scene claims this source id. */
+    | "source-id-ambiguous"
+    /** Two changes resolve to the same side+source id; the first is discarded. */
+    | "duplicate-change-target"
+    /**
+     * The item resolved but the painted scene yielded no bounds for it, so the
+     * caller-supplied bbox survives. This is the case the older diagnostics
+     * could not see: hydration abandons a target with a bare `continue`.
+     */
+    | "paint-bounds-not-found";
+
 export type EcadDiffResolutionDiagnostic = {
     changeId: string;
     sourceId?: string;
     side: "reference" | "comparison";
-    reason: "missing-source-id" | "item-not-found";
+    reason: EcadDiffResolutionReason;
+    /** Paint items claiming this source id (ambiguity and bounds failures). */
+    matchCount?: number;
+    /** KiCad type name of the change, for grouping failures by object kind. */
+    typeName?: string;
 };
+
+/**
+ * Per-comparison resolution counters. `targetsUsingProvidedBounds` is the
+ * number that matters: it is how often a caller-supplied bbox — for Prism, a
+ * constant 5.08 mm or 10 mm box — was actually what the camera focused.
+ */
+export type EcadDiffResolutionSummary = {
+    changes: number;
+    sourceResolved: number;
+    ambiguousSourceIds: number;
+    duplicateChangeTargets: number;
+    targets: number;
+    targetsWithPaintedBounds: number;
+    targetsUsingProvidedBounds: number;
+    visuals: number;
+    visualsWithPaintedBounds: number;
+};
+
+/** Counters and diagnostics produced once the comparison scene has painted. */
+export type EcadDiffBoundsResolution = {
+    diagnostics: EcadDiffResolutionDiagnostic[];
+    targets: number;
+    targetsWithPaintedBounds: number;
+    visuals: number;
+    visualsWithPaintedBounds: number;
+};
+
+export function merge_bounds_resolution(
+    summary: EcadDiffResolutionSummary,
+    bounds: EcadDiffBoundsResolution,
+): EcadDiffResolutionSummary {
+    return {
+        ...summary,
+        targets: bounds.targets,
+        targetsWithPaintedBounds: bounds.targetsWithPaintedBounds,
+        targetsUsingProvidedBounds:
+            bounds.targets - bounds.targetsWithPaintedBounds,
+        visuals: bounds.visuals,
+        visualsWithPaintedBounds: bounds.visualsWithPaintedBounds,
+    };
+}
 
 export type EcadDiffPresentation = {
     signature: string;
@@ -26,6 +87,8 @@ export type EcadDiffPresentation = {
     itemsBySideAndSourceId: ReadonlyMap<string, readonly object[]>;
     referenceItems: readonly object[];
     diagnostics: readonly EcadDiffResolutionDiagnostic[];
+    /** Counters from identity resolution; bounds counters are added on paint. */
+    resolution: EcadDiffResolutionSummary;
 };
 
 type SourceIndex = Map<string, object[]>;
@@ -142,6 +205,10 @@ export function build_diff_presentation(
             .map((entry) => entry.id),
     );
 
+    let source_resolved = 0;
+    let ambiguous_source_ids = 0;
+    let duplicate_change_targets = 0;
+
     for (const entry of diff.changes) {
         const side = entry.sourceSide;
         if (!entry.sourceId) {
@@ -149,21 +216,50 @@ export function build_diff_presentation(
                 changeId: entry.id,
                 side,
                 reason: "missing-source-id",
+                typeName: entry.change.typeName,
             });
             continue;
         }
-        const item =
-            side === "reference"
-                ? first_item(reference_index, entry.sourceId)
-                : first_item(comparison_index, entry.sourceId);
+        const index = side === "reference" ? reference_index : comparison_index;
+        const matches = index.get(entry.sourceId) ?? [];
+        const item = first_item(index, entry.sourceId);
         if (!item) {
             diagnostics.push({
                 changeId: entry.id,
                 sourceId: entry.sourceId,
                 side,
                 reason: "item-not-found",
+                typeName: entry.change.typeName,
             });
             continue;
+        }
+        source_resolved += 1;
+        // Taking `[0]` of a multi-match is a silent coin flip today. Count it
+        // before deciding whether disambiguation belongs in the digest.
+        if (matches.length > 1) {
+            ambiguous_source_ids += 1;
+            diagnostics.push({
+                changeId: entry.id,
+                sourceId: entry.sourceId,
+                side,
+                reason: "source-id-ambiguous",
+                matchCount: matches.length,
+                typeName: entry.change.typeName,
+            });
+        }
+        // The index below is keyed by side+source id and assigned, not
+        // appended: a second change on the same identity destroys the first
+        // resolution outright. Behaviour is left as-is for this measurement
+        // pass; only the frequency is recorded.
+        if (items_by_side_and_source_id.has(`${side}:${entry.sourceId}`)) {
+            duplicate_change_targets += 1;
+            diagnostics.push({
+                changeId: entry.id,
+                sourceId: entry.sourceId,
+                side,
+                reason: "duplicate-change-target",
+                typeName: entry.change.typeName,
+            });
         }
 
         let presentation_item = item;
@@ -218,6 +314,18 @@ export function build_diff_presentation(
         itemsBySideAndSourceId: items_by_side_and_source_id,
         referenceItems: reference_items,
         diagnostics,
+        resolution: {
+            changes: diff.changes.length,
+            sourceResolved: source_resolved,
+            ambiguousSourceIds: ambiguous_source_ids,
+            duplicateChangeTargets: duplicate_change_targets,
+            // Filled in by bounds hydration once the scene has painted.
+            targets: 0,
+            targetsWithPaintedBounds: 0,
+            targetsUsingProvidedBounds: 0,
+            visuals: 0,
+            visualsWithPaintedBounds: 0,
+        },
     };
 }
 

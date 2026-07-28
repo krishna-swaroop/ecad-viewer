@@ -82,7 +82,12 @@ import {
     build_diff_presentation,
     index_paint_items,
 } from "../viewers/base/diff-presentation";
-import type { EcadDiffPresentation } from "../viewers/base/diff-presentation";
+import { merge_bounds_resolution } from "../viewers/base/diff-presentation";
+import type {
+    EcadDiffBoundsResolution,
+    EcadDiffPresentation,
+    EcadDiffResolutionDiagnostic,
+} from "../viewers/base/diff-presentation";
 import type { PaintableDocument } from "../viewers/base/painter";
 import type { DocumentViewer } from "../viewers/base/document-viewer";
 import { ecadPerfLog } from "../kicanvas/perf_log";
@@ -795,7 +800,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 cached.presentation,
             );
             assert_current();
-            this.#hydrate_document_diff_targets(
+            const bounds = this.#hydrate_document_diff_targets(
                 cached.preparation.targets,
                 cached.presentation,
                 viewer,
@@ -811,8 +816,18 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 viewer,
                 /* alreadyPainted */ true,
             );
+            // Hydration re-runs on the warm path, so its diagnostics have to be
+            // recomputed rather than inherited from the cached preparation.
             const result = {
                 ...cached.preparation,
+                diagnostics: [
+                    ...cached.presentation.diagnostics,
+                    ...bounds.diagnostics,
+                ],
+                resolution: merge_bounds_resolution(
+                    cached.presentation.resolution,
+                    bounds,
+                ),
                 prepareMs: performance.now() - started,
                 sourceCacheHit: true,
             };
@@ -911,7 +926,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             /* alreadyPainted */ true,
         );
         assert_current();
-        this.#hydrate_document_diff_targets(
+        const bounds = this.#hydrate_document_diff_targets(
             prepared.targets,
             presentation,
             viewer,
@@ -927,7 +942,11 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             context: prepared.context,
             document: prepared.document,
             targets: prepared.targets,
-            diagnostics: presentation.diagnostics,
+            diagnostics: [...presentation.diagnostics, ...bounds.diagnostics],
+            resolution: merge_bounds_resolution(
+                presentation.resolution,
+                bounds,
+            ),
             prepareMs: performance.now() - started,
             sourceCacheHit: same_sources,
             missingReference,
@@ -940,7 +959,12 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         });
         this.#document_comparison = result;
         ecadPerfLog(
-            `document comparison ready context=${result.context} changes=${prepared.index.changes.length} targets=${result.targets.size} prepare=${result.prepareMs.toFixed(1)}ms diagnostics=${result.diagnostics.length}`,
+            `document comparison ready context=${result.context} changes=${prepared.index.changes.length} targets=${result.targets.size} prepare=${result.prepareMs.toFixed(1)}ms diagnostics=${result.diagnostics.length} ` +
+                `sourceResolved=${result.resolution.sourceResolved}/${result.resolution.changes} ` +
+                `paintedBounds=${result.resolution.targetsWithPaintedBounds}/${result.resolution.targets} ` +
+                `providedBounds=${result.resolution.targetsUsingProvidedBounds} ` +
+                `ambiguous=${result.resolution.ambiguousSourceIds} ` +
+                `duplicateTargets=${result.resolution.duplicateChangeTargets}`,
         );
         this.dispatchEvent(new EcadDocumentComparisonReadyEvent(result));
         this.#emit_view_state_change();
@@ -1479,15 +1503,27 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         return true;
     }
 
+    /**
+     * Replace caller-supplied bounds with the bounds the scene actually
+     * painted. Where that is not possible the caller's bbox survives, which is
+     * invisible to the identity diagnostics collected during presentation
+     * build — they only ever see source-id resolution. The returned counters
+     * are what tell a host how often its own bounds were the ones used.
+     */
     #hydrate_document_diff_targets(
         targets: ReadonlyMap<string, EcadPreparedDiffTarget>,
         presentation: EcadDiffPresentation,
         viewer: DocumentViewer<any, any, any, any>,
-    ): void {
+    ): EcadDiffBoundsResolution {
+        const diagnostics: EcadDiffResolutionDiagnostic[] = [];
+        let targets_with_painted_bounds = 0;
+        let visuals_total = 0;
+        let visuals_with_painted_bounds = 0;
         for (const target of targets.values()) {
             const native_bounds: BBox[] = [];
             const overlay_lines: Array<Array<[number, number]>> = [];
             for (const visual of target.visuals) {
+                visuals_total += 1;
                 const visual_bounds: BBox[] = [];
                 const visual_lines: Array<Array<[number, number]>> = [];
                 const source_id = visual.sourceId;
@@ -1509,6 +1545,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 }
                 visual.overlayLines = visual_lines;
                 if (visual_bounds.length) {
+                    visuals_with_painted_bounds += 1;
                     const combined = BBox.combine(visual_bounds);
                     visual.bounds = [
                         combined.x,
@@ -1516,25 +1553,54 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                         combined.w,
                         combined.h,
                     ];
+                } else {
+                    // matchCount separates "the identity resolved but nothing
+                    // painted" from "no item was in the presentation at all".
+                    diagnostics.push({
+                        changeId: target.id,
+                        sourceId: source_id,
+                        side: visual.sourceSide,
+                        reason: "paint-bounds-not-found",
+                        matchCount: visual_items.length,
+                    });
                 }
             }
             target.overlayLines = overlay_lines;
-            if (!native_bounds.length) continue;
-            const combined = BBox.combine(native_bounds);
+            const combined = native_bounds.length
+                ? BBox.combine(native_bounds)
+                : null;
             if (
+                combined &&
                 Number.isFinite(combined.x) &&
                 Number.isFinite(combined.y) &&
                 Number.isFinite(combined.w) &&
                 Number.isFinite(combined.h)
             ) {
+                targets_with_painted_bounds += 1;
                 target.bounds = [
                     combined.x,
                     combined.y,
                     combined.w,
                     combined.h,
                 ];
+            } else if (!target.visuals.length) {
+                // No visual carried the failure, so record it on the target or
+                // it disappears from the count entirely.
+                diagnostics.push({
+                    changeId: target.id,
+                    side: target.sourceSide,
+                    reason: "paint-bounds-not-found",
+                    matchCount: 0,
+                });
             }
         }
+        return {
+            diagnostics,
+            targets: targets.size,
+            targetsWithPaintedBounds: targets_with_painted_bounds,
+            visuals: visuals_total,
+            visualsWithPaintedBounds: visuals_with_painted_bounds,
+        };
     }
 
     #install_document_diff_halos(

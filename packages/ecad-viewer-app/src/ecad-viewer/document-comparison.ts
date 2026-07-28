@@ -1,4 +1,8 @@
 import type { EcadSourceUpdate } from "./host-adapter";
+import type {
+    EcadDiffResolutionDiagnostic,
+    EcadDiffResolutionSummary,
+} from "../viewers/base/diff-presentation";
 import { BBox } from "../base/math";
 import {
     buildDocumentDiffIndex,
@@ -56,12 +60,14 @@ export type EcadDocumentComparisonPreparation = {
     context: "SCH" | "PCB";
     document: KiCadDocumentDiff;
     targets: ReadonlyMap<string, EcadPreparedDiffTarget>;
-    diagnostics: readonly {
-        changeId: string;
-        sourceId?: string;
-        side: "reference" | "comparison";
-        reason: "missing-source-id" | "item-not-found";
-    }[];
+    diagnostics: readonly EcadDiffResolutionDiagnostic[];
+    /**
+     * Identity- and bounds-resolution counters for this comparison. Hosts that
+     * supply their own bboxes should watch `targetsUsingProvidedBounds`: it is
+     * the number of selection targets the viewer could not measure from the
+     * painted scene, and therefore the number still focusing host geometry.
+     */
+    resolution: EcadDiffResolutionSummary;
     prepareMs: number;
     sourceCacheHit: boolean;
     /** True when the reference revision has no matching document file. */

@@ -110,8 +110,65 @@ suite("native diff presentation", () => {
                 sourceId: "missing",
                 side: "comparison",
                 reason: "item-not-found",
+                typeName: "SCH_SYMBOL",
             },
         ]);
+        expect(presentation.resolution.changes).to.equal(1);
+        expect(presentation.resolution.sourceResolved).to.equal(0);
+    });
+
+    test("reports an ambiguous source id instead of silently taking the first", () => {
+        const first = new PaintItem("twin");
+        const second = new PaintItem("twin");
+        const document: KiCadDocumentDiff = {
+            path: "root.kicad_sch",
+            docType: "kicad_sch",
+            changes: [change("/twin", "modified")],
+        };
+
+        const presentation = build_diff_presentation(
+            buildDocumentDiffIndex(document),
+            new PaintDocument([]),
+            new PaintDocument([first, second]),
+        );
+
+        expect(presentation.diagnostics).to.deep.equal([
+            {
+                changeId: "/twin",
+                sourceId: "twin",
+                side: "comparison",
+                reason: "source-id-ambiguous",
+                matchCount: 2,
+                typeName: "SCH_SYMBOL",
+            },
+        ]);
+        // Selection behaviour is unchanged for this measurement pass.
+        expect(presentation.itemsBySourceId.get("twin")).to.deep.equal([first]);
+        expect(presentation.resolution.ambiguousSourceIds).to.equal(1);
+    });
+
+    test("reports a second change that overwrites an existing side target", () => {
+        const item = new PaintItem("shared");
+        const document: KiCadDocumentDiff = {
+            path: "root.kicad_sch",
+            docType: "kicad_sch",
+            changes: [
+                change("/shared", "modified"),
+                change("/shared", "added"),
+            ],
+        };
+
+        const presentation = build_diff_presentation(
+            buildDocumentDiffIndex(document),
+            new PaintDocument([]),
+            new PaintDocument([item]),
+        );
+
+        expect(
+            presentation.diagnostics.map((entry) => entry.reason),
+        ).to.deep.equal(["duplicate-change-target"]);
+        expect(presentation.resolution.duplicateChangeTargets).to.equal(1);
+        expect(presentation.resolution.sourceResolved).to.equal(2);
     });
 
     test("paints a reference-sourced modified item as modified", () => {
