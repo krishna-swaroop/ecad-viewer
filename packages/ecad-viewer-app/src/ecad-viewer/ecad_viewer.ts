@@ -3784,7 +3784,17 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         event.stopPropagation();
         const select = event as KiCanvasSelectEvent;
         const item = select.detail.item;
-        if (!item) return;
+        // A click on empty canvas: tell the host so it can deselect, rather than
+        // swallowing it and leaving the previous selection stuck.
+        if (!item) {
+            this.dispatchEvent(
+                new EcadSemanticSelectionEvent({
+                    sourceContext: "PCB",
+                    itemType: "",
+                }),
+            );
+            return;
+        }
         const viewer = this.#safe_board_viewer();
         const board = viewer?.board;
         if (!board) return;
@@ -3804,7 +3814,17 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         event.stopPropagation();
         const select = event as KiCanvasSelectEvent;
         const item = select.detail.item;
-        if (!item) return;
+        // A click on empty canvas: tell the host so it can deselect, rather than
+        // swallowing it and leaving the previous selection stuck.
+        if (!item) {
+            this.dispatchEvent(
+                new EcadSemanticSelectionEvent({
+                    sourceContext: "SCH",
+                    itemType: "",
+                }),
+            );
+            return;
+        }
         const viewer = this.#safe_schematic_viewer();
         const schematic = viewer?.schematic;
         if (!schematic) return;
