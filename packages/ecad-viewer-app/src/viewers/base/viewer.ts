@@ -81,6 +81,7 @@ export abstract class Viewer extends EventTarget {
     }
 
     dispose() {
+        this.#active = false;
         if (this.#draw_frame !== null) cancelAnimationFrame(this.#draw_frame);
         if (this.#hover_frame !== null) cancelAnimationFrame(this.#hover_frame);
         this.#draw_frame = null;
@@ -359,10 +360,7 @@ export abstract class Viewer extends EventTarget {
     protected rebind_overlay_layers(
         retained_channels: ReadonlySet<string> = new Set(),
     ) {
-        this.#overlay_scenes?.replace_layers(
-            this.layers,
-            retained_channels,
-        );
+        this.#overlay_scenes?.replace_layers(this.layers, retained_channels);
     }
 
     /** Zoom used by fit-normalized screen-space comparison emphasis. */
@@ -486,6 +484,7 @@ export abstract class Viewer extends EventTarget {
      * re-paints so cold loads that raced layout still settle correctly.
      */
     protected on_canvas_resize(): void {
+        if (this.disposables.isDisposed) return;
         this.draw();
     }
 
@@ -542,20 +541,28 @@ export abstract class Viewer extends EventTarget {
      * state updates while highlight layers never reach the canvas.
      */
     public draw() {
-        if (!this.viewport || this.#draw_frame !== null) return;
+        if (
+            this.disposables.isDisposed ||
+            !this.viewport ||
+            this.#draw_frame !== null
+        ) {
+            return;
+        }
         this.#draw_frame = window.requestAnimationFrame(() => {
             this.#draw_frame = null;
+            if (this.disposables.isDisposed) return;
             this.on_draw();
         });
     }
 
     /** Immediate draw — used after unhide + zoom-fit so the first frame is not zoom=0. */
     public draw_now() {
-        if (!this.viewport) return;
+        if (this.disposables.isDisposed || !this.viewport) return;
         if (this.#draw_frame !== null) {
             cancelAnimationFrame(this.#draw_frame);
             this.#draw_frame = null;
         }
+        if (this.disposables.isDisposed) return;
         this.on_draw();
     }
 

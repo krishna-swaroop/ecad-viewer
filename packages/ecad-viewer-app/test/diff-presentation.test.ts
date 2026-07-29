@@ -98,6 +98,7 @@ suite("native diff presentation", () => {
         );
 
         expect(presentation.diagnostics).to.deep.equal([]);
+        expect(presentation.colorizeChanges).to.equal(false);
         expect(presentation.statusByItem.get(inactivePin)).to.equal("modified");
         expect(presentation.statusByItem.get(symbol)).to.equal("modified");
         expect(

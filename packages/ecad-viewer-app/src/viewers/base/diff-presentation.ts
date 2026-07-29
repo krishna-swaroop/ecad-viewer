@@ -91,6 +91,12 @@ export function merge_bounds_resolution(
 
 export type EcadDiffPresentation = {
     signature: string;
+    /**
+     * Status colour is reserved for the active review selection. The native
+     * status index remains available for identity resolution without tinting
+     * every changed object in the retained composite scene.
+     */
+    colorizeChanges: boolean;
     statusByItem: ReadonlyMap<object, EcadDiffPaintStatus>;
     itemsBySourceId: ReadonlyMap<string, readonly object[]>;
     itemsBySideAndSourceId: ReadonlyMap<string, readonly object[]>;
@@ -282,8 +288,7 @@ export function build_diff_presentation(
             });
         }
 
-        let presentation_item =
-            paint_item_index.rootByItem.get(item) ?? item;
+        let presentation_item = paint_item_index.rootByItem.get(item) ?? item;
         if (
             entry.sourceSide === "reference" &&
             (entry.change.retainReference ||
@@ -330,6 +335,7 @@ export function build_diff_presentation(
 
     return {
         signature,
+        colorizeChanges: false,
         statusByItem: status_by_item,
         itemsBySourceId: items_by_source_id,
         itemsBySideAndSourceId: items_by_side_and_source_id,

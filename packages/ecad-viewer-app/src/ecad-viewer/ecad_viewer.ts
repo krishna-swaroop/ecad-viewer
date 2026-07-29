@@ -315,9 +315,7 @@ function pending_targets_for_presentation(
                 ? [new BBox(...visual.bounds)]
                 : [],
         );
-        const bounds = supplied.length
-            ? BBox.combine(supplied)
-            : undefined;
+        const bounds = supplied.length ? BBox.combine(supplied) : undefined;
         filtered.set(key, {
             ...target,
             sourceIds: visuals.map((visual) => visual.sourceId),
@@ -561,11 +559,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     #visible_ready: Promise<void> = Promise.resolve();
     #transition_trace_sequence = 0;
     static readonly #DIFF_SELECTION_CHANNEL = ":document-diff:selection";
-    static readonly #DIFF_HALO_CHANNEL = ":document-diff:halos";
     #selected_document_diff: EcadDocumentComparisonSelection | null = null;
     #preview_document_diff: EcadDocumentComparisonSelection | null = null;
     #diff_animation_frame: number | null = null;
-    #diff_animation_started = 0;
     #viewport_insets: Required<EcadViewportInsets> = {
         left: 0,
         right: 0,
@@ -906,20 +902,17 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 heapBytesCurrent: comparison_heap_bytes(),
             },
         };
-        this.#viewer_for_context(preparation.context)
-            ?.enable_presentation_cache(new Set([
-                ECadViewer.#DIFF_HALO_CHANNEL,
-                ECadViewer.#DIFF_SELECTION_CHANNEL,
-            ]));
+        this.#viewer_for_context(
+            preparation.context,
+        )?.enable_presentation_cache(
+            new Set([ECadViewer.#DIFF_SELECTION_CHANNEL]),
+        );
         const session: EcadComparisonSession = {
             comparisonKey: request.comparisonKey,
             get preparation() {
                 return state.document.preparation;
             },
-            setPresentation: (
-                presentation,
-                viewport = state.owner,
-            ) =>
+            setPresentation: (presentation, viewport = state.owner) =>
                 state.owner.#set_comparison_session_presentation(
                     state,
                     viewport,
@@ -1032,14 +1025,11 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         }
         const viewer = viewport.#viewer_for_context(context);
         if (!viewer) {
-            throw new Error(
-                `The ${context} comparison viewport is not ready`,
-            );
+            throw new Error(`The ${context} comparison viewport is not ready`);
         }
-        viewer.enable_presentation_cache(new Set([
-            ECadViewer.#DIFF_HALO_CHANNEL,
-            ECadViewer.#DIFF_SELECTION_CHANNEL,
-        ]));
+        viewer.enable_presentation_cache(
+            new Set([ECadViewer.#DIFF_SELECTION_CHANNEL]),
+        );
         const paint_before = viewer.paint_count;
         if (presentation_mode === "composite") {
             await viewer.load_diff_document(
@@ -1062,28 +1052,23 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         const pending = cached_preparation
             ? null
             : pending_targets_for_presentation(
-                state.document.pendingTargets,
-                presentation_mode,
-            );
+                  state.document.pendingTargets,
+                  presentation_mode,
+              );
         const hydrated = pending
             ? viewport.#hydrate_document_diff_targets(
-                pending,
-                state.document.presentation,
-                viewer,
-            )
+                  pending,
+                  state.document.presentation,
+                  viewer,
+              )
             : null;
         const targets = cached_preparation?.targets ?? hydrated!.targets;
-        viewport.#install_document_diff_halos(
-            targets,
-            context,
-            viewer,
-            !cached_preparation,
-        );
         const side =
             presentation_mode === "composite" ? null : presentation_mode;
-        const identity_diagnostics = state.document.presentation.diagnostics.filter(
-            (diagnostic) => side === null || diagnostic.side === side,
-        );
+        const identity_diagnostics =
+            state.document.presentation.diagnostics.filter(
+                (diagnostic) => side === null || diagnostic.side === side,
+            );
         const preparation: EcadDocumentComparisonPreparation =
             cached_preparation ?? {
                 ...state.document.preparation,
@@ -1115,8 +1100,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             paintCount: viewer.paint_count - paint_before,
         };
         state.preparations.set(viewport, preparation);
-        let prepared_presentations =
-            state.preparedPresentations.get(viewport);
+        let prepared_presentations = state.preparedPresentations.get(viewport);
         if (!prepared_presentations) {
             prepared_presentations = new Map();
             state.preparedPresentations.set(viewport, prepared_presentations);
@@ -1134,8 +1118,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         state.metrics.retainedScenes = [...state.presentations.keys()].reduce(
             (total, retained_viewport) =>
                 total +
-                (retained_viewport
-                    .#viewer_for_context(context)
+                (retained_viewport.#viewer_for_context(context)
                     ?.presentation_cache_size ?? 0),
             0,
         );
@@ -1225,11 +1208,6 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             const hydrated = this.#hydrate_document_diff_targets(
                 cached.pendingTargets,
                 cached.presentation,
-                viewer,
-            );
-            this.#install_document_diff_halos(
-                hydrated.targets,
-                cached.preparation.context,
                 viewer,
             );
             await this.#reveal_comparison_shell(
@@ -1352,11 +1330,6 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         const hydrated = this.#hydrate_document_diff_targets(
             prepared.targets,
             presentation,
-            viewer,
-        );
-        this.#install_document_diff_halos(
-            hydrated.targets,
-            prepared.context,
             viewer,
         );
 
@@ -1587,31 +1560,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
 
     #restart_diff_animation(): void {
         this.#cancel_diff_animation();
-        const target = this.#paint_diff_emphasis();
-        if (
-            !target?.routing ||
-            !this.#host_active ||
-            document.hidden ||
-            window.matchMedia("(prefers-reduced-motion: reduce)").matches
-        ) {
-            return;
-        }
-        this.#diff_animation_started = performance.now();
-        const tick = (time: number) => {
-            if (
-                !this.#host_active ||
-                document.hidden ||
-                window.matchMedia("(prefers-reduced-motion: reduce)").matches
-            ) {
-                this.#diff_animation_frame = null;
-                return;
-            }
-            this.#paint_diff_emphasis(
-                -((time - this.#diff_animation_started) / 1000) * 36,
-            );
-            this.#diff_animation_frame = requestAnimationFrame(tick);
-        };
-        this.#diff_animation_frame = requestAnimationFrame(tick);
+        this.#paint_diff_emphasis();
     }
 
     /** Preview a change without moving the camera; null restores selection. */
@@ -1777,8 +1726,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         ): value is [number, number, number, number] =>
             Boolean(
                 value &&
-                    value.every(Number.isFinite) &&
-                    (value[2] > 0 || value[3] > 0),
+                value.every(Number.isFinite) &&
+                (value[2] > 0 || value[3] > 0),
             );
 
         for (const [target_key, target] of pending_targets) {
@@ -1874,12 +1823,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 }
                 targets.set(target_key, {
                     ...target,
-                    bounds: [
-                        combined.x,
-                        combined.y,
-                        combined.w,
-                        combined.h,
-                    ],
+                    bounds: [combined.x, combined.y, combined.w, combined.h],
                     overlayLines: overlay_lines,
                     visuals,
                 });
@@ -1914,82 +1858,6 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         };
     }
 
-    #install_document_diff_halos(
-        targets: ReadonlyMap<string, EcadPreparedDiffTarget>,
-        context: "SCH" | "PCB",
-        viewer: DocumentViewer<any, any, any, any>,
-        compile = true,
-    ): void {
-        const primitives: EcadOverlayPrimitive[] = [];
-        for (const target of targets.values()) {
-            if (target.kind !== "change") continue;
-            target.visuals.forEach((visual, visualIndex) => {
-                const color = DIFF_STATUS_COLORS[visual.category];
-                const lines = visual.overlayLines;
-                if (lines.length) {
-                    lines.forEach((points, index) => {
-                        primitives.push(
-                            {
-                                id: `halo:${target.id}:${visualIndex}:${index}`,
-                                kind: "polyline",
-                                anchor: { kind: "world", x: 0, y: 0 },
-                                points,
-                                stroke: color,
-                                opacity: 0.24,
-                                strokeWidth: 6,
-                                sizing: "screen",
-                            },
-                            {
-                                id: `core:${target.id}:${visualIndex}:${index}`,
-                                kind: "polyline",
-                                anchor: { kind: "world", x: 0, y: 0 },
-                                points,
-                                stroke: color,
-                                opacity: 0.95,
-                                strokeWidth: 2.25,
-                                sizing: "screen",
-                            },
-                        );
-                    });
-                } else {
-                    primitives.push(
-                        {
-                            id: `halo:${target.id}:${visualIndex}`,
-                            kind: "bbox",
-                            anchor: { kind: "bbox", bounds: visual.bounds },
-                            stroke: color,
-                            opacity: 0.24,
-                            strokeWidth: 6,
-                            padding: 4,
-                            sizing: "screen",
-                        },
-                        {
-                            id: `core:${target.id}:${visualIndex}`,
-                            kind: "bbox",
-                            anchor: { kind: "bbox", bounds: visual.bounds },
-                            stroke: color,
-                            opacity: 0.95,
-                            strokeWidth: 2.25,
-                            padding: 4,
-                            sizing: "screen",
-                        },
-                    );
-                }
-            });
-        }
-        viewer.set_overlay_scene(
-            {
-                channelId: ECadViewer.#DIFF_HALO_CHANNEL,
-                context,
-                placement: "content-overlay",
-                visible: true,
-                primitives,
-            },
-            false,
-            compile,
-        );
-    }
-
     /**
      * Supersede in-flight comparison loads without clearing the installed
      * A/R/M presentation. Hosts use this on effect cleanup / mode hide so a
@@ -2012,7 +1880,6 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         for (const context of ["SCH", "PCB"] as const) {
             const viewer = this.#viewer_for_context(context);
             viewer?.clear_overlay_scene(ECadViewer.#DIFF_SELECTION_CHANNEL);
-            viewer?.clear_overlay_scene(ECadViewer.#DIFF_HALO_CHANNEL);
             viewer?.set_diff_presentation(null);
         }
         this.#reference_project.reset();

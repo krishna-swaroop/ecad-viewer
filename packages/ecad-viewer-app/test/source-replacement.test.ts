@@ -72,6 +72,7 @@ type MountedViewer = HTMLElement & {
 type MountedDocumentViewer = {
     canvas: HTMLCanvasElement;
     paint_count: number;
+    draw(): void;
     viewport: {
         width: number;
         height: number;
@@ -179,6 +180,17 @@ suite("warm source replacement", () => {
         const active = host.project.file_by_name("board.kicad_sch");
         expect(active?.generator_version).to.equal("9.2");
         expect(host.project.active_sch_name).to.contain("board.kicad_sch");
+    });
+
+    test("ignores a late draw after the host has been disposed", async () => {
+        await host.replaceSources(revision("initial", schematicFixture));
+        const viewer = schematicViewer(host);
+
+        host.remove();
+        viewer.draw();
+        await new Promise<void>((resolve) =>
+            requestAnimationFrame(() => resolve()),
+        );
     });
 
     test("synchronizes camera and canvas aspect after a host pane resize", async () => {
@@ -291,17 +303,21 @@ suite("warm source replacement", () => {
             diffFormat: "prism",
             documentPath: "board.kicad_sch",
             diff: {
-                documents: [{
-                    path: "board.kicad_sch",
-                    docType: "kicad_sch",
-                    changes: [{
-                        id: `/${sourceId}`,
-                        typeName: "SCH_SYMBOL",
-                        kind: "modified",
-                        properties: [],
-                        children: [],
-                    }],
-                }],
+                documents: [
+                    {
+                        path: "board.kicad_sch",
+                        docType: "kicad_sch",
+                        changes: [
+                            {
+                                id: `/${sourceId}`,
+                                typeName: "SCH_SYMBOL",
+                                kind: "modified",
+                                properties: [],
+                                children: [],
+                            },
+                        ],
+                    },
+                ],
             },
         });
         const target = result.targets.get(`change:/${sourceId}`);
@@ -331,17 +347,21 @@ suite("warm source replacement", () => {
             diffFormat: "prism",
             documentPath: "board.kicad_sch",
             diff: {
-                documents: [{
-                    path: "board.kicad_sch",
-                    docType: "kicad_sch",
-                    changes: [{
-                        id: `/${sourceId}`,
-                        typeName: "SCH_SYMBOL",
-                        kind: "modified",
-                        properties: [],
-                        children: [],
-                    }],
-                }],
+                documents: [
+                    {
+                        path: "board.kicad_sch",
+                        docType: "kicad_sch",
+                        changes: [
+                            {
+                                id: `/${sourceId}`,
+                                typeName: "SCH_SYMBOL",
+                                kind: "modified",
+                                properties: [],
+                                children: [],
+                            },
+                        ],
+                    },
+                ],
             },
         });
 
@@ -362,7 +382,9 @@ suite("warm source replacement", () => {
 
     test("drives two revision viewports from one prepared session without reparsing", async function () {
         const sourceId = "08c9fb50-bb86-43e9-b87c-3df8063952e8";
-        const secondary = document.createElement("ecad-viewer") as MountedViewer;
+        const secondary = document.createElement(
+            "ecad-viewer",
+        ) as MountedViewer;
         secondary.setAttribute("source-mode", "host");
         secondary.style.width = "900px";
         secondary.style.height = "600px";
@@ -375,25 +397,31 @@ suite("warm source replacement", () => {
                 diffFormat: "prism",
                 documentPath: "board.kicad_sch",
                 diff: {
-                    documents: [{
-                        path: "board.kicad_sch",
-                        docType: "kicad_sch",
-                        changes: [{
-                            id: `/${sourceId}`,
-                            typeName: "SCH_SYMBOL",
-                            kind: "modified",
-                            sourceSide: "comparison",
-                            properties: [],
-                            children: [{
-                                id: `/${sourceId}`,
-                                typeName: "SCH_SYMBOL",
-                                kind: "modified",
-                                sourceSide: "reference",
-                                properties: [],
-                                children: [],
-                            }],
-                        }],
-                    }],
+                    documents: [
+                        {
+                            path: "board.kicad_sch",
+                            docType: "kicad_sch",
+                            changes: [
+                                {
+                                    id: `/${sourceId}`,
+                                    typeName: "SCH_SYMBOL",
+                                    kind: "modified",
+                                    sourceSide: "comparison",
+                                    properties: [],
+                                    children: [
+                                        {
+                                            id: `/${sourceId}`,
+                                            typeName: "SCH_SYMBOL",
+                                            kind: "modified",
+                                            sourceSide: "reference",
+                                            properties: [],
+                                            children: [],
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
                 },
             });
 
@@ -401,10 +429,7 @@ suite("warm source replacement", () => {
                 session.setPresentation("reference", host),
                 session.setPresentation("comparison", secondary),
             ]);
-            const composite = await session.setPresentation(
-                "composite",
-                host,
-            );
+            const composite = await session.setPresentation("composite", host);
             const warmReference = await session.setPresentation(
                 "reference",
                 host,

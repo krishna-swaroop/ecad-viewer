@@ -167,7 +167,7 @@ export class DocumentPainter {
         const bypass = DocumentPainter.#bypass_diff_color(layer.name);
 
         this.#paint_status_stack.push(status);
-        if (presentation && !bypass) {
+        if (presentation?.colorizeChanges && !bypass) {
             this.gfx.color_transform = (color) =>
                 apply_diff_color(color, status, this.theme.background);
         }
