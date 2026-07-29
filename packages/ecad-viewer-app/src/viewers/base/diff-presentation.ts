@@ -92,9 +92,10 @@ export function merge_bounds_resolution(
 export type EcadDiffPresentation = {
     signature: string;
     /**
-     * Status colour is reserved for the active review selection. The native
-     * status index remains available for identity resolution without tinting
-     * every changed object in the retained composite scene.
+     * Run every painted item through {@link apply_diff_color}: unchanged
+     * geometry subdues to translucent monochrome, changed geometry keeps its
+     * status hue. The retained composite scene sets this, so a review reads as
+     * "what changed" at rest, before anything is selected.
      */
     colorizeChanges: boolean;
     statusByItem: ReadonlyMap<object, EcadDiffPaintStatus>;
@@ -341,7 +342,7 @@ export function build_diff_presentation(
 
     return {
         signature,
-        colorizeChanges: false,
+        colorizeChanges: true,
         statusByItem: status_by_item,
         itemsBySourceId: items_by_source_id,
         itemsBySideAndSourceId: items_by_side_and_source_id,
@@ -366,10 +367,14 @@ export function build_diff_presentation(
 }
 
 /**
- * Alternate retained scene used while one comparison target is selected.
- * Every native item is painted as subdued monochrome; the selected native
- * footprint/route is then replayed into the board selection layer in its
- * semantic status colour.
+ * Alternate retained scene used while one comparison target is selected on a
+ * board. Emptying the status map subdues *everything* — changed geometry
+ * included — so the one selected footprint or route, replayed into the board
+ * selection layer in its status colour, is the only coloured thing on screen.
+ *
+ * This is a board-density answer, not a general one. A schematic page shows
+ * few enough changes that the composite scene's own status colour already
+ * distinguishes them, and greying them out would lose more than it gains.
  */
 export function build_diff_focus_presentation(
     presentation: EcadDiffPresentation,

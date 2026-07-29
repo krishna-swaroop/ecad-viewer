@@ -564,10 +564,23 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     #visible_ready: Promise<void> = Promise.resolve();
     #transition_trace_sequence = 0;
     static readonly #DIFF_SELECTION_CHANNEL = ":document-diff:selection";
+    /** On/off dash lengths, in screen pixels, of the selection outline. */
+    static readonly #DIFF_EMPHASIS_DASH = [10, 7];
+    /**
+     * Deliberately hairline. The outline marks where the change is; the
+     * composite scene's own status colour is what shows the change itself, so
+     * a heavy stroke only hides the geometry the reviewer came to look at.
+     */
+    static readonly #DIFF_EMPHASIS_STROKE_WIDTH = 1.5;
+    static readonly #DIFF_EMPHASIS_PADDING = 3;
+    /** Dash travel along the outline, in screen pixels per second. */
+    static readonly #DIFF_EMPHASIS_DASH_SPEED = 36;
     #selected_document_diff: EcadDocumentComparisonSelection | null = null;
     #preview_document_diff: EcadDocumentComparisonSelection | null = null;
     #base_diff_layer_visibility: Map<string, boolean> | null = null;
     #diff_animation_frame: number | null = null;
+    #diff_animation_started = 0;
+    #diff_emphasis_painted = false;
     #viewport_insets: Required<EcadViewportInsets> = {
         left: 0,
         right: 0,
@@ -1712,33 +1725,35 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                         points,
                         stroke: color,
                         opacity: 1,
-                        strokeWidth: 3,
+                        strokeWidth: ECadViewer.#DIFF_EMPHASIS_STROKE_WIDTH,
                         fitAdaptiveStroke: true,
                         sizing: "screen",
-                        dash: [10, 7],
+                        dash: ECadViewer.#DIFF_EMPHASIS_DASH,
                         dashOffset: offset,
                     });
                 });
             } else {
+                // Every target dashes, not just routing. The marching outline
+                // is what says "this is the change under review" as opposed to
+                // any other coloured geometry in the composite scene, and that
+                // reading is needed most on the schematic, where nothing is
+                // routing.
                 primitives.push({
                     id: `emphasis:${target.id}:${visualIndex}`,
                     kind: "bbox",
                     anchor: { kind: "bbox", bounds: visual.bounds },
                     stroke: color,
                     opacity: 1,
-                    strokeWidth: 3,
-                    padding: 8,
+                    strokeWidth: ECadViewer.#DIFF_EMPHASIS_STROKE_WIDTH,
+                    padding: ECadViewer.#DIFF_EMPHASIS_PADDING,
                     sizing: "screen",
-                    ...(visual.routing
-                        ? {
-                              dash: [10, 7],
-                              dashOffset: offset,
-                              fitAdaptiveStroke: true,
-                          }
-                        : {}),
+                    dash: ECadViewer.#DIFF_EMPHASIS_DASH,
+                    dashOffset: offset,
+                    fitAdaptiveStroke: visual.routing,
                 });
             }
         });
+        this.#diff_emphasis_painted = primitives.length > 0;
         viewer.set_overlay_scene(
             {
                 channelId: ECadViewer.#DIFF_SELECTION_CHANNEL,
@@ -1753,9 +1768,38 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         return target;
     }
 
+    #diff_animation_suspended(): boolean {
+        return (
+            !this.#host_active ||
+            document.hidden ||
+            window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        );
+    }
+
     #restart_diff_animation(): EcadPreparedDiffTarget | null {
         this.#cancel_diff_animation();
-        return this.#paint_diff_emphasis();
+        this.#diff_emphasis_painted = false;
+        const target = this.#paint_diff_emphasis();
+        // The board's native-replay path repaints the selection into a real
+        // layer and never reaches the overlay, so there is no dash to march
+        // and no reason to hold a frame loop open for it.
+        if (!this.#diff_emphasis_painted || this.#diff_animation_suspended()) {
+            return target;
+        }
+        this.#diff_animation_started = performance.now();
+        const tick = (time: number) => {
+            if (this.#diff_animation_suspended()) {
+                this.#diff_animation_frame = null;
+                return;
+            }
+            this.#paint_diff_emphasis(
+                -((time - this.#diff_animation_started) / 1000) *
+                    ECadViewer.#DIFF_EMPHASIS_DASH_SPEED,
+            );
+            this.#diff_animation_frame = requestAnimationFrame(tick);
+        };
+        this.#diff_animation_frame = requestAnimationFrame(tick);
+        return target;
     }
 
     /** Preview a change without moving the camera; null restores selection. */

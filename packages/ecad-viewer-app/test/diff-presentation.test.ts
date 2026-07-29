@@ -99,7 +99,6 @@ suite("native diff presentation", () => {
         );
 
         expect(presentation.diagnostics).to.deep.equal([]);
-        expect(presentation.colorizeChanges).to.equal(false);
         expect(presentation.statusByItem.get(inactivePin)).to.equal("modified");
         expect(presentation.statusByItem.get(symbol)).to.equal("modified");
         expect(
@@ -133,6 +132,31 @@ suite("native diff presentation", () => {
         ).to.deep.equal([footprint]);
     });
 
+    test("colorizes the composite scene so unchanged context subdues", () => {
+        // The retained composite scene has to carry the review's meaning on its
+        // own, before anything is selected: unchanged geometry subdued, changed
+        // geometry in its status hue. Without this the whole page paints at full
+        // strength and nothing distinguishes a change from its surroundings.
+        const item = new PaintItem("changed");
+        const presentation = build_diff_presentation(
+            buildDocumentDiffIndex({
+                path: "root.kicad_sch",
+                docType: "kicad_sch",
+                changes: [
+                    {
+                        ...change("/changed", "modified"),
+                        typeName: "SCH_SYMBOL",
+                    },
+                ],
+            }),
+            new PaintDocument([]),
+            new PaintDocument([item]),
+        );
+
+        expect(presentation.colorizeChanges).to.equal(true);
+        expect(presentation.statusByItem.get(item)).to.equal("modified");
+    });
+
     test("builds a monochrome focus scene without coloring every change", () => {
         const item = new PaintItem("changed");
         const presentation = build_diff_presentation(
@@ -152,8 +176,12 @@ suite("native diff presentation", () => {
 
         const focus = build_diff_focus_presentation(presentation);
 
+        // Same colorize flag as the composite scene it derives from; what makes
+        // it a *focus* scene is the empty status map, which subdues changed
+        // geometry too and leaves the replayed selection as the only colour.
         expect(focus.colorizeChanges).to.equal(true);
         expect(focus.statusByItem.size).to.equal(0);
+        expect(presentation.statusByItem.size).to.be.greaterThan(0);
         expect(focus.itemsBySourceId).to.equal(presentation.itemsBySourceId);
         expect(focus.signature).to.equal(`${presentation.signature}:focus`);
     });
@@ -461,6 +489,25 @@ suite("native diff presentation", () => {
         expect(darkContext.a).to.be.closeTo(0.76, 0.001);
         expect(lightContext.a).to.be.closeTo(0.76, 0.001);
         expect(darkContext.r).to.not.equal(lightContext.r);
+    });
+
+    test("keeps changed geometry chromatic against monochrome context", () => {
+        // This contrast is the whole composite reading: on one page, painted
+        // with one background, changed geometry has to carry colour where
+        // unchanged geometry has none. Asserted together so a future tweak to
+        // either branch cannot quietly collapse the gap.
+        const background = Color.from_css("#001023");
+        const source = Color.from_css("rgba(200, 50, 40, 1)");
+        const chroma = (color: ReturnType<typeof apply_diff_color>) =>
+            Math.max(color.r, color.g, color.b) -
+            Math.min(color.r, color.g, color.b);
+
+        const unchanged = apply_diff_color(source, "unchanged", background);
+        for (const status of ["added", "removed", "modified"] as const) {
+            const changed = apply_diff_color(source, status, background);
+            expect(chroma(changed)).to.be.greaterThan(chroma(unchanged) + 0.1);
+            expect(changed.a).to.be.greaterThan(unchanged.a);
+        }
     });
 
     test("tints A/R/M toward status colors while retaining some source identity", () => {
