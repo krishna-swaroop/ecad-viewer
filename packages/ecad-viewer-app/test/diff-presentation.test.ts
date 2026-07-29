@@ -6,6 +6,7 @@ import {
 } from "../src/ecad-viewer/document-diff";
 import {
     apply_diff_color,
+    build_diff_focus_presentation,
     build_diff_presentation,
     index_paint_items,
     source_id_of,
@@ -130,6 +131,31 @@ suite("native diff presentation", () => {
         expect(
             presentation.itemsBySideAndSourceId.get("comparison:pad"),
         ).to.deep.equal([footprint]);
+    });
+
+    test("builds a monochrome focus scene without coloring every change", () => {
+        const item = new PaintItem("changed");
+        const presentation = build_diff_presentation(
+            buildDocumentDiffIndex({
+                path: "root.kicad_pcb",
+                docType: "kicad_pcb",
+                changes: [
+                    {
+                        ...change("/changed", "modified"),
+                        typeName: "PCB_TRACK",
+                    },
+                ],
+            }),
+            new PaintDocument([]),
+            new PaintDocument([item]),
+        );
+
+        const focus = build_diff_focus_presentation(presentation);
+
+        expect(focus.colorizeChanges).to.equal(true);
+        expect(focus.statusByItem.size).to.equal(0);
+        expect(focus.itemsBySourceId).to.equal(presentation.itemsBySourceId);
+        expect(focus.signature).to.equal(`${presentation.signature}:focus`);
     });
 
     test("uses modern PCB pad UUIDs instead of an absent legacy tstamp", () => {
@@ -411,7 +437,7 @@ suite("native diff presentation", () => {
         ).to.deep.equal([newInstance]);
     });
 
-    test("softly desaturates unchanged colors while preserving source hue", () => {
+    test("renders unchanged context as subdued monochrome", () => {
         const copper = Color.from_css("rgba(200, 50, 40, 1)");
         const darkContext = apply_diff_color(
             copper,
@@ -424,19 +450,14 @@ suite("native diff presentation", () => {
             Color.from_css("#ffffff"),
         );
 
-        const sourceRange =
-            Math.max(copper.r, copper.g, copper.b) -
-            Math.min(copper.r, copper.g, copper.b);
         const darkRange =
             Math.max(darkContext.r, darkContext.g, darkContext.b) -
             Math.min(darkContext.r, darkContext.g, darkContext.b);
         const lightRange =
             Math.max(lightContext.r, lightContext.g, lightContext.b) -
             Math.min(lightContext.r, lightContext.g, lightContext.b);
-        expect(darkRange).to.be.greaterThan(0.001);
-        expect(lightRange).to.be.greaterThan(0.001);
-        expect(darkRange).to.be.lessThan(sourceRange);
-        expect(lightRange).to.be.lessThan(sourceRange);
+        expect(darkRange).to.be.lessThan(0.001);
+        expect(lightRange).to.be.lessThan(0.001);
         expect(darkContext.a).to.be.closeTo(0.76, 0.001);
         expect(lightContext.a).to.be.closeTo(0.76, 0.001);
         expect(darkContext.r).to.not.equal(lightContext.r);
@@ -472,8 +493,8 @@ suite("native diff presentation", () => {
         expect(paper.g).to.equal(1);
         expect(paper.b).to.equal(1);
         expect(muted.r).to.not.equal(paper.r);
-        expect(muted.r).to.be.greaterThan(muted.g);
-        expect(muted.g).to.be.greaterThan(muted.b);
+        expect(muted.r).to.be.closeTo(muted.g, 0.001);
+        expect(muted.g).to.be.closeTo(muted.b, 0.001);
     });
 
     test("boosts animated routing at fit and preserves close-zoom width", () => {

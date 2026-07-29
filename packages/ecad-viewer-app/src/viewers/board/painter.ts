@@ -16,6 +16,10 @@ import * as board_items from "../../kicad/board";
 import { EDAText, StrokeFont } from "../../kicad/text";
 import { DocumentPainter } from "../base/painter";
 import {
+    diff_status_color,
+    type EcadDiffPaintStatus,
+} from "../base/diff-presentation";
+import {
     CopperVirtualLayerNames,
     FabVirtualLayerNames,
     LayerNames,
@@ -755,6 +759,54 @@ export class BoardPainter extends DocumentPainter {
             this.layers.selection_mask,
         ])
             layer.clear();
+    }
+
+    /**
+     * Replay selected native board objects into one foreground layer. Passing
+     * the interactive layer to FootprintPainter paints the complete footprint;
+     * tracks, arcs, and vias retain their exact native geometry.
+     */
+    paint_diff_selection(
+        entries: ReadonlyArray<{
+            item: object;
+            status: Exclude<EcadDiffPaintStatus, "unchanged">;
+        }>,
+    ) {
+        this.clear_interactive();
+        const layer = this.layers.selection_fg;
+        this.gfx.start_layer(layer.name);
+        for (const { item, status } of entries) {
+            const previous_transform = this.gfx.color_transform;
+            const status_color = diff_status_color(status);
+            this.gfx.color_transform = (color) =>
+                status_color.with_alpha(Math.max(color.a, 0.82));
+            try {
+                if (item instanceof board_items.Footprint) {
+                    const matrix = Matrix3.translation(
+                        item.at.position.x,
+                        item.at.position.y,
+                    ).rotate_self(Angle.deg_to_rad(item.at.rotation));
+                    this.gfx.state.push();
+                    this.gfx.state.multiply(matrix);
+                    try {
+                        // getChildren deliberately excludes reference/value
+                        // text (including KiCad 8 property text), while
+                        // retaining pads, footprint graphics, and zones.
+                        for (const child of item.getChildren()) {
+                            this.paint_item(layer, child);
+                        }
+                    } finally {
+                        this.gfx.state.pop();
+                    }
+                } else {
+                    this.paint_item(layer, item);
+                }
+            } finally {
+                this.gfx.color_transform = previous_transform;
+            }
+        }
+        layer.graphics = this.gfx.end_layer();
+        layer.graphics.composite_operation = "source-over";
     }
 
     paint_net(

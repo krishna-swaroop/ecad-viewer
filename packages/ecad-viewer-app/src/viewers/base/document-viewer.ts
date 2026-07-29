@@ -161,11 +161,11 @@ export abstract class DocumentViewer<
 
     #cache_current_presentation(): void {
         if (
-            !this.#presentation_cache_enabled
-            || !this.document
-            || !this.layers
-            || !this.painter
-            || !this.grid
+            !this.#presentation_cache_enabled ||
+            !this.document ||
+            !this.layers ||
+            !this.painter ||
+            !this.grid
         ) {
             return;
         }
@@ -185,8 +185,9 @@ export abstract class DocumentViewer<
         src: DocumentT,
         presentation: EcadDiffPresentation | null,
     ): boolean {
-        const cached =
-            this.#presentation_scene_cache.get(src)?.get(presentation);
+        const cached = this.#presentation_scene_cache
+            .get(src)
+            ?.get(presentation);
         if (!cached) return false;
         this.#cache_current_presentation();
         this.document = src;
@@ -200,6 +201,17 @@ export abstract class DocumentViewer<
         this.rebind_overlay_layers(this.#retained_overlay_channels);
         this.draw();
         return true;
+    }
+
+    /**
+     * Swap to an already-prepared display list without painting. Comparison
+     * selection uses this to enter/leave the monochrome focus scene on a click.
+     */
+    public activate_cached_diff_presentation(
+        presentation: EcadDiffPresentation | null,
+    ): boolean {
+        if (!this.document || this.disposables.isDisposed) return false;
+        return this.#restore_cached_presentation(this.document, presentation);
     }
 
     async #load_prepared_presentation(
@@ -303,13 +315,12 @@ export abstract class DocumentViewer<
         if (this.disposables.isDisposed) {
             return;
         }
-        const cached_current =
-            this.#presentation_scene_cache
-                .get(this.document)
-                ?.get(this.#diff_presentation);
+        const cached_current = this.#presentation_scene_cache
+            .get(this.document)
+            ?.get(this.#diff_presentation);
         if (
-            !this.#presentation_cache_enabled
-            || cached_current?.layers === this.layers
+            !this.#presentation_cache_enabled ||
+            cached_current?.layers === this.layers
         ) {
             this.disposables.disposeAndRemove(this.layers);
             this.#presentation_scene_cache

@@ -21,12 +21,18 @@ import type { KCBoardLayersPanelElement } from "../../kicanvas/elements/kc-board
 import { DocumentViewer } from "../base/document-viewer";
 import { KiCanvasFitterMenuEvent, KiCanvasSelectEvent } from "../base/events";
 import type { VisibilityType } from "../base/view-layers";
+import type { EcadDiffPaintStatus } from "../base/diff-presentation";
 import { ViewerType } from "../base/viewer";
 import type {
     EcadOverlayAnchor,
     ResolvedOverlayAnchor,
 } from "../base/overlay-scene";
-import { LayerNames, LayerSet, ViewLayer } from "./layers";
+import {
+    LayerNames,
+    LayerSet,
+    ViewLayer,
+    copper_layers_between,
+} from "./layers";
 import { BoardPainter } from "./painter";
 import { OrderedMap } from "immutable";
 const log = new Logger("pcb:viewer");
@@ -171,6 +177,71 @@ export class BoardViewer extends DocumentViewer<
         this.draw();
     }
 
+    public capture_diff_layer_visibility(): Map<string, boolean> {
+        return new Map(
+            Array.from(this.layers.in_ui_order(), (layer) => [
+                layer.name,
+                layer.visible,
+            ]),
+        );
+    }
+
+    /**
+     * Render the selected native footprint or routing geometry over the
+     * retained monochrome comparison scene. Routing focus exposes only the
+     * copper layers actually used by the selected segments/vias.
+     */
+    public paint_diff_selection(
+        entries: ReadonlyArray<{
+            item: object;
+            status: Exclude<EcadDiffPaintStatus, "unchanged">;
+            routing: boolean;
+        }>,
+        base_visibility: ReadonlyMap<string, boolean>,
+    ): void {
+        const routing_type_ids = new Set(["LineSegment", "ArcSegment", "Via"]);
+        const routing = entries.some(
+            (entry) =>
+                entry.routing ||
+                routing_type_ids.has(
+                    (entry.item as { typeId?: string }).typeId ?? "",
+                ),
+        );
+        const selected_layers = new Set<string>();
+        if (routing) {
+            for (const { item } of entries) {
+                const candidate = item as {
+                    layer?: string | { name?: string };
+                    layers?: string[];
+                };
+                const layer =
+                    typeof candidate.layer === "string"
+                        ? candidate.layer
+                        : candidate.layer?.name;
+                if (layer?.endsWith(".Cu")) selected_layers.add(layer);
+                if (candidate.layers?.length === 2) {
+                    for (const name of copper_layers_between(
+                        candidate.layers[0]!,
+                        candidate.layers[1]!,
+                    )) {
+                        selected_layers.add(name);
+                    }
+                }
+            }
+        }
+
+        for (const layer of this.layers.in_ui_order()) {
+            layer.visible =
+                routing && selected_layers.size
+                    ? selected_layers.has(layer.name)
+                    : (base_visibility.get(layer.name) ?? layer.visible);
+        }
+        this.#layer_visibility_ctrl?.clear_highlight();
+        this.#layer_visibility_ctrl?.update_item_states();
+        this.painter.paint_diff_selection(entries);
+        this.draw();
+    }
+
     /**
      * Hidden Prism tabs still receive cross-probe paints, but WebGL layers can
      * be empty until the canvas is visible. Re-bake the last probe on activate.
@@ -200,7 +271,10 @@ export class BoardViewer extends DocumentViewer<
     }
 
     #resolve_footprint(item: unknown): board_items.Footprint | null {
-        let node = item as { typeId?: string; parent?: unknown } | null | undefined;
+        let node = item as
+            | { typeId?: string; parent?: unknown }
+            | null
+            | undefined;
         for (let i = 0; node && i < 8; i++) {
             if (node.typeId === "Footprint")
                 return node as unknown as board_items.Footprint;

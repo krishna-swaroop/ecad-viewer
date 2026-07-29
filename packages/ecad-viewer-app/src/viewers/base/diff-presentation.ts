@@ -123,6 +123,12 @@ const STATUS_COLORS: Record<
     conflict: Color.from_css("#D76BFF"),
 };
 
+export function diff_status_color(
+    status: Exclude<EcadDiffPaintStatus, "unchanged">,
+): Color {
+    return STATUS_COLORS[status];
+}
+
 export function source_id_of(item: unknown): string | undefined {
     if (!item || typeof item !== "object") return undefined;
     if ("uuid" in item && typeof item.uuid === "string" && item.uuid) {
@@ -360,6 +366,23 @@ export function build_diff_presentation(
 }
 
 /**
+ * Alternate retained scene used while one comparison target is selected.
+ * Every native item is painted as subdued monochrome; the selected native
+ * footprint/route is then replayed into the board selection layer in its
+ * semantic status colour.
+ */
+export function build_diff_focus_presentation(
+    presentation: EcadDiffPresentation,
+): EcadDiffPresentation {
+    return {
+        ...presentation,
+        signature: `${presentation.signature}:focus`,
+        colorizeChanges: true,
+        statusByItem: new Map(),
+    };
+}
+
+/**
  * Comparison paint transform:
  * - unchanged: softly mute theme/layer hues toward the page while preserving
  *   enough original color to keep schematic and copper context readable;
@@ -372,11 +395,10 @@ export function apply_diff_color(
     background = Color.black,
 ): Color {
     if (status === "unchanged") {
-        const partially_desaturated = color.mix(color.grayscale, 0.45);
-        const muted = partially_desaturated.mix(background, 0.72);
+        const muted = color.grayscale.mix(background.grayscale, 0.72);
         return muted.with_alpha(color.a * 0.76);
     }
-    const status_color = STATUS_COLORS[status];
+    const status_color = diff_status_color(status);
     // Bias toward status (~62%) while retaining some original layer identity.
     const tinted = color.mix(status_color, 0.25);
     return tinted.with_alpha(

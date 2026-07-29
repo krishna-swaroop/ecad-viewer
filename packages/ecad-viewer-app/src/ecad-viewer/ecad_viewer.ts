@@ -78,7 +78,10 @@ import {
     type EcadPreparedDiffTarget,
     type EcadTransitionTraceDetail,
 } from "./document-comparison";
-import { build_diff_presentation } from "../viewers/base/diff-presentation";
+import {
+    build_diff_focus_presentation,
+    build_diff_presentation,
+} from "../viewers/base/diff-presentation";
 import { merge_bounds_resolution } from "../viewers/base/diff-presentation";
 import type {
     EcadDiffBoundsResolution,
@@ -252,6 +255,7 @@ export interface EcadComparisonSession {
 type EcadComparisonSessionDocument = {
     preparation: EcadDocumentComparisonPreparation;
     presentation: EcadDiffPresentation;
+    focusPresentation: EcadDiffPresentation;
     referenceDocument: PaintableDocument & { filename: string };
     comparisonDocument: PaintableDocument & { filename: string };
     pendingTargets: ReadonlyMap<string, EcadPendingDiffTarget>;
@@ -546,6 +550,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         {
             preparation: EcadDocumentComparisonPreparation;
             presentation: EcadDiffPresentation;
+            focusPresentation: EcadDiffPresentation;
             referenceDocument: PaintableDocument & { filename: string };
             comparisonDocument: PaintableDocument & { filename: string };
             pendingTargets: ReadonlyMap<string, EcadPendingDiffTarget>;
@@ -561,6 +566,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     static readonly #DIFF_SELECTION_CHANNEL = ":document-diff:selection";
     #selected_document_diff: EcadDocumentComparisonSelection | null = null;
     #preview_document_diff: EcadDocumentComparisonSelection | null = null;
+    #base_diff_layer_visibility: Map<string, boolean> | null = null;
     #diff_animation_frame: number | null = null;
     #viewport_insets: Required<EcadViewportInsets> = {
         left: 0,
@@ -902,11 +908,24 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 heapBytesCurrent: comparison_heap_bytes(),
             },
         };
-        this.#viewer_for_context(
-            preparation.context,
-        )?.enable_presentation_cache(
+        const owner_viewer = this.#viewer_for_context(preparation.context);
+        owner_viewer?.enable_presentation_cache(
             new Set([ECadViewer.#DIFF_SELECTION_CHANNEL]),
         );
+        if (preparation.context === "PCB" && owner_viewer) {
+            // Build the monochrome focus scene once while preparing the
+            // comparison. Selection then swaps retained display lists and
+            // replays only the chosen native geometry.
+            await owner_viewer.load_diff_document(
+                document.comparisonDocument as never,
+                document.focusPresentation,
+            );
+            await owner_viewer.load_diff_document(
+                document.comparisonDocument as never,
+                document.presentation,
+            );
+            state.metrics.retainedScenes = owner_viewer.presentation_cache_size;
+        }
         const session: EcadComparisonSession = {
             comparisonKey: request.comparisonKey,
             get preparation() {
@@ -1161,6 +1180,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.#cancel_diff_animation();
         this.#selected_document_diff = null;
         this.#preview_document_diff = null;
+        this.#base_diff_layer_visibility = null;
         this.#document_comparison = null;
         const same_sources =
             this.#document_comparison_key === request.comparisonKey &&
@@ -1315,6 +1335,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             reference_document,
             comparison_document,
         );
+        const focus_presentation = build_diff_focus_presentation(presentation);
         await viewer.load_diff_document(
             comparison_document as never,
             presentation,
@@ -1354,6 +1375,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.#document_comparison_cache.set(prepared.document.path, {
             preparation: result,
             presentation,
+            focusPresentation: focus_presentation,
             referenceDocument: reference_document,
             comparisonDocument: comparison_document,
             pendingTargets: prepared.targets,
@@ -1486,9 +1508,77 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             this.#preview_document_diff ?? this.#selected_document_diff;
         const comparison = this.#document_comparison;
         if (!selection || !comparison) return null;
-        const target = comparison.targets.get(
-            `${selection.kind}:${selection.id}`,
-        );
+        let target: EcadPreparedDiffTarget | undefined;
+        if (selection.kind !== "changes") {
+            target = comparison.targets.get(
+                `${selection.kind}:${selection.id}`,
+            );
+        } else {
+            const selected_ids = new Set(selection.ids);
+            const available = [...comparison.targets.values()];
+            const routing_groups = available.filter(
+                (candidate) =>
+                    candidate.kind === "group" &&
+                    candidate.routing &&
+                    candidate.memberIds.some((id) => selected_ids.has(id)),
+            );
+            const direct = selection.ids.flatMap((id) => {
+                const exact = comparison.targets.get(`change:${id}`);
+                if (exact) return [exact];
+                const containing = available.find(
+                    (candidate) =>
+                        candidate.kind === "change" &&
+                        candidate.memberIds.includes(id),
+                );
+                return containing ? [containing] : [];
+            });
+            const members = routing_groups.length ? routing_groups : direct;
+            const visual_keys = new Set<string>();
+            const member_visuals = members.flatMap((member) =>
+                member.visuals.filter((visual) => {
+                    const key = `${visual.sourceSide}:${visual.sourceId}:${visual.category}`;
+                    if (visual_keys.has(key)) return false;
+                    visual_keys.add(key);
+                    return true;
+                }),
+            );
+            // Host net groups can include endpoint pad deltas beside routing
+            // deltas. Prefer the native route when it exists; otherwise a pad
+            // promotes to its full footprint and obscures the selected trace.
+            const visuals = member_visuals.some((visual) => visual.routing)
+                ? member_visuals.filter((visual) => visual.routing)
+                : member_visuals;
+            if (members.length && visuals.length) {
+                const bounds = BBox.combine(
+                    visuals.map((visual) => new BBox(...visual.bounds)),
+                );
+                const categories = new Set(
+                    visuals.map((visual) => visual.category),
+                );
+                target = {
+                    id: selection.ids.join("|"),
+                    kind: "changes",
+                    category:
+                        categories.size === 1
+                            ? visuals[0]!.category
+                            : "modified",
+                    label: "Selected changes",
+                    memberIds: [
+                        ...new Set(
+                            members.flatMap((member) => member.memberIds),
+                        ),
+                    ],
+                    sourceIds: visuals.map((visual) => visual.sourceId),
+                    bounds: [bounds.x, bounds.y, bounds.w, bounds.h],
+                    sourceSide: visuals[0]!.sourceSide,
+                    routing: visuals.some((visual) => visual.routing),
+                    overlayLines: visuals.flatMap(
+                        (visual) => visual.overlayLines,
+                    ),
+                    visuals,
+                };
+            }
+        }
         return target ? { context: comparison.context, target } : null;
     }
 
@@ -1496,15 +1586,120 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         const active = this.#active_diff_target();
         const viewer = active ? this.#viewer_for_context(active.context) : null;
         if (!active || !viewer) {
+            const comparison = this.#document_comparison;
+            const cached = comparison
+                ? this.#document_comparison_cache.get(comparison.document.path)
+                : null;
+            const board_viewer = this.#safe_board_viewer();
+            if (
+                board_viewer &&
+                cached &&
+                board_viewer.diff_presentation === cached.focusPresentation
+            ) {
+                board_viewer.activate_cached_diff_presentation(
+                    cached.presentation,
+                );
+            }
+            this.#base_diff_layer_visibility = null;
             this.#safe_schematic_viewer()?.clear_overlay_scene(
                 ECadViewer.#DIFF_SELECTION_CHANNEL,
             );
-            this.#safe_board_viewer()?.clear_overlay_scene(
+            board_viewer?.clear_overlay_scene(
                 ECadViewer.#DIFF_SELECTION_CHANNEL,
             );
             return null;
         }
-        const { target } = active;
+        let { target } = active;
+        const cached = this.#document_comparison_cache.get(
+            this.#document_comparison!.document.path,
+        );
+        const board_viewer =
+            active.context === "PCB" ? this.#safe_board_viewer() : null;
+        if (
+            board_viewer &&
+            cached &&
+            (board_viewer.diff_presentation === cached.presentation ||
+                board_viewer.diff_presentation === cached.focusPresentation)
+        ) {
+            if (board_viewer.diff_presentation === cached.presentation) {
+                this.#base_diff_layer_visibility =
+                    board_viewer.capture_diff_layer_visibility();
+            }
+            if (
+                board_viewer.activate_cached_diff_presentation(
+                    cached.focusPresentation,
+                )
+            ) {
+                const entries = new Map<
+                    object,
+                    {
+                        item: object;
+                        status: EcadPreparedDiffTarget["category"];
+                        routing: boolean;
+                    }
+                >();
+                for (const visual of target.visuals) {
+                    const items =
+                        cached.presentation.itemsBySideAndSourceId.get(
+                            `${visual.sourceSide}:${visual.sourceId}`,
+                        ) ??
+                        cached.presentation.itemsBySourceId.get(
+                            visual.sourceId,
+                        ) ??
+                        [];
+                    for (const item of items) {
+                        entries.set(item, {
+                            item,
+                            status: visual.category,
+                            routing: visual.routing,
+                        });
+                    }
+                }
+                const native_entries = [...entries.values()];
+                const routing_type_ids = new Set([
+                    "LineSegment",
+                    "ArcSegment",
+                    "Via",
+                ]);
+                const has_native_routing = native_entries.some((entry) =>
+                    routing_type_ids.has(
+                        (entry.item as { typeId?: string }).typeId ?? "",
+                    ),
+                );
+                const paint_entries = has_native_routing
+                    ? native_entries.filter((entry) =>
+                          routing_type_ids.has(
+                              (entry.item as { typeId?: string }).typeId ?? "",
+                          ),
+                      )
+                    : native_entries;
+                const selected_bounds = paint_entries.flatMap((entry) => [
+                    ...board_viewer.layers.query_item_bboxes(entry.item),
+                ]);
+                if (selected_bounds.length) {
+                    const combined = BBox.combine(selected_bounds);
+                    target = {
+                        ...target,
+                        bounds: [
+                            combined.x,
+                            combined.y,
+                            combined.w,
+                            combined.h,
+                        ],
+                    };
+                }
+                board_viewer.clear_overlay_scene(
+                    ECadViewer.#DIFF_SELECTION_CHANNEL,
+                );
+                board_viewer.paint_diff_selection(
+                    paint_entries,
+                    this.#base_diff_layer_visibility ?? new Map(),
+                );
+                this.#emit_view_state_change();
+                return target;
+            }
+        }
+
         const primitives: EcadOverlayPrimitive[] = [];
         target.visuals.forEach((visual, visualIndex) => {
             const color = DIFF_STATUS_COLORS[visual.category];
@@ -1558,9 +1753,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         return target;
     }
 
-    #restart_diff_animation(): void {
+    #restart_diff_animation(): EcadPreparedDiffTarget | null {
         this.#cancel_diff_animation();
-        this.#paint_diff_emphasis();
+        return this.#paint_diff_emphasis();
     }
 
     /** Preview a change without moving the camera; null restores selection. */
@@ -1568,6 +1763,12 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         selection: EcadDocumentComparisonSelection | null,
     ): void {
         this.#preview_document_diff = selection;
+        this.#restart_diff_animation();
+    }
+
+    public clearDocumentDiffSelection(): void {
+        this.#selected_document_diff = null;
+        this.#preview_document_diff = null;
         this.#restart_diff_animation();
     }
 
@@ -1583,13 +1784,14 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         });
         const parserBefore = getParserPerfSnapshot().parserInvocations;
         const comparison = this.#document_comparison;
-        const target = comparison?.targets.get(
-            `${selection.kind}:${selection.id}`,
-        );
+        this.#selected_document_diff = selection;
+        this.#preview_document_diff = null;
+        let target = this.#active_diff_target()?.target;
         const viewer = comparison
             ? this.#viewer_for_context(comparison.context)
             : null;
         if (!comparison || !target || !viewer) {
+            this.#selected_document_diff = null;
             this.#trace_transition("selection.composite.missing", {
                 status: "missing",
                 generation: requestId,
@@ -1611,10 +1813,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         }
 
         const paintBefore = viewer.paint_count;
+        target = this.#restart_diff_animation() ?? target;
         const [x, y, w, h] = target.bounds;
-        this.#selected_document_diff = selection;
-        this.#preview_document_diff = null;
-        this.#restart_diff_animation();
         const padding = Math.max(Math.max(w, h) * 0.35, 2);
         viewer.viewport.camera.bbox = new BBox(
             x - padding,

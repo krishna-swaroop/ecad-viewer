@@ -36,7 +36,8 @@ export type EcadDocumentComparisonRequest = {
 
 export type EcadDocumentComparisonSelection =
     | { kind: "change"; id: string }
-    | { kind: "group"; id: string };
+    | { kind: "group"; id: string }
+    | { kind: "changes"; ids: string[] };
 
 export type EcadPendingDiffTarget = {
     id: string;
@@ -62,8 +63,9 @@ export type EcadPendingDiffTarget = {
 
 export type EcadPreparedDiffTarget = Omit<
     EcadPendingDiffTarget,
-    "bounds" | "visuals"
+    "bounds" | "visuals" | "kind"
 > & {
+    kind: "change" | "group" | "changes";
     bounds: [number, number, number, number];
     visuals: Array<
         Omit<EcadPendingDiffTarget["visuals"][number], "bounds"> & {
@@ -217,9 +219,7 @@ export function selectComparisonDocument(
 function bounds_tuple(
     bounds: EcadIndexedChange["worldBounds"],
 ): [number, number, number, number] | undefined {
-    return bounds
-        ? [bounds.x, bounds.y, bounds.w, bounds.h]
-        : undefined;
+    return bounds ? [bounds.x, bounds.y, bounds.w, bounds.h] : undefined;
 }
 
 function visual_target(change: EcadIndexedChange) {
