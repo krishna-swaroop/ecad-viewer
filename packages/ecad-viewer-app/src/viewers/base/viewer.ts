@@ -356,8 +356,13 @@ export abstract class Viewer extends EventTarget {
         return null;
     }
 
-    protected rebind_overlay_layers() {
-        this.#overlay_scenes?.replace_layers(this.layers);
+    protected rebind_overlay_layers(
+        retained_channels: ReadonlySet<string> = new Set(),
+    ) {
+        this.#overlay_scenes?.replace_layers(
+            this.layers,
+            retained_channels,
+        );
     }
 
     /** Zoom used by fit-normalized screen-space comparison emphasis. */
@@ -365,7 +370,11 @@ export abstract class Viewer extends EventTarget {
         return this.viewport?.camera.zoom ?? 1;
     }
 
-    public set_overlay_scene(scene: EcadOverlayScene, draw = true) {
+    public set_overlay_scene(
+        scene: EcadOverlayScene,
+        draw = true,
+        compile = true,
+    ) {
         if (!this.layers) return false;
         this.#overlay_scenes ??= new OverlaySceneManager(
             this.renderer,
@@ -374,7 +383,7 @@ export abstract class Viewer extends EventTarget {
             () => this.viewport?.camera.zoom ?? 1,
             () => this.fit_zoom,
         );
-        const changed = this.#overlay_scenes.set_scene(scene);
+        const changed = this.#overlay_scenes.set_scene(scene, compile);
         if (changed && draw) this.draw();
         return changed;
     }

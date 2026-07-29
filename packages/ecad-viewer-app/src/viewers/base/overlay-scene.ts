@@ -138,20 +138,27 @@ export class OverlaySceneManager {
         private readonly get_fit_zoom: () => number,
     ) {}
 
-    replace_layers(layers: ViewLayerSet) {
+    replace_layers(
+        layers: ViewLayerSet,
+        retained_channels: ReadonlySet<string> = new Set(),
+    ) {
         if (this.layers === layers) return;
         this.layers = layers;
-        for (const { scene } of this.#scenes.values()) this.#compile(scene);
+        for (const { scene } of this.#scenes.values()) {
+            if (!retained_channels.has(scene.channelId)) {
+                this.#compile(scene);
+            }
+        }
         this.#rebuild_hit_grid();
     }
 
-    set_scene(scene: EcadOverlayScene): boolean {
+    set_scene(scene: EcadOverlayScene, compile = true): boolean {
         const signature = JSON.stringify(scene);
         if (this.#scenes.get(scene.channelId)?.signature === signature)
             return false;
-        this.layers.clear_extension_layer(scene.channelId);
+        if (compile) this.layers.clear_extension_layer(scene.channelId);
         this.#scenes.set(scene.channelId, { signature, scene });
-        this.#compile(scene);
+        if (compile) this.#compile(scene);
         this.#rebuild_hit_grid();
         return true;
     }

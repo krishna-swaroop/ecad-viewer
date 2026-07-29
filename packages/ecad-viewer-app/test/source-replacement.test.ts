@@ -8,8 +8,50 @@ type EcadSourceUpdate = {
     sources: Array<{ filename: string; content: string }>;
 };
 
+type EcadComparisonRequest = {
+    comparisonKey: string;
+    reference: EcadSourceUpdate;
+    comparison: EcadSourceUpdate;
+    diff: unknown;
+    diffFormat: "prism";
+    documentPath: string;
+};
+
 type MountedViewer = HTMLElement & {
     replaceSources(update: EcadSourceUpdate): Promise<void>;
+    loadDocumentComparison(request: EcadComparisonRequest): Promise<{
+        targets: ReadonlyMap<
+            string,
+            { bounds: [number, number, number, number] }
+        >;
+        resolution: {
+            targets: number;
+            targetsWithPaintedBounds: number;
+            targetsUsingProvidedBounds: number;
+            targetsNonFocusable: number;
+        };
+    }>;
+    prepareComparison(request: EcadComparisonRequest): Promise<{
+        setPresentation(
+            presentation: "composite" | "reference" | "comparison",
+            viewport?: MountedViewer,
+        ): Promise<{
+            switchMs: number;
+            parserCount: number;
+            paintCount: number;
+        }>;
+        getMetrics(): {
+            parserCount: number;
+            switchCount: number;
+            lastSwitchParserCount: number;
+            retainedViewports: number;
+            retainedScenes: number;
+        };
+    }>;
+    selectDocumentDiff(selection: {
+        kind: "change" | "group";
+        id: string;
+    }): Promise<{ status: "applied" | "missing" | "superseded" }>;
     showPage(pageId: string): Promise<void>;
     focusBBox(x: number, y: number, w: number, h: number): Promise<unknown>;
     resize(): void;
@@ -239,4 +281,168 @@ suite("warm source replacement", () => {
             ),
         ).to.equal(true);
     });
+
+    test("measures Prism identity-only targets from the painted scene", async () => {
+        const sourceId = "08c9fb50-bb86-43e9-b87c-3df8063952e8";
+        const result = await host.loadDocumentComparison({
+            comparisonKey: "m5:painted",
+            reference: revision("m5-reference", schematicFixture),
+            comparison: revision("m5-comparison", schematicFixture),
+            diffFormat: "prism",
+            documentPath: "board.kicad_sch",
+            diff: {
+                documents: [{
+                    path: "board.kicad_sch",
+                    docType: "kicad_sch",
+                    changes: [{
+                        id: `/${sourceId}`,
+                        typeName: "SCH_SYMBOL",
+                        kind: "modified",
+                        properties: [],
+                        children: [],
+                    }],
+                }],
+            },
+        });
+        const target = result.targets.get(`change:/${sourceId}`);
+
+        expect(result.resolution).to.deep.include({
+            targets: 2,
+            targetsWithPaintedBounds: 2,
+            targetsUsingProvidedBounds: 0,
+            targetsNonFocusable: 0,
+        });
+        expect(target).to.exist;
+        expect(target!.bounds).not.to.deep.equal([0, 0, 0, 0]);
+        expect(
+            await host.selectDocumentDiff({
+                kind: "change",
+                id: `/${sourceId}`,
+            }),
+        ).to.deep.include({ status: "applied" });
+    });
+
+    test("keeps an unresolved Prism identity non-focusable", async () => {
+        const sourceId = "00000000-0000-0000-0000-000000000000";
+        const result = await host.loadDocumentComparison({
+            comparisonKey: "m5:missing",
+            reference: revision("m5-missing-reference", schematicFixture),
+            comparison: revision("m5-missing-comparison", schematicFixture),
+            diffFormat: "prism",
+            documentPath: "board.kicad_sch",
+            diff: {
+                documents: [{
+                    path: "board.kicad_sch",
+                    docType: "kicad_sch",
+                    changes: [{
+                        id: `/${sourceId}`,
+                        typeName: "SCH_SYMBOL",
+                        kind: "modified",
+                        properties: [],
+                        children: [],
+                    }],
+                }],
+            },
+        });
+
+        expect(result.resolution).to.deep.include({
+            targets: 2,
+            targetsWithPaintedBounds: 0,
+            targetsUsingProvidedBounds: 0,
+            targetsNonFocusable: 2,
+        });
+        expect(result.targets.size).to.equal(0);
+        expect(
+            await host.selectDocumentDiff({
+                kind: "change",
+                id: `/${sourceId}`,
+            }),
+        ).to.deep.include({ status: "missing" });
+    });
+
+    test("drives two revision viewports from one prepared session without reparsing", async function () {
+        const sourceId = "08c9fb50-bb86-43e9-b87c-3df8063952e8";
+        const secondary = document.createElement("ecad-viewer") as MountedViewer;
+        secondary.setAttribute("source-mode", "host");
+        secondary.style.width = "900px";
+        secondary.style.height = "600px";
+        document.body.append(secondary);
+        try {
+            const session = await host.prepareComparison({
+                comparisonKey: "m6:shared-session",
+                reference: revision("m6-reference", schematicFixture),
+                comparison: revision("m6-comparison", schematicFixture),
+                diffFormat: "prism",
+                documentPath: "board.kicad_sch",
+                diff: {
+                    documents: [{
+                        path: "board.kicad_sch",
+                        docType: "kicad_sch",
+                        changes: [{
+                            id: `/${sourceId}`,
+                            typeName: "SCH_SYMBOL",
+                            kind: "modified",
+                            sourceSide: "comparison",
+                            properties: [],
+                            children: [{
+                                id: `/${sourceId}`,
+                                typeName: "SCH_SYMBOL",
+                                kind: "modified",
+                                sourceSide: "reference",
+                                properties: [],
+                                children: [],
+                            }],
+                        }],
+                    }],
+                },
+            });
+
+            const [reference, comparison] = await Promise.all([
+                session.setPresentation("reference", host),
+                session.setPresentation("comparison", secondary),
+            ]);
+            const composite = await session.setPresentation(
+                "composite",
+                host,
+            );
+            const warmReference = await session.setPresentation(
+                "reference",
+                host,
+            );
+            const metrics = session.getMetrics();
+
+            expect(reference.parserCount).to.equal(0);
+            expect(comparison.parserCount).to.equal(0);
+            expect(reference.switchMs).to.be.lessThan(150);
+            expect(comparison.switchMs).to.be.lessThan(150);
+            expect(composite.parserCount).to.equal(0);
+            expect(composite.paintCount).to.equal(0);
+            expect(composite.switchMs).to.be.lessThan(150);
+            expect(warmReference.parserCount).to.equal(0);
+            expect(warmReference.paintCount).to.equal(0);
+            expect(warmReference.switchMs).to.be.lessThan(150);
+            expect(metrics.lastSwitchParserCount).to.equal(0);
+            expect(metrics.maxSwitchMs).to.be.lessThan(150);
+            expect(metrics.retainedViewports).to.equal(2);
+            expect(metrics.retainedScenes).to.equal(3);
+            expect(document.querySelectorAll("ecad-viewer")).to.have.length(2);
+            expect(
+                await host.selectDocumentDiff({
+                    kind: "change",
+                    id: `/${sourceId}`,
+                }),
+            ).to.deep.include({ status: "applied" });
+            expect(
+                await secondary.selectDocumentDiff({
+                    kind: "change",
+                    id: `/${sourceId}`,
+                }),
+            ).to.deep.include({ status: "applied" });
+        } finally {
+            await new Promise<void>((resolve) =>
+                window.setTimeout(resolve, 50),
+            );
+            secondary.remove();
+        }
+    }).timeout(10_000);
 });

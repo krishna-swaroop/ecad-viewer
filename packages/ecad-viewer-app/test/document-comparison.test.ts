@@ -118,4 +118,29 @@ suite("document comparison preparation", () => {
             "removed",
         ]);
     });
+
+    test("prepares Prism identity targets without inventing origin bounds", () => {
+        const prepared = prepareComparisonDocument(
+            {
+                path: "hardware/root.kicad_sch",
+                docType: "kicad_sch",
+                changes: [
+                    {
+                        id: "/root/symbol-a",
+                        typeName: "SCH_SYMBOL",
+                        kind: "modified",
+                        properties: [],
+                        children: [],
+                    },
+                ],
+            },
+            undefined,
+            "prism",
+        );
+        const target = prepared.targets.get("change:/root/symbol-a");
+
+        expect(target?.bounds).to.equal(undefined);
+        expect(target?.visuals[0]?.bounds).to.equal(undefined);
+        expect(target?.sourceIds).to.deep.equal(["symbol-a"]);
+    });
 });

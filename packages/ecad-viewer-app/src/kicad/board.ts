@@ -1684,6 +1684,7 @@ export class Pad implements CrossHightAble, BoardNode {
     thermal_bridge_angle: number;
     zone_connect: number;
     tstamp: string;
+    uuid: string;
     drill?: PadDrill;
     net?: Net;
     options?: PadOptions;
@@ -1731,6 +1732,8 @@ export class Pad implements CrossHightAble, BoardNode {
         this.thermal_bridge_angle = data.thermal_bridge_angle;
         this.zone_connect = data.zone_connect;
         this.tstamp = data.tstamp ?? "";
+        this.uuid =
+            (data as B.I_Pad & { uuid?: string }).uuid ?? this.tstamp;
         this.drill = data.drill ? new PadDrill(data.drill) : undefined;
         this.net = data.net ? new Net(data.net) : undefined;
         this.options = data.options ? new PadOptions(data.options) : undefined;

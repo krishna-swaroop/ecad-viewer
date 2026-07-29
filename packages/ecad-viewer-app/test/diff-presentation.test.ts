@@ -8,13 +8,16 @@ import {
     apply_diff_color,
     build_diff_presentation,
     index_paint_items,
+    source_id_of,
 } from "../src/viewers/base/diff-presentation";
+import { Pad } from "../src/kicad/board";
 import { fit_adaptive_stroke_width } from "../src/viewers/base/overlay-scene";
 
 class PaintItem {
     constructor(
         public uuid: string,
         private readonly children: PaintItem[] = [],
+        public readonly pins: PaintItem[] = [],
     ) {}
 
     *items(): Generator<PaintItem> {
@@ -53,6 +56,100 @@ suite("native diff presentation", () => {
 
         expect(index.get("parent")).to.deep.equal([parent]);
         expect(index.get("child")).to.deep.equal([child]);
+    });
+
+    test("indexes identity-only schematic pins omitted by active-unit painting", () => {
+        const activePin = new PaintItem("active-pin");
+        const inactivePin = new PaintItem("inactive-pin");
+        const symbol = new PaintItem(
+            "symbol",
+            [activePin],
+            [activePin, inactivePin],
+        );
+        const index = index_paint_items(new PaintDocument([symbol, activePin]));
+
+        expect(index.get("active-pin")).to.deep.equal([activePin]);
+        expect(index.get("inactive-pin")).to.deep.equal([inactivePin]);
+    });
+
+    test("promotes an identity-only schematic pin to its painted symbol", () => {
+        const activePin = new PaintItem("active-pin");
+        const inactivePin = new PaintItem("inactive-pin");
+        const symbol = new PaintItem(
+            "symbol",
+            [activePin],
+            [activePin, inactivePin],
+        );
+        const document: KiCadDocumentDiff = {
+            path: "root.kicad_sch",
+            docType: "kicad_sch",
+            changes: [
+                {
+                    ...change("/inactive-pin", "modified"),
+                    typeName: "SCH_PIN",
+                },
+            ],
+        };
+
+        const presentation = build_diff_presentation(
+            buildDocumentDiffIndex(document),
+            new PaintDocument([]),
+            new PaintDocument([symbol, activePin]),
+        );
+
+        expect(presentation.diagnostics).to.deep.equal([]);
+        expect(presentation.statusByItem.get(inactivePin)).to.equal("modified");
+        expect(presentation.statusByItem.get(symbol)).to.equal("modified");
+        expect(
+            presentation.itemsBySideAndSourceId.get("comparison:inactive-pin"),
+        ).to.deep.equal([symbol]);
+        expect(presentation.resolution.sourceResolved).to.equal(1);
+    });
+
+    test("promotes regular nested paint items to their painted owner", () => {
+        const pad = new PaintItem("pad");
+        const footprint = new PaintItem("footprint", [pad]);
+        const document: KiCadDocumentDiff = {
+            path: "root.kicad_pcb",
+            docType: "kicad_pcb",
+            changes: [
+                {
+                    ...change("/pad", "modified"),
+                    typeName: "PCB_PAD",
+                },
+            ],
+        };
+
+        const presentation = build_diff_presentation(
+            buildDocumentDiffIndex(document),
+            new PaintDocument([]),
+            new PaintDocument([footprint]),
+        );
+
+        expect(
+            presentation.itemsBySideAndSourceId.get("comparison:pad"),
+        ).to.deep.equal([footprint]);
+    });
+
+    test("uses modern PCB pad UUIDs instead of an absent legacy tstamp", () => {
+        const pad = new Pad(
+            {
+                uuid: "modern-pad",
+                number: "1",
+                type: "smd",
+                shape: "rect",
+                at: {
+                    position: { x: 0, y: 0 },
+                    rotation: 0,
+                    unlocked: false,
+                },
+                size: { x: 1, y: 1 },
+                layers: ["F.Cu"],
+            } as never,
+            {} as never,
+        );
+
+        expect(source_id_of(pad)).to.equal("modern-pad");
     });
 
     test("styles comparison items and injects removed reference items once", () => {

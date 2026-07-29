@@ -258,6 +258,38 @@ export class Project extends EventTarget implements IDisposable {
         this.loaded = new Barrier();
     }
 
+    /**
+     * Adopt an already-parsed project model without invoking parser workers.
+     * Collections are shallow-cloned so resetting this viewport cannot clear
+     * the session owner's project; immutable parsed document objects remain
+     * shared between viewports.
+     */
+    public adopt(source: Project) {
+        this.dispose();
+        this._fs = source._fs;
+        this._pool = source._pool;
+        this._files_by_name = new Map(source._files_by_name);
+        this._file_content = new Map(source._file_content);
+        this._drawing_sheet_sources = new Map(source._drawing_sheet_sources);
+        this._pcb = [...source._pcb];
+        this._sch = [...source._sch];
+        this._ov_3d_url = source._ov_3d_url;
+        this._bom_items = [...source._bom_items];
+        this._label_name_refs = new Map(source._label_name_refs);
+        this._net_item_refs = new Map(source._net_item_refs);
+        this._designator_refs = new Map(source._designator_refs);
+        this._project_name = source._project_name;
+        this.active_sch_file_name = source.active_sch_file_name;
+        this.active_sch_name = source.active_sch_name;
+        this._found_cjk = source._found_cjk;
+        this.settings = source.settings;
+        this._root_schematic_page = source._root_schematic_page;
+        this._pages_by_path = new Map(source._pages_by_path);
+        this.#perf_accum = null;
+        this.loaded = new Barrier();
+        this.loaded.open();
+    }
+
     public static async import_cjk_glyphs() {
         // @ts-expect-error It's imported in the import map
         const glyphModule = (window as Window & {

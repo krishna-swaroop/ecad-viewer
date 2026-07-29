@@ -44,6 +44,19 @@ export abstract class DocumentViewer<
     protected grid: Grid;
     #diff_presentation: EcadDiffPresentation | null = null;
     #paint_count = 0;
+    #presentation_cache_enabled = false;
+    #retained_overlay_channels: ReadonlySet<string> = new Set();
+    #presentation_scene_cache = new Map<
+        DocumentT,
+        Map<
+            EcadDiffPresentation | null,
+            {
+                layers: ViewLayerSetT;
+                painter: PainterT;
+                grid: Grid;
+            }
+        >
+    >();
 
     protected static FACTOR_zoom_fit_top_item = 1.6;
 
@@ -112,6 +125,98 @@ export abstract class DocumentViewer<
         return this.#paint_count;
     }
 
+    public get presentation_cache_size(): number {
+        let size = 0;
+        for (const scenes of this.#presentation_scene_cache.values()) {
+            size += scenes.size;
+        }
+        return size;
+    }
+
+    /**
+     * Retain prepared display lists while a comparison session is active.
+     * Switching a warm presentation then swaps layer sets instead of walking
+     * and painting the document again.
+     */
+    public enable_presentation_cache(
+        retained_overlay_channels: ReadonlySet<string> = new Set(),
+    ): void {
+        this.#presentation_cache_enabled = true;
+        this.#retained_overlay_channels = retained_overlay_channels;
+        this.#cache_current_presentation();
+    }
+
+    public disable_presentation_cache(): void {
+        for (const scenes of this.#presentation_scene_cache.values()) {
+            for (const scene of scenes.values()) {
+                if (scene.layers !== this.layers) {
+                    this.disposables.disposeAndRemove(scene.layers);
+                }
+            }
+        }
+        this.#presentation_scene_cache.clear();
+        this.#presentation_cache_enabled = false;
+        this.#retained_overlay_channels = new Set();
+    }
+
+    #cache_current_presentation(): void {
+        if (
+            !this.#presentation_cache_enabled
+            || !this.document
+            || !this.layers
+            || !this.painter
+            || !this.grid
+        ) {
+            return;
+        }
+        let scenes = this.#presentation_scene_cache.get(this.document);
+        if (!scenes) {
+            scenes = new Map();
+            this.#presentation_scene_cache.set(this.document, scenes);
+        }
+        scenes.set(this.#diff_presentation, {
+            layers: this.layers,
+            painter: this.painter,
+            grid: this.grid,
+        });
+    }
+
+    #restore_cached_presentation(
+        src: DocumentT,
+        presentation: EcadDiffPresentation | null,
+    ): boolean {
+        const cached =
+            this.#presentation_scene_cache.get(src)?.get(presentation);
+        if (!cached) return false;
+        this.#cache_current_presentation();
+        this.document = src;
+        this.#diff_presentation = presentation;
+        this.layers = cached.layers;
+        this.painter = cached.painter;
+        this.grid = cached.grid;
+        if (this.drawing_sheet) {
+            this.drawing_sheet.document = src;
+        }
+        this.rebind_overlay_layers(this.#retained_overlay_channels);
+        this.draw();
+        return true;
+    }
+
+    async #load_prepared_presentation(
+        src: DocumentT,
+        presentation: EcadDiffPresentation | null,
+    ): Promise<void> {
+        await this.setup_finished;
+        if (this.#restore_cached_presentation(src, presentation)) return;
+        this.#cache_current_presentation();
+        this.document = src;
+        this.#diff_presentation = presentation;
+        await this.viewport.ready;
+        this.renderer.update_canvas_size();
+        this.paint();
+        this.draw();
+    }
+
     /**
      * Activate a document and its prepared diff in one cold paint. Unlike
      * set_diff_presentation()+load(), this never repaints the outgoing page.
@@ -120,26 +225,12 @@ export abstract class DocumentViewer<
         src: DocumentT,
         presentation: EcadDiffPresentation,
     ): Promise<void> {
-        if (this.document === src && this.#diff_presentation === presentation) {
-            return;
-        }
-        this.#diff_presentation = presentation;
-        if (this.document === src) {
-            this.paint();
-            this.draw();
-            return;
-        }
-        await this.load(src);
-        // Concurrent project "change" loads can early-return after setting
-        // document without this presentation. Always finish on the installed
-        // presentation so the settled scene is never full-theme color.
-        if (this.#diff_presentation !== presentation) {
-            this.#diff_presentation = presentation;
-        }
-        await this.viewport.ready;
-        this.renderer.update_canvas_size();
-        this.paint();
-        this.draw();
+        await this.#load_prepared_presentation(src, presentation);
+    }
+
+    /** Activate a normal revision scene without repainting the outgoing page. */
+    public async load_plain_document(src: DocumentT): Promise<void> {
+        await this.#load_prepared_presentation(src, null);
     }
 
     override async load(src: DocumentT) {
@@ -212,7 +303,19 @@ export abstract class DocumentViewer<
         if (this.disposables.isDisposed) {
             return;
         }
-        this.disposables.disposeAndRemove(this.layers);
+        const cached_current =
+            this.#presentation_scene_cache
+                .get(this.document)
+                ?.get(this.#diff_presentation);
+        if (
+            !this.#presentation_cache_enabled
+            || cached_current?.layers === this.layers
+        ) {
+            this.disposables.disposeAndRemove(this.layers);
+            this.#presentation_scene_cache
+                .get(this.document)
+                ?.delete(this.#diff_presentation);
+        }
         this.layers = this.disposables.add(this.create_layer_set());
         this.rebind_overlay_layers();
 
@@ -241,6 +344,7 @@ export abstract class DocumentViewer<
             this.theme.grid,
             this.theme.grid_axes,
         );
+        this.#cache_current_presentation();
     }
 
     public override zoom_in() {

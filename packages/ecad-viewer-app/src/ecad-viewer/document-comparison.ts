@@ -8,6 +8,8 @@ import {
     buildDocumentDiffIndex,
     parseKiCadDocumentDiff,
     parseKiCadProjectDiff,
+    parsePrismDocumentDiffInput,
+    parsePrismProjectDiffInput,
     type EcadDiffCategory,
     type EcadDiffGroup,
     type EcadDocumentDiffIndex,
@@ -24,6 +26,8 @@ export type EcadDocumentComparisonRequest = {
      * at the custom-element boundary even when TypeScript callers pre-type it.
      */
     diff: unknown;
+    /** Native KiCad requires bbox; Prism deliberately resolves it after paint. */
+    diffFormat?: "native-kicad" | "prism";
     /** Required when a PROJECT_DIFF contains more than one matching document. */
     documentPath?: string;
     /** Prefer this hierarchical schematic project path when activating SCH. */
@@ -34,25 +38,38 @@ export type EcadDocumentComparisonSelection =
     | { kind: "change"; id: string }
     | { kind: "group"; id: string };
 
-export type EcadPreparedDiffTarget = {
+export type EcadPendingDiffTarget = {
     id: string;
     kind: "change" | "group";
     category: EcadDiffCategory;
     label: string;
     memberIds: string[];
     sourceIds: string[];
-    bounds: [number, number, number, number];
+    bounds?: [number, number, number, number];
     sourceSide: "reference" | "comparison";
     routing: boolean;
     overlayLines: Array<Array<[number, number]>>;
     visuals: Array<{
         sourceId: string;
+        typeName?: string;
         category: EcadDiffCategory;
         sourceSide: "reference" | "comparison";
         routing: boolean;
-        bounds: [number, number, number, number];
+        bounds?: [number, number, number, number];
         overlayLines: Array<Array<[number, number]>>;
     }>;
+};
+
+export type EcadPreparedDiffTarget = Omit<
+    EcadPendingDiffTarget,
+    "bounds" | "visuals"
+> & {
+    bounds: [number, number, number, number];
+    visuals: Array<
+        Omit<EcadPendingDiffTarget["visuals"][number], "bounds"> & {
+            bounds: [number, number, number, number];
+        }
+    >;
 };
 
 export type EcadDocumentComparisonPreparation = {
@@ -83,25 +100,6 @@ export type EcadDocumentComparisonSelectionResult = {
     clickToFrameMs: number;
     paintCount: number;
     parserCount: number;
-};
-
-export type EcadRevisionDiffVisualTarget = {
-    sourceId: string;
-    parentSourceId?: string | null;
-    status: EcadDiffCategory;
-    bounds?: [number, number, number, number];
-    routing?: boolean;
-};
-
-export type EcadRevisionDiffTarget = {
-    id: string;
-    label?: string;
-    visuals: EcadRevisionDiffVisualTarget[];
-};
-
-export type EcadRevisionDiffPresentationRequest = {
-    context: "SCH" | "PCB";
-    targets: EcadRevisionDiffTarget[];
 };
 
 export type EcadTransitionTraceDetail = {
@@ -163,18 +161,28 @@ function normalize_path(path: string): string {
     return path.replace(/\\/g, "/").replace(/^\.?\//, "");
 }
 
-function parse_documents(value: unknown): KiCadDocumentDiff[] {
+function parse_documents(
+    value: unknown,
+    format: "native-kicad" | "prism",
+): KiCadDocumentDiff[] {
     if (value && typeof value === "object" && "documents" in value) {
-        return parseKiCadProjectDiff(value).documents;
+        return format === "prism"
+            ? parsePrismProjectDiffInput(value).documents
+            : parseKiCadProjectDiff(value).documents;
     }
-    return [parseKiCadDocumentDiff(value)];
+    return [
+        format === "prism"
+            ? parsePrismDocumentDiffInput(value)
+            : parseKiCadDocumentDiff(value),
+    ];
 }
 
 export function selectComparisonDocument(
     value: unknown,
     requestedPath?: string,
+    format: "native-kicad" | "prism" = "native-kicad",
 ): KiCadDocumentDiff {
-    const documents = parse_documents(value);
+    const documents = parse_documents(value, format);
     if (!documents.length) {
         throw new TypeError("PROJECT_DIFF.documents must not be empty");
     }
@@ -208,13 +216,16 @@ export function selectComparisonDocument(
 
 function bounds_tuple(
     bounds: EcadIndexedChange["worldBounds"],
-): [number, number, number, number] {
-    return [bounds.x, bounds.y, bounds.w, bounds.h];
+): [number, number, number, number] | undefined {
+    return bounds
+        ? [bounds.x, bounds.y, bounds.w, bounds.h]
+        : undefined;
 }
 
 function visual_target(change: EcadIndexedChange) {
     return {
         sourceId: change.sourceId ?? "",
+        typeName: change.change.typeName,
         category: change.category,
         sourceSide: change.sourceSide,
         routing: ["SCH_LINE", "PCB_TRACK", "PCB_ARC", "PCB_VIA"].includes(
@@ -228,11 +239,16 @@ function visual_target(change: EcadIndexedChange) {
 function change_target(
     change: EcadIndexedChange,
     members: EcadIndexedChange[] = [change],
-): EcadPreparedDiffTarget {
+): EcadPendingDiffTarget {
     const visuals = members
         .map(visual_target)
         .filter((entry) => entry.sourceId);
-    const bounds = BBox.combine(members.map((entry) => entry.worldBounds));
+    const member_bounds = members.flatMap((entry) =>
+        entry.worldBounds ? [entry.worldBounds] : [],
+    );
+    const bounds = member_bounds.length
+        ? BBox.combine(member_bounds)
+        : undefined;
     return {
         id: change.id,
         kind: "change",
@@ -250,7 +266,7 @@ function change_target(
     };
 }
 
-function group_target(group: EcadDiffGroup): EcadPreparedDiffTarget {
+function group_target(group: EcadDiffGroup): EcadPendingDiffTarget {
     const visuals = group.members
         .map(visual_target)
         .filter((entry) => entry.sourceId);
@@ -281,8 +297,8 @@ function group_target(group: EcadDiffGroup): EcadPreparedDiffTarget {
  */
 export function buildDocumentComparisonTargets(
     index: EcadDocumentDiffIndex,
-): ReadonlyMap<string, EcadPreparedDiffTarget> {
-    const targets = new Map<string, EcadPreparedDiffTarget>();
+): ReadonlyMap<string, EcadPendingDiffTarget> {
+    const targets = new Map<string, EcadPendingDiffTarget>();
     for (const change of index.changes.filter((entry) => !entry.parentId)) {
         const members = index.changes.filter(
             (entry) => entry === change || entry.rootId === change.id,
@@ -298,13 +314,14 @@ export function buildDocumentComparisonTargets(
 export function prepareComparisonDocument(
     value: unknown,
     requestedPath?: string,
+    format: "native-kicad" | "prism" = "native-kicad",
 ): {
     document: KiCadDocumentDiff;
     index: EcadDocumentDiffIndex;
-    targets: ReadonlyMap<string, EcadPreparedDiffTarget>;
+    targets: ReadonlyMap<string, EcadPendingDiffTarget>;
     context: "SCH" | "PCB";
 } {
-    const document = selectComparisonDocument(value, requestedPath);
+    const document = selectComparisonDocument(value, requestedPath, format);
     const index = buildDocumentDiffIndex(document);
     return {
         document,

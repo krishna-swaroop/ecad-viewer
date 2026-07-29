@@ -74,14 +74,11 @@ import {
     type EcadDocumentComparisonRequest,
     type EcadDocumentComparisonSelection,
     type EcadDocumentComparisonSelectionResult,
+    type EcadPendingDiffTarget,
     type EcadPreparedDiffTarget,
-    type EcadRevisionDiffPresentationRequest,
     type EcadTransitionTraceDetail,
 } from "./document-comparison";
-import {
-    build_diff_presentation,
-    index_paint_items,
-} from "../viewers/base/diff-presentation";
+import { build_diff_presentation } from "../viewers/base/diff-presentation";
 import { merge_bounds_resolution } from "../viewers/base/diff-presentation";
 import type {
     EcadDiffBoundsResolution,
@@ -115,10 +112,8 @@ export type {
     EcadDocumentComparisonRequest,
     EcadDocumentComparisonSelection,
     EcadDocumentComparisonSelectionResult,
+    EcadPendingDiffTarget,
     EcadPreparedDiffTarget,
-    EcadRevisionDiffPresentationRequest,
-    EcadRevisionDiffTarget,
-    EcadRevisionDiffVisualTarget,
     EcadTransitionTraceDetail,
 } from "./document-comparison";
 export {
@@ -140,6 +135,8 @@ export type {
     KiCadItemChange,
     KiCadProjectDiff,
     KiCadPropertyDelta,
+    NativeKiCadItemChange,
+    PrismItemChangeInput,
 } from "./document-diff";
 export {
     bbox_to_world,
@@ -148,6 +145,8 @@ export {
     document_units,
     parseKiCadDocumentDiff,
     parseKiCadProjectDiff,
+    parsePrismDocumentDiffInput,
+    parsePrismProjectDiffInput,
     split_kiid_path,
 } from "./document-diff";
 
@@ -202,6 +201,135 @@ export interface CameraState {
     y: number;
     zoom: number;
     rotation: number;
+}
+
+export type EcadComparisonPresentation =
+    | "composite"
+    | "reference"
+    | "comparison";
+
+export interface EcadComparisonPresentationResult {
+    presentation: EcadComparisonPresentation;
+    preparation: EcadDocumentComparisonPreparation;
+    switchMs: number;
+    parserCount: number;
+    paintCount: number;
+}
+
+export interface EcadComparisonSessionMetrics {
+    prepareMs: number;
+    parserCount: number;
+    switchCount: number;
+    lastSwitchMs: number;
+    maxSwitchMs: number;
+    lastSwitchParserCount: number;
+    retainedViewports: number;
+    retainedScenes: number;
+    sourceBytes: number;
+    heapBytesAtPrepare?: number;
+    heapBytesCurrent?: number;
+}
+
+/**
+ * One immutable comparison pair and its prepared document presentation.
+ * Multiple <ecad-viewer> viewports may attach to the same session without
+ * reparsing either revision.
+ */
+export interface EcadComparisonSession {
+    readonly comparisonKey: string;
+    readonly preparation: EcadDocumentComparisonPreparation;
+    setPresentation(
+        presentation: EcadComparisonPresentation,
+        viewport?: ECadViewer,
+    ): Promise<EcadComparisonPresentationResult>;
+    getPreparation(
+        viewport?: ECadViewer,
+    ): EcadDocumentComparisonPreparation | null;
+    getMetrics(): EcadComparisonSessionMetrics;
+    dispose(): void;
+}
+
+type EcadComparisonSessionDocument = {
+    preparation: EcadDocumentComparisonPreparation;
+    presentation: EcadDiffPresentation;
+    referenceDocument: PaintableDocument & { filename: string };
+    comparisonDocument: PaintableDocument & { filename: string };
+    pendingTargets: ReadonlyMap<string, EcadPendingDiffTarget>;
+};
+
+type EcadComparisonSessionState = {
+    owner: ECadViewer;
+    request: EcadDocumentComparisonRequest;
+    referenceProject: Project;
+    comparisonProject: Project;
+    document: EcadComparisonSessionDocument;
+    preparations: Map<ECadViewer, EcadDocumentComparisonPreparation>;
+    preparedPresentations: Map<
+        ECadViewer,
+        Map<EcadComparisonPresentation, EcadDocumentComparisonPreparation>
+    >;
+    presentations: Map<ECadViewer, EcadComparisonPresentation>;
+    disposed: boolean;
+    metrics: EcadComparisonSessionMetrics;
+};
+
+function comparison_heap_bytes(): number | undefined {
+    const memory = (
+        performance as Performance & {
+            memory?: { usedJSHeapSize?: number };
+        }
+    ).memory;
+    return Number.isFinite(memory?.usedJSHeapSize)
+        ? memory!.usedJSHeapSize
+        : undefined;
+}
+
+function comparison_source_bytes(
+    request: EcadDocumentComparisonRequest,
+): number {
+    const bytes = (update: EcadSourceUpdate) =>
+        update.sources.reduce(
+            (total, source) =>
+                total + source.filename.length + source.content.length,
+            0,
+        );
+    return bytes(request.reference) + bytes(request.comparison);
+}
+
+function pending_targets_for_presentation(
+    targets: ReadonlyMap<string, EcadPendingDiffTarget>,
+    presentation: EcadComparisonPresentation,
+): ReadonlyMap<string, EcadPendingDiffTarget> {
+    if (presentation === "composite") return targets;
+    const side = presentation;
+    const filtered = new Map<string, EcadPendingDiffTarget>();
+    for (const [key, target] of targets) {
+        const visuals = target.visuals.filter(
+            (visual) => visual.sourceSide === side,
+        );
+        if (!visuals.length) continue;
+        const supplied = visuals.flatMap((visual) =>
+            visual.bounds &&
+            visual.bounds.every(Number.isFinite) &&
+            (visual.bounds[2] > 0 || visual.bounds[3] > 0)
+                ? [new BBox(...visual.bounds)]
+                : [],
+        );
+        const bounds = supplied.length
+            ? BBox.combine(supplied)
+            : undefined;
+        filtered.set(key, {
+            ...target,
+            sourceIds: visuals.map((visual) => visual.sourceId),
+            sourceSide: side,
+            bounds: bounds
+                ? [bounds.x, bounds.y, bounds.w, bounds.h]
+                : undefined,
+            routing: visuals.some((visual) => visual.routing),
+            visuals,
+        });
+    }
+    return filtered;
 }
 
 /**
@@ -391,6 +519,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     #initial_tab_set = false;
     #project: Project = new Project();
     #reference_project: Project = new Project();
+    #adopted_comparison_project: Project | null = null;
     #schematic_app: KCSchematicAppElement | undefined;
     #ov_d_app: Online3dViewer;
     #board_app: KCBoardAppElement | undefined;
@@ -419,7 +548,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         {
             preparation: EcadDocumentComparisonPreparation;
             presentation: EcadDiffPresentation;
+            referenceDocument: PaintableDocument & { filename: string };
             comparisonDocument: PaintableDocument & { filename: string };
+            pendingTargets: ReadonlyMap<string, EcadPendingDiffTarget>;
         }
     >();
     #document_comparison_request_id = 0;
@@ -433,12 +564,6 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     static readonly #DIFF_HALO_CHANNEL = ":document-diff:halos";
     #selected_document_diff: EcadDocumentComparisonSelection | null = null;
     #preview_document_diff: EcadDocumentComparisonSelection | null = null;
-    #revision_diff_presentation: {
-        context: "SCH" | "PCB";
-        targets: Map<string, EcadPreparedDiffTarget>;
-    } | null = null;
-    #selected_revision_diff: string | null = null;
-    #preview_revision_diff: string | null = null;
     #diff_animation_frame: number | null = null;
     #diff_animation_started = 0;
     #viewport_insets: Required<EcadViewportInsets> = {
@@ -588,6 +713,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         source_manifest_key: string,
         generation: number,
     ): Promise<void> {
+        this.#adopted_comparison_project = null;
         const assert_current = () => {
             if (generation !== this.#source_replace_generation) {
                 throw new DOMException(
@@ -735,6 +861,301 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         }
     }
 
+    /**
+     * Prepare one immutable comparison pair and expose it as a shareable
+     * session. The first viewport is Composite; additional viewports adopt the
+     * already-parsed projects and never invoke the parser again.
+     */
+    public async prepareComparison(
+        request: EcadDocumentComparisonRequest,
+    ): Promise<EcadComparisonSession> {
+        const parser_before = getParserPerfSnapshot().parserInvocations;
+        const preparation = await this.loadDocumentComparison(request);
+        const document = this.#document_comparison_cache.get(
+            preparation.document.path,
+        );
+        if (!document) {
+            throw new Error(
+                `Prepared comparison cache is missing ${preparation.document.path}`,
+            );
+        }
+        const state: EcadComparisonSessionState = {
+            owner: this,
+            request,
+            referenceProject: this.#reference_project,
+            comparisonProject: this.#project,
+            document,
+            preparations: new Map([[this, preparation]]),
+            preparedPresentations: new Map([
+                [this, new Map([["composite", preparation]])],
+            ]),
+            presentations: new Map([[this, "composite"]]),
+            disposed: false,
+            metrics: {
+                prepareMs: preparation.prepareMs,
+                parserCount:
+                    getParserPerfSnapshot().parserInvocations - parser_before,
+                switchCount: 0,
+                lastSwitchMs: 0,
+                maxSwitchMs: 0,
+                lastSwitchParserCount: 0,
+                retainedViewports: 1,
+                retainedScenes: 1,
+                sourceBytes: comparison_source_bytes(request),
+                heapBytesAtPrepare: comparison_heap_bytes(),
+                heapBytesCurrent: comparison_heap_bytes(),
+            },
+        };
+        this.#viewer_for_context(preparation.context)
+            ?.enable_presentation_cache(new Set([
+                ECadViewer.#DIFF_HALO_CHANNEL,
+                ECadViewer.#DIFF_SELECTION_CHANNEL,
+            ]));
+        const session: EcadComparisonSession = {
+            comparisonKey: request.comparisonKey,
+            get preparation() {
+                return state.document.preparation;
+            },
+            setPresentation: (
+                presentation,
+                viewport = state.owner,
+            ) =>
+                state.owner.#set_comparison_session_presentation(
+                    state,
+                    viewport,
+                    presentation,
+                ),
+            getPreparation: (viewport = state.owner) =>
+                state.preparations.get(viewport) ?? null,
+            getMetrics: () => ({
+                ...state.metrics,
+                heapBytesCurrent: comparison_heap_bytes(),
+            }),
+            dispose: () => {
+                state.disposed = true;
+                for (const viewport of state.presentations.keys()) {
+                    viewport
+                        .#viewer_for_context(state.document.preparation.context)
+                        ?.disable_presentation_cache();
+                }
+                state.preparations.clear();
+                state.preparedPresentations.clear();
+                state.presentations.clear();
+                state.metrics.retainedViewports = 0;
+                state.metrics.retainedScenes = 0;
+                state.metrics.heapBytesCurrent = comparison_heap_bytes();
+            },
+        };
+        return session;
+    }
+
+    async #adopt_comparison_project(
+        project: Project,
+        revision_key: string,
+    ): Promise<void> {
+        if (this.#adopted_comparison_project === project && this.loaded) return;
+        this.#source_replace_generation += 1;
+        this.#project.adopt(project);
+        this.#adopted_comparison_project = project;
+        this.#revision_key = revision_key;
+        this.#source_manifest_key = null;
+        this.#source_names.clear();
+        this.loaded = true;
+        this.loading = true;
+        try {
+            await this.update();
+            await Promise.all(
+                [this.#schematic_app, this.#board_app].flatMap((app) =>
+                    app ? [app.viewerReady] : [],
+                ),
+            );
+        } finally {
+            this.loading = false;
+        }
+        this.#ensure_camera_hook(this.#safe_board_viewer());
+        this.#ensure_camera_hook(this.#safe_schematic_viewer());
+        this.#apply_viewport_insets();
+    }
+
+    async #set_comparison_session_presentation(
+        state: EcadComparisonSessionState,
+        viewport: ECadViewer,
+        presentation_mode: EcadComparisonPresentation,
+    ): Promise<EcadComparisonPresentationResult> {
+        if (state.disposed) {
+            throw new DOMException(
+                "Comparison session has been disposed",
+                "InvalidStateError",
+            );
+        }
+        const started = performance.now();
+        const parser_before = getParserPerfSnapshot().parserInvocations;
+        const existing = state.presentations.get(viewport);
+        const existing_preparation = state.preparations.get(viewport);
+        if (existing === presentation_mode && existing_preparation) {
+            return {
+                presentation: presentation_mode,
+                preparation: existing_preparation,
+                switchMs: performance.now() - started,
+                parserCount: 0,
+                paintCount: 0,
+            };
+        }
+
+        const project =
+            presentation_mode === "reference"
+                ? state.referenceProject
+                : state.comparisonProject;
+        const revision_key =
+            presentation_mode === "reference"
+                ? state.request.reference.revisionKey
+                : state.request.comparison.revisionKey;
+        if (viewport !== state.owner) {
+            await viewport.#adopt_comparison_project(project, revision_key);
+        }
+
+        const context = state.document.preparation.context;
+        if (context === "SCH" && viewport.#active_tab !== TabKind.sch) {
+            await viewport.#switchToTab(TabKind.sch);
+        } else if (context === "PCB" && viewport.#active_tab !== TabKind.pcb) {
+            await viewport.#switchToTab(TabKind.pcb);
+        }
+        const document =
+            presentation_mode === "reference"
+                ? state.document.referenceDocument
+                : state.document.comparisonDocument;
+        if (context === "SCH" && document.filename) {
+            await viewport.#activate_comparison_sheet(
+                state.request.activeSheetPath ?? document.filename,
+                document,
+            );
+        }
+        const viewer = viewport.#viewer_for_context(context);
+        if (!viewer) {
+            throw new Error(
+                `The ${context} comparison viewport is not ready`,
+            );
+        }
+        viewer.enable_presentation_cache(new Set([
+            ECadViewer.#DIFF_HALO_CHANNEL,
+            ECadViewer.#DIFF_SELECTION_CHANNEL,
+        ]));
+        const paint_before = viewer.paint_count;
+        if (presentation_mode === "composite") {
+            await viewer.load_diff_document(
+                state.document.comparisonDocument as never,
+                state.document.presentation,
+            );
+        } else {
+            await viewer.load_plain_document(document as never);
+        }
+        await viewport.#reveal_comparison_shell(
+            context,
+            document,
+            viewer,
+            /* alreadyPainted */ true,
+        );
+
+        const cached_preparation = state.preparedPresentations
+            .get(viewport)
+            ?.get(presentation_mode);
+        const pending = cached_preparation
+            ? null
+            : pending_targets_for_presentation(
+                state.document.pendingTargets,
+                presentation_mode,
+            );
+        const hydrated = pending
+            ? viewport.#hydrate_document_diff_targets(
+                pending,
+                state.document.presentation,
+                viewer,
+            )
+            : null;
+        const targets = cached_preparation?.targets ?? hydrated!.targets;
+        viewport.#install_document_diff_halos(
+            targets,
+            context,
+            viewer,
+            !cached_preparation,
+        );
+        const side =
+            presentation_mode === "composite" ? null : presentation_mode;
+        const identity_diagnostics = state.document.presentation.diagnostics.filter(
+            (diagnostic) => side === null || diagnostic.side === side,
+        );
+        const preparation: EcadDocumentComparisonPreparation =
+            cached_preparation ?? {
+                ...state.document.preparation,
+                targets,
+                diagnostics: [
+                    ...identity_diagnostics,
+                    ...hydrated!.resolution.diagnostics,
+                ],
+                resolution: merge_bounds_resolution(
+                    state.document.presentation.resolution,
+                    hydrated!.resolution,
+                ),
+                sourceCacheHit: true,
+            };
+        viewport.#document_comparison = preparation;
+        viewport.#selected_document_diff = null;
+        viewport.#preview_document_diff = null;
+        viewport.#restart_diff_animation();
+        viewport.#emit_view_state_change();
+
+        const switch_ms = performance.now() - started;
+        const parser_count =
+            getParserPerfSnapshot().parserInvocations - parser_before;
+        const result: EcadComparisonPresentationResult = {
+            presentation: presentation_mode,
+            preparation,
+            switchMs: switch_ms,
+            parserCount: parser_count,
+            paintCount: viewer.paint_count - paint_before,
+        };
+        state.preparations.set(viewport, preparation);
+        let prepared_presentations =
+            state.preparedPresentations.get(viewport);
+        if (!prepared_presentations) {
+            prepared_presentations = new Map();
+            state.preparedPresentations.set(viewport, prepared_presentations);
+        }
+        prepared_presentations.set(presentation_mode, preparation);
+        state.presentations.set(viewport, presentation_mode);
+        state.metrics.switchCount += 1;
+        state.metrics.lastSwitchMs = switch_ms;
+        state.metrics.maxSwitchMs = Math.max(
+            state.metrics.maxSwitchMs,
+            switch_ms,
+        );
+        state.metrics.lastSwitchParserCount = parser_count;
+        state.metrics.retainedViewports = state.presentations.size;
+        state.metrics.retainedScenes = [...state.presentations.keys()].reduce(
+            (total, retained_viewport) =>
+                total +
+                (retained_viewport
+                    .#viewer_for_context(context)
+                    ?.presentation_cache_size ?? 0),
+            0,
+        );
+        state.metrics.heapBytesCurrent = comparison_heap_bytes();
+        ecadPerfLog(
+            `comparison presentation=${presentation_mode} switch=${switch_ms.toFixed(1)}ms paint=${result.paintCount} parse=${parser_count} viewports=${state.metrics.retainedViewports}`,
+        );
+        viewport.#trace_transition("comparison.presentation.complete", {
+            status: "ready",
+            detail: {
+                presentation: presentation_mode,
+                switchMs: switch_ms,
+                paintCount: result.paintCount,
+                parserCount: parser_count,
+                retainedViewports: state.metrics.retainedViewports,
+            },
+        });
+        return result;
+    }
+
     async #perform_document_comparison_load(
         request: EcadDocumentComparisonRequest,
         load_generation: number,
@@ -751,6 +1172,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         const prepared = prepareComparisonDocument(
             request.diff,
             request.documentPath,
+            request.diffFormat ?? "native-kicad",
         );
         this.#document_comparison_request_id += 1;
         this.#cancel_diff_animation();
@@ -800,13 +1222,13 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 cached.presentation,
             );
             assert_current();
-            const bounds = this.#hydrate_document_diff_targets(
-                cached.preparation.targets,
+            const hydrated = this.#hydrate_document_diff_targets(
+                cached.pendingTargets,
                 cached.presentation,
                 viewer,
             );
             this.#install_document_diff_halos(
-                cached.preparation.targets,
+                hydrated.targets,
                 cached.preparation.context,
                 viewer,
             );
@@ -820,13 +1242,14 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             // recomputed rather than inherited from the cached preparation.
             const result = {
                 ...cached.preparation,
+                targets: hydrated.targets,
                 diagnostics: [
                     ...cached.presentation.diagnostics,
-                    ...bounds.diagnostics,
+                    ...hydrated.resolution.diagnostics,
                 ],
                 resolution: merge_bounds_resolution(
                     cached.presentation.resolution,
-                    bounds,
+                    hydrated.resolution,
                 ),
                 prepareMs: performance.now() - started,
                 sourceCacheHit: true,
@@ -926,13 +1349,13 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             /* alreadyPainted */ true,
         );
         assert_current();
-        const bounds = this.#hydrate_document_diff_targets(
+        const hydrated = this.#hydrate_document_diff_targets(
             prepared.targets,
             presentation,
             viewer,
         );
         this.#install_document_diff_halos(
-            prepared.targets,
+            hydrated.targets,
             prepared.context,
             viewer,
         );
@@ -941,11 +1364,14 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             comparisonKey: request.comparisonKey,
             context: prepared.context,
             document: prepared.document,
-            targets: prepared.targets,
-            diagnostics: [...presentation.diagnostics, ...bounds.diagnostics],
+            targets: hydrated.targets,
+            diagnostics: [
+                ...presentation.diagnostics,
+                ...hydrated.resolution.diagnostics,
+            ],
             resolution: merge_bounds_resolution(
                 presentation.resolution,
-                bounds,
+                hydrated.resolution,
             ),
             prepareMs: performance.now() - started,
             sourceCacheHit: same_sources,
@@ -955,7 +1381,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.#document_comparison_cache.set(prepared.document.path, {
             preparation: result,
             presentation,
+            referenceDocument: reference_document,
             comparisonDocument: comparison_document,
+            pendingTargets: prepared.targets,
         });
         this.#document_comparison = result;
         ecadPerfLog(
@@ -1009,7 +1437,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             });
             return;
         }
-        this.#activate_schematic_page(page.project_path);
+        if (this.#active_schematic_project_path !== page.project_path) {
+            this.#activate_schematic_page(page.project_path);
+        }
         this.#trace_transition("page.comparison.activated", {
             status: "ready",
             requestedPage: pageId,
@@ -1079,18 +1509,6 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         context: "SCH" | "PCB";
         target: EcadPreparedDiffTarget;
     } | null {
-        const revision_id =
-            this.#preview_revision_diff ?? this.#selected_revision_diff;
-        if (revision_id && this.#revision_diff_presentation) {
-            const target =
-                this.#revision_diff_presentation.targets.get(revision_id);
-            if (target) {
-                return {
-                    context: this.#revision_diff_presentation.context,
-                    target,
-                };
-            }
-        }
         const selection =
             this.#preview_document_diff ?? this.#selected_document_diff;
         const comparison = this.#document_comparison;
@@ -1331,197 +1749,43 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         return null;
     }
 
-    /** Install typed A/R/M targets on a normal single-revision viewer. */
-    public setRevisionDiffPresentation(
-        request: EcadRevisionDiffPresentationRequest | null,
-    ): void {
-        this.#cancel_diff_animation();
-        this.#selected_revision_diff = null;
-        this.#preview_revision_diff = null;
-        if (!request) {
-            this.#trace_transition("revision-overlay.clear", {
-                status: "ready",
-            });
-            this.#revision_diff_presentation = null;
-            for (const context of ["SCH", "PCB"] as const) {
-                const viewer = this.#viewer_for_context(context);
-                viewer?.clear_overlay_scene(ECadViewer.#DIFF_SELECTION_CHANNEL);
-                viewer?.clear_overlay_scene(ECadViewer.#DIFF_HALO_CHANNEL);
-            }
-            return;
-        }
-        const viewer = this.#viewer_for_context(request.context);
-        if (!viewer?.document) {
-            this.#trace_transition("revision-overlay.missing-viewer", {
-                status: "missing",
-                detail: {
-                    context: request.context,
-                    requestedTargetCount: request.targets.length,
-                },
-            });
-            return;
-        }
-        const source_index = index_paint_items(viewer.document);
-        const targets = new Map<string, EcadPreparedDiffTarget>();
-        for (const requested of request.targets) {
-            const visuals: EcadPreparedDiffTarget["visuals"] = [];
-            for (const visual of requested.visuals) {
-                const source_items = source_index.get(visual.sourceId) ?? [];
-                const parent_items = visual.parentSourceId
-                    ? (source_index.get(visual.parentSourceId) ?? [])
-                    : [];
-                const items = source_items.length ? source_items : parent_items;
-                const bounds = items.flatMap((item) => [
-                    ...viewer.layers.query_item_bboxes(item),
-                ]);
-                const overlayLines = items
-                    .map((item) => ECadViewer.#overlay_line_for_item(item))
-                    .filter(
-                        (line): line is Array<[number, number]> =>
-                            line !== null,
-                    );
-                const combined = bounds.length ? BBox.combine(bounds) : null;
-                const fallback = visual.bounds;
-                if (
-                    !combined &&
-                    (!fallback || (fallback[2] <= 0 && fallback[3] <= 0))
-                ) {
-                    continue;
-                }
-                visuals.push({
-                    sourceId: visual.sourceId,
-                    category: visual.status,
-                    sourceSide: "comparison",
-                    routing: visual.routing ?? overlayLines.length > 0,
-                    bounds: combined
-                        ? [combined.x, combined.y, combined.w, combined.h]
-                        : fallback!,
-                    overlayLines,
-                });
-            }
-            if (!visuals.length) continue;
-            const combined = BBox.combine(
-                visuals.map((visual) => new BBox(...visual.bounds)),
-            );
-            targets.set(requested.id, {
-                id: requested.id,
-                kind: "change",
-                category: visuals[0]!.category,
-                label: requested.label ?? requested.id,
-                memberIds: [requested.id],
-                sourceIds: visuals.map((visual) => visual.sourceId),
-                bounds: [combined.x, combined.y, combined.w, combined.h],
-                sourceSide: "comparison",
-                routing: visuals.some((visual) => visual.routing),
-                overlayLines: visuals.flatMap((visual) => visual.overlayLines),
-                visuals,
-            });
-        }
-        this.#revision_diff_presentation = {
-            context: request.context,
-            targets,
-        };
-        this.#install_document_diff_halos(targets, request.context, viewer);
-        viewer.draw();
-        this.#trace_transition("revision-overlay.installed", {
-            status: "ready",
-            detail: {
-                context: request.context,
-                requestedTargetCount: request.targets.length,
-                resolvedTargetCount: targets.size,
-                resolvedIds: [...targets.keys()],
-            },
-        });
-    }
-
-    public previewRevisionDiff(id: string | null): void {
-        this.#preview_revision_diff = id;
-        this.#restart_diff_animation();
-    }
-
-    public async selectRevisionDiff(
-        id: string | null,
-        options: { focus?: boolean } = {},
-    ): Promise<boolean> {
-        this.#trace_transition("selection.revision.request", {
-            status: "start",
-            detail: { id, focus: options.focus !== false },
-        });
-        this.#selected_revision_diff = id;
-        this.#preview_revision_diff = null;
-        this.#restart_diff_animation();
-        if (!id || !this.#revision_diff_presentation) {
-            this.#trace_transition("selection.revision.missing", {
-                status: "missing",
-                detail: {
-                    id,
-                    hasPresentation: Boolean(this.#revision_diff_presentation),
-                },
-            });
-            return false;
-        }
-        const target = this.#revision_diff_presentation.targets.get(id);
-        const viewer = this.#viewer_for_context(
-            this.#revision_diff_presentation.context,
-        );
-        if (!target || !viewer) {
-            this.#trace_transition("selection.revision.missing", {
-                status: "missing",
-                detail: {
-                    id,
-                    hasTarget: Boolean(target),
-                    hasViewer: Boolean(viewer),
-                    availableTargetIds: [
-                        ...this.#revision_diff_presentation.targets.keys(),
-                    ],
-                },
-            });
-            return false;
-        }
-        if (options.focus !== false) {
-            const [x, y, w, h] = target.bounds;
-            const padding = Math.max(Math.max(w, h) * 0.35, 2);
-            viewer.viewport.camera.bbox = new BBox(
-                x - padding,
-                y - padding,
-                w + padding * 2,
-                h + padding * 2,
-            );
-            viewer.draw();
-            await new Promise<void>((resolve) =>
-                requestAnimationFrame(() => resolve()),
-            );
-        }
-        this.#trace_transition("selection.revision.complete", {
-            status: "ready",
-            detail: {
-                id,
-                bounds: target.bounds,
-                sourceIds: target.sourceIds,
-            },
-        });
-        return true;
-    }
-
     /**
-     * Replace caller-supplied bounds with the bounds the scene actually
-     * painted. Where that is not possible the caller's bbox survives, which is
-     * invisible to the identity diagnostics collected during presentation
-     * build — they only ever see source-id resolution. The returned counters
-     * are what tell a host how often its own bounds were the ones used.
+     * Finalize focusable targets only after the parsed scene has painted.
+     * Native KiCad callers may retain their strict bbox as a fallback. Prism
+     * supplies no bbox: an unresolved seed remains visible in the host change
+     * list through its diagnostic, but never becomes an origin target.
      */
     #hydrate_document_diff_targets(
-        targets: ReadonlyMap<string, EcadPreparedDiffTarget>,
+        pending_targets: ReadonlyMap<string, EcadPendingDiffTarget>,
         presentation: EcadDiffPresentation,
         viewer: DocumentViewer<any, any, any, any>,
-    ): EcadDiffBoundsResolution {
+    ): {
+        targets: ReadonlyMap<string, EcadPreparedDiffTarget>;
+        resolution: EcadDiffBoundsResolution;
+    } {
+        const targets = new Map<string, EcadPreparedDiffTarget>();
         const diagnostics: EcadDiffResolutionDiagnostic[] = [];
         let targets_with_painted_bounds = 0;
+        let targets_using_provided_bounds = 0;
+        let targets_non_focusable = 0;
         let visuals_total = 0;
         let visuals_with_painted_bounds = 0;
-        for (const target of targets.values()) {
+        let visuals_using_provided_bounds = 0;
+        let visuals_non_focusable = 0;
+        const valid_bounds = (
+            value?: [number, number, number, number],
+        ): value is [number, number, number, number] =>
+            Boolean(
+                value &&
+                    value.every(Number.isFinite) &&
+                    (value[2] > 0 || value[3] > 0),
+            );
+
+        for (const [target_key, target] of pending_targets) {
             const native_bounds: BBox[] = [];
+            const focus_bounds: BBox[] = [];
             const overlay_lines: Array<Array<[number, number]>> = [];
+            const visuals: EcadPreparedDiffTarget["visuals"] = [];
             for (const visual of target.visuals) {
                 visuals_total += 1;
                 const visual_bounds: BBox[] = [];
@@ -1542,41 +1806,60 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                     // query_item_bboxes is a generator. Spreading it twice
                     // fed the second consumer an exhausted iterator, so
                     // visual.bounds silently kept whatever the caller
-                    // supplied -- for Prism, a constant 5.08 mm box -- while
-                    // target.bounds got the real painted extent. Materialize
-                    // once and share.
+                    // supplied while target.bounds got the real painted
+                    // extent. Materialize once and share.
                     const item_bounds = [
                         ...viewer.layers.query_item_bboxes(item),
                     ];
                     native_bounds.push(...item_bounds);
                     visual_bounds.push(...item_bounds);
                 }
-                visual.overlayLines = visual_lines;
                 if (visual_bounds.length) {
                     visuals_with_painted_bounds += 1;
                     const combined = BBox.combine(visual_bounds);
-                    visual.bounds = [
+                    const bounds: [number, number, number, number] = [
                         combined.x,
                         combined.y,
                         combined.w,
                         combined.h,
                     ];
-                } else {
-                    // matchCount separates "the identity resolved but nothing
-                    // painted" from "no item was in the presentation at all".
-                    diagnostics.push({
-                        changeId: target.id,
-                        sourceId: source_id,
-                        side: visual.sourceSide,
-                        reason: "paint-bounds-not-found",
-                        matchCount: visual_items.length,
+                    focus_bounds.push(combined);
+                    visuals.push({
+                        ...visual,
+                        bounds,
+                        overlayLines: visual_lines,
                     });
+                } else if (valid_bounds(visual.bounds)) {
+                    visuals_using_provided_bounds += 1;
+                    const fallback = new BBox(...visual.bounds);
+                    focus_bounds.push(fallback);
+                    visuals.push({
+                        ...visual,
+                        bounds: visual.bounds,
+                        overlayLines: visual_lines,
+                    });
+                } else {
+                    visuals_non_focusable += 1;
+                    // Identity misses already carry an item-not-found
+                    // diagnostic from presentation build. Add a bounds
+                    // diagnostic only when identity resolved but did not paint.
+                    if (visual_items.length) {
+                        diagnostics.push({
+                            changeId: target.id,
+                            sourceId: source_id,
+                            side: visual.sourceSide,
+                            reason: "paint-bounds-not-found",
+                            matchCount: visual_items.length,
+                            typeName: visual.typeName,
+                        });
+                    }
                 }
             }
-            target.overlayLines = overlay_lines;
             const combined = native_bounds.length
                 ? BBox.combine(native_bounds)
-                : null;
+                : focus_bounds.length
+                  ? BBox.combine(focus_bounds)
+                  : null;
             if (
                 combined &&
                 Number.isFinite(combined.x) &&
@@ -1584,30 +1867,50 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 Number.isFinite(combined.w) &&
                 Number.isFinite(combined.h)
             ) {
-                targets_with_painted_bounds += 1;
-                target.bounds = [
-                    combined.x,
-                    combined.y,
-                    combined.w,
-                    combined.h,
-                ];
-            } else if (!target.visuals.length) {
-                // No visual carried the failure, so record it on the target or
-                // it disappears from the count entirely.
-                diagnostics.push({
-                    changeId: target.id,
-                    side: target.sourceSide,
-                    reason: "paint-bounds-not-found",
-                    matchCount: 0,
+                if (native_bounds.length) {
+                    targets_with_painted_bounds += 1;
+                } else {
+                    targets_using_provided_bounds += 1;
+                }
+                targets.set(target_key, {
+                    ...target,
+                    bounds: [
+                        combined.x,
+                        combined.y,
+                        combined.w,
+                        combined.h,
+                    ],
+                    overlayLines: overlay_lines,
+                    visuals,
                 });
+            } else {
+                targets_non_focusable += 1;
+                if (!target.visuals.length) {
+                    // No visual carried the failure, so record it on the target
+                    // or it disappears from the count entirely.
+                    diagnostics.push({
+                        changeId: target.id,
+                        side: target.sourceSide,
+                        reason: "paint-bounds-not-found",
+                        matchCount: 0,
+                        typeName: target.label.split(" ")[0],
+                    });
+                }
             }
         }
         return {
-            diagnostics,
-            targets: targets.size,
-            targetsWithPaintedBounds: targets_with_painted_bounds,
-            visuals: visuals_total,
-            visualsWithPaintedBounds: visuals_with_painted_bounds,
+            targets,
+            resolution: {
+                diagnostics,
+                targets: pending_targets.size,
+                targetsWithPaintedBounds: targets_with_painted_bounds,
+                targetsUsingProvidedBounds: targets_using_provided_bounds,
+                targetsNonFocusable: targets_non_focusable,
+                visuals: visuals_total,
+                visualsWithPaintedBounds: visuals_with_painted_bounds,
+                visualsUsingProvidedBounds: visuals_using_provided_bounds,
+                visualsNonFocusable: visuals_non_focusable,
+            },
         };
     }
 
@@ -1615,6 +1918,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         targets: ReadonlyMap<string, EcadPreparedDiffTarget>,
         context: "SCH" | "PCB",
         viewer: DocumentViewer<any, any, any, any>,
+        compile = true,
     ): void {
         const primitives: EcadOverlayPrimitive[] = [];
         for (const target of targets.values()) {
@@ -1682,6 +1986,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 primitives,
             },
             false,
+            compile,
         );
     }
 

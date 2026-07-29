@@ -40,9 +40,9 @@ export type EcadDiffResolutionDiagnostic = {
 };
 
 /**
- * Per-comparison resolution counters. `targetsUsingProvidedBounds` is the
- * number that matters: it is how often a caller-supplied bbox — for Prism, a
- * constant 5.08 mm or 10 mm box — was actually what the camera focused.
+ * Per-comparison resolution counters. Prism normally resolves painted bounds;
+ * `targetsNonFocusable` records identities that could not produce a safe
+ * camera target. Native callers may still use strict supplied bboxes.
  */
 export type EcadDiffResolutionSummary = {
     changes: number;
@@ -52,8 +52,11 @@ export type EcadDiffResolutionSummary = {
     targets: number;
     targetsWithPaintedBounds: number;
     targetsUsingProvidedBounds: number;
+    targetsNonFocusable: number;
     visuals: number;
     visualsWithPaintedBounds: number;
+    visualsUsingProvidedBounds: number;
+    visualsNonFocusable: number;
 };
 
 /** Counters and diagnostics produced once the comparison scene has painted. */
@@ -61,8 +64,12 @@ export type EcadDiffBoundsResolution = {
     diagnostics: EcadDiffResolutionDiagnostic[];
     targets: number;
     targetsWithPaintedBounds: number;
+    targetsUsingProvidedBounds: number;
+    targetsNonFocusable: number;
     visuals: number;
     visualsWithPaintedBounds: number;
+    visualsUsingProvidedBounds: number;
+    visualsNonFocusable: number;
 };
 
 export function merge_bounds_resolution(
@@ -73,10 +80,12 @@ export function merge_bounds_resolution(
         ...summary,
         targets: bounds.targets,
         targetsWithPaintedBounds: bounds.targetsWithPaintedBounds,
-        targetsUsingProvidedBounds:
-            bounds.targets - bounds.targetsWithPaintedBounds,
+        targetsUsingProvidedBounds: bounds.targetsUsingProvidedBounds,
+        targetsNonFocusable: bounds.targetsNonFocusable,
         visuals: bounds.visuals,
         visualsWithPaintedBounds: bounds.visualsWithPaintedBounds,
+        visualsUsingProvidedBounds: bounds.visualsUsingProvidedBounds,
+        visualsNonFocusable: bounds.visualsNonFocusable,
     };
 }
 
@@ -127,8 +136,13 @@ function add_index(map: SourceIndex, id: string, item: object): void {
 
 /**
  * Index top-level paint items and nested item containers. Footprints expose
- * pads/graphics through items(); schematic symbols expose children through
- * the painter and inherit their parent's status when not directly indexed.
+ * pads/graphics through items(). Schematic symbols normally expose only the
+ * pins for their active unit through items(), but the native file still owns
+ * UUID-bearing pin instances for every unit. Those identities remain valid
+ * diff targets when a library pin set changes, so walk the complete `pins`
+ * collection too. Nested identities resolve to their top-level painted owner:
+ * layer bbox maps are keyed by document items, not by children painted inside
+ * a footprint or symbol transform.
  */
 function build_paint_item_index(document: PaintableDocument): PaintItemIndex {
     const index: SourceIndex = new Map();
@@ -150,6 +164,12 @@ function build_paint_item_index(document: PaintableDocument): PaintItemIndex {
                 item as { items(): Iterable<unknown> }
             ).items()) {
                 visit(child, root);
+            }
+        }
+
+        if ("pins" in item && Array.isArray(item.pins)) {
+            for (const pin of item.pins) {
+                visit(pin, root);
             }
         }
     };
@@ -191,8 +211,6 @@ export function build_diff_presentation(
 ): EcadDiffPresentation {
     const reference_item_index = build_paint_item_index(reference);
     const comparison_item_index = build_paint_item_index(comparison);
-    const reference_index = reference_item_index.bySourceId;
-    const comparison_index = comparison_item_index.bySourceId;
     const status_by_item = new Map<object, EcadDiffPaintStatus>();
     const items_by_source_id = new Map<string, readonly object[]>();
     const items_by_side_and_source_id = new Map<string, readonly object[]>();
@@ -220,7 +238,9 @@ export function build_diff_presentation(
             });
             continue;
         }
-        const index = side === "reference" ? reference_index : comparison_index;
+        const paint_item_index =
+            side === "reference" ? reference_item_index : comparison_item_index;
+        const index = paint_item_index.bySourceId;
         const matches = index.get(entry.sourceId) ?? [];
         const item = first_item(index, entry.sourceId);
         if (!item) {
@@ -262,7 +282,8 @@ export function build_diff_presentation(
             });
         }
 
-        let presentation_item = item;
+        let presentation_item =
+            paint_item_index.rootByItem.get(item) ?? item;
         if (
             entry.sourceSide === "reference" &&
             (entry.change.retainReference ||
@@ -323,8 +344,11 @@ export function build_diff_presentation(
             targets: 0,
             targetsWithPaintedBounds: 0,
             targetsUsingProvidedBounds: 0,
+            targetsNonFocusable: 0,
             visuals: 0,
             visualsWithPaintedBounds: 0,
+            visualsUsingProvidedBounds: 0,
+            visualsNonFocusable: 0,
         },
     };
 }

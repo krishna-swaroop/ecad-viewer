@@ -24,7 +24,7 @@ export type KiCadPropertyDelta = {
  * match KiCad's JSON output so kicad-cli results require no presentation-layer
  * rewrite.
  */
-export type KiCadItemChange = {
+export type NativeKiCadItemChange = {
     id: string;
     typeName: string;
     kind: KiCadChangeKind;
@@ -33,8 +33,24 @@ export type KiCadItemChange = {
     refdes?: string;
     sourceSide?: "reference" | "comparison";
     retainReference?: boolean;
-    children: KiCadItemChange[];
+    children: NativeKiCadItemChange[];
 };
+
+/**
+ * Prism supplies native item identity and properties but deliberately leaves
+ * geometry to the parsed scene. Unlike KiCad's native ITEM_CHANGE contract,
+ * its bbox is optional.
+ */
+export type PrismItemChangeInput = Omit<
+    NativeKiCadItemChange,
+    "bbox" | "children"
+> & {
+    bbox?: [number, number, number, number];
+    children: PrismItemChangeInput[];
+};
+
+/** Normalized comparison item used after either boundary has been validated. */
+export type KiCadItemChange = PrismItemChangeInput;
 
 /** Browser representation of KICAD_DIFF::DOCUMENT_DIFF. */
 export type KiCadDocumentDiff = {
@@ -59,7 +75,7 @@ export type EcadIndexedChange = {
     change: KiCadItemChange;
     category: EcadDiffCategory;
     sourceSide: "reference" | "comparison";
-    worldBounds: BBox;
+    worldBounds?: BBox;
     parentId?: string;
     rootId: string;
 };
@@ -69,7 +85,7 @@ export type EcadDiffGroup = {
     category: EcadDiffCategory;
     label: string;
     members: EcadIndexedChange[];
-    worldBounds: BBox;
+    worldBounds?: BBox;
 };
 
 export type EcadDocumentDiffIndex = {
@@ -139,7 +155,11 @@ function parse_diff_value(value: unknown, label: string): KiCadDiffValue {
     };
 }
 
-function parse_change(value: unknown, label: string): KiCadItemChange {
+function parse_change(
+    value: unknown,
+    label: string,
+    bbox_required: boolean,
+): KiCadItemChange {
     const record = as_record(value, label);
     const kind = as_string(record["kind"], `${label}.kind`);
     if (!CHANGE_KINDS.has(kind as KiCadChangeKind)) {
@@ -152,6 +172,10 @@ function parse_change(value: unknown, label: string): KiCadItemChange {
         throw new TypeError(`${label}.children must be an array`);
     }
 
+    const bbox =
+        record["bbox"] === undefined && !bbox_required
+            ? undefined
+            : as_bbox(record["bbox"], `${label}.bbox`);
     return {
         id: as_string(record["id"], `${label}.id`),
         typeName: as_string(record["typeName"], `${label}.typeName`),
@@ -176,7 +200,7 @@ function parse_change(value: unknown, label: string): KiCadItemChange {
                 ),
             };
         }),
-        bbox: as_bbox(record["bbox"], `${label}.bbox`),
+        ...(bbox === undefined ? {} : { bbox }),
         ...(record["refdes"] === undefined
             ? {}
             : { refdes: as_string(record["refdes"], `${label}.refdes`) }),
@@ -200,13 +224,19 @@ function parse_change(value: unknown, label: string): KiCadItemChange {
                     );
                 })()),
         children: record["children"].map((child, index) =>
-            parse_change(child, `${label}.children[${index}]`),
+            parse_change(
+                child,
+                `${label}.children[${index}]`,
+                bbox_required,
+            ),
         ),
     };
 }
 
-/** Parse and validate native KiCad DOCUMENT_DIFF JSON at the viewer boundary. */
-export function parseKiCadDocumentDiff(value: unknown): KiCadDocumentDiff {
+function parse_document_diff(
+    value: unknown,
+    bbox_required: boolean,
+): KiCadDocumentDiff {
     const record = as_record(value, "DOCUMENT_DIFF");
     if (!Array.isArray(record["changes"])) {
         throw new TypeError("DOCUMENT_DIFF.changes must be an array");
@@ -215,9 +245,25 @@ export function parseKiCadDocumentDiff(value: unknown): KiCadDocumentDiff {
         path: as_string(record["path"], "DOCUMENT_DIFF.path"),
         docType: as_string(record["docType"], "DOCUMENT_DIFF.docType"),
         changes: record["changes"].map((change, index) =>
-            parse_change(change, `DOCUMENT_DIFF.changes[${index}]`),
+            parse_change(
+                change,
+                `DOCUMENT_DIFF.changes[${index}]`,
+                bbox_required,
+            ),
         ),
     };
+}
+
+/** Parse strict native KiCad DOCUMENT_DIFF JSON. Native bbox stays required. */
+export function parseKiCadDocumentDiff(value: unknown): KiCadDocumentDiff {
+    return parse_document_diff(value, true);
+}
+
+/** Parse Prism's identity-only DOCUMENT_DIFF input. */
+export function parsePrismDocumentDiffInput(
+    value: unknown,
+): KiCadDocumentDiff {
+    return parse_document_diff(value, false);
 }
 
 /** Parse and validate native KiCad PROJECT_DIFF JSON at the viewer boundary. */
@@ -229,6 +275,19 @@ export function parseKiCadProjectDiff(value: unknown): KiCadProjectDiff {
     return {
         documents: record["documents"].map((document) =>
             parseKiCadDocumentDiff(document),
+        ),
+    };
+}
+
+/** Parse Prism's identity-only PROJECT_DIFF input. */
+export function parsePrismProjectDiffInput(value: unknown): KiCadProjectDiff {
+    const record = as_record(value, "PROJECT_DIFF");
+    if (!Array.isArray(record["documents"])) {
+        throw new TypeError("PROJECT_DIFF.documents must be an array");
+    }
+    return {
+        documents: record["documents"].map((document) =>
+            parsePrismDocumentDiffInput(document),
         ),
     };
 }
@@ -279,8 +338,11 @@ function add_to_index<K, V>(map: Map<K, V[]>, key: K, value: V): void {
     map.set(key, values);
 }
 
-function combine_bounds(changes: EcadIndexedChange[]): BBox {
-    return BBox.combine(changes.map((change) => change.worldBounds));
+function combine_bounds(changes: EcadIndexedChange[]): BBox | undefined {
+    const bounds = changes.flatMap((change) =>
+        change.worldBounds ? [change.worldBounds] : [],
+    );
+    return bounds.length ? BBox.combine(bounds) : undefined;
 }
 
 function is_routing_change(change: KiCadItemChange): boolean {
@@ -318,7 +380,10 @@ export function buildDocumentDiffIndex(
             sourceSide:
                 change.sourceSide ??
                 (change.kind === "removed" ? "reference" : "comparison"),
-            worldBounds: bbox_to_world(change.bbox, units),
+            worldBounds:
+                change.bbox === undefined
+                    ? undefined
+                    : bbox_to_world(change.bbox, units),
             parentId,
             rootId,
         };

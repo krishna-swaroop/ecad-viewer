@@ -4,6 +4,7 @@ import {
     buildDocumentDiffIndex,
     parseKiCadDocumentDiff,
     parseKiCadProjectDiff,
+    parsePrismDocumentDiffInput,
     split_kiid_path,
     type KiCadDocumentDiff,
     type KiCadItemChange,
@@ -93,6 +94,32 @@ suite("KiCad DOCUMENT_DIFF contract", () => {
                 ],
             }),
         ).to.throw("not a KiCad change kind");
+    });
+
+    test("keeps native bbox strict while Prism identity input may omit it", () => {
+        const identityOnly = {
+            path: "main.kicad_sch",
+            docType: "kicad_sch",
+            changes: [
+                {
+                    id: "/symbol-uuid",
+                    typeName: "SCH_SYMBOL",
+                    kind: "modified",
+                    properties: [],
+                    children: [],
+                },
+            ],
+        };
+
+        expect(() => parseKiCadDocumentDiff(identityOnly)).to.throw(
+            "DOCUMENT_DIFF.changes[0].bbox must be four finite numbers",
+        );
+
+        const prism = parsePrismDocumentDiffInput(identityOnly);
+        expect(prism.changes[0]?.bbox).to.equal(undefined);
+        expect(buildDocumentDiffIndex(prism).changes[0]?.worldBounds).to.equal(
+            undefined,
+        );
     });
 
     test("converts KiCad internal units to viewer millimetres", () => {
