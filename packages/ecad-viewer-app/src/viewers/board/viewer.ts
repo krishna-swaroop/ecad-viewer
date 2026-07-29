@@ -325,6 +325,17 @@ export class BoardViewer extends DocumentViewer<
                     }),
                 );
             }
+        } else {
+            // Truly empty click (nothing under the cursor): emit an empty
+            // selection so the host can deselect. Previously nothing was
+            // dispatched here, so a click on bare board left the selection stuck.
+            this.dispatchEvent(
+                new KiCanvasSelectEvent({
+                    item: null,
+                    previous: null,
+                    intent: "select",
+                }),
+            );
         }
     }
 

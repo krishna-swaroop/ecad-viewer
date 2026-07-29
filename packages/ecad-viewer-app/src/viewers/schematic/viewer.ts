@@ -130,6 +130,17 @@ export class SchematicViewer extends DocumentViewer<
                     }
                 }
             }
+        } else {
+            // Background click: emit an empty selection so the host can deselect,
+            // matching the board viewer. Without this the schematic only cleared
+            // its own paint and the host kept the stale selection.
+            this.dispatchEvent(
+                new KiCanvasSelectEvent({
+                    item: null,
+                    previous: null,
+                    intent: "select",
+                }),
+            );
         }
         this.paint_selected(ct.bbox);
     }
