@@ -358,7 +358,7 @@ import { show_ecad_viewer } from "../eda_host/show_ecad_viewer";
 import "./ecad_viewer_global";
 import { ZipUtils } from "../utils/zip_utils";
 import { length } from "../base/iterator";
-import { HQ_LOGO } from "../kc-ui/hq_logo";
+import { PRISM_LOGO } from "../kc-ui/prism_logo";
 import type { BoardViewer } from "../viewers/board/viewer";
 import type { SchematicViewer } from "../viewers/schematic/viewer";
 
@@ -4348,16 +4348,24 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             ${this.#step_viewer_placeholder}
         </div>` as HTMLDivElement;
 
+        // Only a link when the host actually configured a destination.
+        // `href=${undefined}` rendered a literal href="undefined", giving a
+        // focusable control that navigated to a bogus relative path.
+        const corner_mark = window.ai_url
+            ? (html`<a
+                  href=${window.ai_url}
+                  class="bottom-left-icon"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="KiCAD Prism">
+                  ${PRISM_LOGO}
+              </a>` as HTMLElement)
+            : (html`<div class="bottom-left-icon" aria-hidden="true">
+                  ${PRISM_LOGO}
+              </div>` as HTMLElement);
+
         this.#content = html` <div class="vertical">
-            ${this.#tab_header} ${this.#viewers_container}
-            <a
-                href=${window.ai_url}
-                class="bottom-left-icon"
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label="Visit EDA website">
-                ${HQ_LOGO}
-            </a>
+            ${this.#tab_header} ${this.#viewers_container} ${corner_mark}
         </div>` as HTMLElement;
 
         // Optional headless mode: suppress the viewer's own built-in chrome so a
