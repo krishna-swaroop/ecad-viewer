@@ -1056,6 +1056,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             await viewer.load_diff_document(document as never, scenes.focus);
         }
         await viewer.load_diff_document(document as never, scenes.scene);
+        // Adopting a revision plain-loads it first. That scene is dead for the
+        // life of the comparison — a whole display list per pane retained for a
+        // presentation the pane will never return to.
+        viewer.release_cached_presentation(null);
         viewport.#active_diff_scenes = scenes;
         await viewport.#reveal_comparison_shell(
             context,

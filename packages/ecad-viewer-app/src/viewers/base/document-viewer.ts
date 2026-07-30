@@ -204,6 +204,30 @@ export abstract class DocumentViewer<
     }
 
     /**
+     * Drop one retained scene, disposing its layers unless they are the ones
+     * on screen.
+     *
+     * A pane adopts its revision by plain-loading it, then switches to a diff
+     * scene for the same document. That leaves the plain scene retained for a
+     * presentation the pane will never return to while the comparison is open
+     * — a whole board display list of dead weight per pane. Nothing evicts it,
+     * because the cache exists precisely to avoid repainting what you might go
+     * back to.
+     */
+    public release_cached_presentation(
+        presentation: EcadDiffPresentation | null,
+    ): boolean {
+        if (!this.document) return false;
+        const scenes = this.#presentation_scene_cache.get(this.document);
+        const cached = scenes?.get(presentation);
+        if (!scenes || !cached) return false;
+        if (cached.layers === this.layers) return false;
+        scenes.delete(presentation);
+        this.disposables.disposeAndRemove(cached.layers);
+        return true;
+    }
+
+    /**
      * Swap to an already-prepared display list without painting. Comparison
      * selection uses this to enter/leave the monochrome focus scene on a click.
      */
