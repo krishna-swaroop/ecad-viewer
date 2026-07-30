@@ -81,6 +81,7 @@ import {
 import {
     build_diff_focus_presentation,
     build_diff_presentation,
+    build_diff_side_presentation,
 } from "../viewers/base/diff-presentation";
 import { merge_bounds_resolution } from "../viewers/base/diff-presentation";
 import type {
@@ -252,10 +253,18 @@ export interface EcadComparisonSession {
     dispose(): void;
 }
 
+/** The retained scene shown in a pane, and its selection-focus twin. */
+type EcadDiffScenePair = {
+    scene: EcadDiffPresentation;
+    focus: EcadDiffPresentation;
+};
+
 type EcadComparisonSessionDocument = {
     preparation: EcadDocumentComparisonPreparation;
     presentation: EcadDiffPresentation;
     focusPresentation: EcadDiffPresentation;
+    /** Single-revision scenes for the Side by Side and Old/New panes. */
+    sideScenes: Record<"reference" | "comparison", EcadDiffScenePair>;
     referenceDocument: PaintableDocument & { filename: string };
     comparisonDocument: PaintableDocument & { filename: string };
     pendingTargets: ReadonlyMap<string, EcadPendingDiffTarget>;
@@ -298,40 +307,6 @@ function comparison_source_bytes(
             0,
         );
     return bytes(request.reference) + bytes(request.comparison);
-}
-
-function pending_targets_for_presentation(
-    targets: ReadonlyMap<string, EcadPendingDiffTarget>,
-    presentation: EcadComparisonPresentation,
-): ReadonlyMap<string, EcadPendingDiffTarget> {
-    if (presentation === "composite") return targets;
-    const side = presentation;
-    const filtered = new Map<string, EcadPendingDiffTarget>();
-    for (const [key, target] of targets) {
-        const visuals = target.visuals.filter(
-            (visual) => visual.sourceSide === side,
-        );
-        if (!visuals.length) continue;
-        const supplied = visuals.flatMap((visual) =>
-            visual.bounds &&
-            visual.bounds.every(Number.isFinite) &&
-            (visual.bounds[2] > 0 || visual.bounds[3] > 0)
-                ? [new BBox(...visual.bounds)]
-                : [],
-        );
-        const bounds = supplied.length ? BBox.combine(supplied) : undefined;
-        filtered.set(key, {
-            ...target,
-            sourceIds: visuals.map((visual) => visual.sourceId),
-            sourceSide: side,
-            bounds: bounds
-                ? [bounds.x, bounds.y, bounds.w, bounds.h]
-                : undefined,
-            routing: visuals.some((visual) => visual.routing),
-            visuals,
-        });
-    }
-    return filtered;
 }
 
 /**
@@ -547,14 +522,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     } | null = null;
     #document_comparison_cache = new Map<
         string,
-        {
-            preparation: EcadDocumentComparisonPreparation;
-            presentation: EcadDiffPresentation;
-            focusPresentation: EcadDiffPresentation;
-            referenceDocument: PaintableDocument & { filename: string };
-            comparisonDocument: PaintableDocument & { filename: string };
-            pendingTargets: ReadonlyMap<string, EcadPendingDiffTarget>;
-        }
+        EcadComparisonSessionDocument
     >();
     #document_comparison_request_id = 0;
     #document_comparison_load_generation = 0;
@@ -578,6 +546,13 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     #selected_document_diff: EcadDocumentComparisonSelection | null = null;
     #preview_document_diff: EcadDocumentComparisonSelection | null = null;
     #base_diff_layer_visibility: Map<string, boolean> | null = null;
+    /**
+     * Which retained scene pair is installed in *this* viewport. A session
+     * spreads one comparison over several viewports, each showing a different
+     * revision, so the scenes to swap between on selection cannot be read off
+     * the shared document — only off the pane.
+     */
+    #active_diff_scenes: EcadDiffScenePair | null = null;
     #diff_animation_frame: number | null = null;
     #diff_animation_started = 0;
     #diff_emphasis_painted = false;
@@ -1063,14 +1038,25 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             new Set([ECadViewer.#DIFF_SELECTION_CHANNEL]),
         );
         const paint_before = viewer.paint_count;
-        if (presentation_mode === "composite") {
-            await viewer.load_diff_document(
-                state.document.comparisonDocument as never,
-                state.document.presentation,
-            );
-        } else {
-            await viewer.load_plain_document(document as never);
+        // Every pane paints its revision through a diff scene, not plain.
+        // A base pane showing raw full-colour geometry cannot say which of
+        // its objects the review is about; the side scene subdues everything
+        // untouched and leaves the changed objects in their status colour,
+        // reading exactly like Composite.
+        const scenes =
+            presentation_mode === "composite"
+                ? {
+                      scene: state.document.presentation,
+                      focus: state.document.focusPresentation,
+                  }
+                : state.document.sideScenes[presentation_mode];
+        if (context === "PCB") {
+            // Warm the focus twin first so selection is a display-list swap
+            // rather than a repaint, then land on the scene actually shown.
+            await viewer.load_diff_document(document as never, scenes.focus);
         }
+        await viewer.load_diff_document(document as never, scenes.scene);
+        viewport.#active_diff_scenes = scenes;
         await viewport.#reveal_comparison_shell(
             context,
             document,
@@ -1081,19 +1067,20 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         const cached_preparation = state.preparedPresentations
             .get(viewport)
             ?.get(presentation_mode);
-        const pending = cached_preparation
+        const hydrated = cached_preparation
             ? null
-            : pending_targets_for_presentation(
+            : viewport.#hydrate_document_diff_targets(
+                  // Every target on every pane. Filtering by sourceSide left
+                  // the base pane able to focus removals only: a modified
+                  // track's single change carries sourceSide "comparison", so
+                  // the base pane dropped it entirely and clicking it did
+                  // nothing. Hydration against this pane's own scene resolves
+                  // tight native bounds where the object exists here and falls
+                  // back to the diff's supplied bbox where it does not.
                   state.document.pendingTargets,
-                  presentation_mode,
-              );
-        const hydrated = pending
-            ? viewport.#hydrate_document_diff_targets(
-                  pending,
-                  state.document.presentation,
+                  scenes.scene,
                   viewer,
-              )
-            : null;
+              );
         const targets = cached_preparation?.targets ?? hydrated!.targets;
         const side =
             presentation_mode === "composite" ? null : presentation_mode;
@@ -1194,6 +1181,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.#selected_document_diff = null;
         this.#preview_document_diff = null;
         this.#base_diff_layer_visibility = null;
+        this.#active_diff_scenes = null;
         this.#document_comparison = null;
         const same_sources =
             this.#document_comparison_key === request.comparisonKey &&
@@ -1237,6 +1225,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 cached.comparisonDocument as never,
                 cached.presentation,
             );
+            this.#active_diff_scenes = {
+                scene: cached.presentation,
+                focus: cached.focusPresentation,
+            };
             assert_current();
             const hydrated = this.#hydrate_document_diff_targets(
                 cached.pendingTargets,
@@ -1349,10 +1341,29 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             comparison_document,
         );
         const focus_presentation = build_diff_focus_presentation(presentation);
+        const side_scene = (
+            document: PaintableDocument,
+            side: "reference" | "comparison",
+        ): EcadDiffScenePair => {
+            const scene = build_diff_side_presentation(
+                prepared.index,
+                document,
+                side,
+            );
+            return { scene, focus: build_diff_focus_presentation(scene) };
+        };
+        const side_scenes = {
+            reference: side_scene(reference_document, "reference"),
+            comparison: side_scene(comparison_document, "comparison"),
+        };
         await viewer.load_diff_document(
             comparison_document as never,
             presentation,
         );
+        this.#active_diff_scenes = {
+            scene: presentation,
+            focus: focus_presentation,
+        };
         assert_current();
         await this.#reveal_comparison_shell(
             prepared.context,
@@ -1389,6 +1400,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             preparation: result,
             presentation,
             focusPresentation: focus_presentation,
+            sideScenes: side_scenes,
             referenceDocument: reference_document,
             comparisonDocument: comparison_document,
             pendingTargets: prepared.targets,
@@ -1599,19 +1611,14 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         const active = this.#active_diff_target();
         const viewer = active ? this.#viewer_for_context(active.context) : null;
         if (!active || !viewer) {
-            const comparison = this.#document_comparison;
-            const cached = comparison
-                ? this.#document_comparison_cache.get(comparison.document.path)
-                : null;
+            const scenes = this.#active_diff_scenes;
             const board_viewer = this.#safe_board_viewer();
             if (
                 board_viewer &&
-                cached &&
-                board_viewer.diff_presentation === cached.focusPresentation
+                scenes &&
+                board_viewer.diff_presentation === scenes.focus
             ) {
-                board_viewer.activate_cached_diff_presentation(
-                    cached.presentation,
-                );
+                board_viewer.activate_cached_diff_presentation(scenes.scene);
             }
             this.#base_diff_layer_visibility = null;
             this.#safe_schematic_viewer()?.clear_overlay_scene(
@@ -1623,26 +1630,20 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             return null;
         }
         let { target } = active;
-        const cached = this.#document_comparison_cache.get(
-            this.#document_comparison!.document.path,
-        );
+        const scenes = this.#active_diff_scenes;
         const board_viewer =
             active.context === "PCB" ? this.#safe_board_viewer() : null;
         if (
             board_viewer &&
-            cached &&
-            (board_viewer.diff_presentation === cached.presentation ||
-                board_viewer.diff_presentation === cached.focusPresentation)
+            scenes &&
+            (board_viewer.diff_presentation === scenes.scene ||
+                board_viewer.diff_presentation === scenes.focus)
         ) {
-            if (board_viewer.diff_presentation === cached.presentation) {
+            if (board_viewer.diff_presentation === scenes.scene) {
                 this.#base_diff_layer_visibility =
                     board_viewer.capture_diff_layer_visibility();
             }
-            if (
-                board_viewer.activate_cached_diff_presentation(
-                    cached.focusPresentation,
-                )
-            ) {
+            if (board_viewer.activate_cached_diff_presentation(scenes.focus)) {
                 const entries = new Map<
                     object,
                     {
@@ -1652,13 +1653,15 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                     }
                 >();
                 for (const visual of target.visuals) {
+                    // Resolve against *this pane's* scene. A side pane indexes
+                    // its own revision's objects under its own side key, so a
+                    // modified track resolves on both panes even though the
+                    // change itself names only one side.
                     const items =
-                        cached.presentation.itemsBySideAndSourceId.get(
+                        scenes.scene.itemsBySideAndSourceId.get(
                             `${visual.sourceSide}:${visual.sourceId}`,
                         ) ??
-                        cached.presentation.itemsBySourceId.get(
-                            visual.sourceId,
-                        ) ??
+                        scenes.scene.itemsBySourceId.get(visual.sourceId) ??
                         [];
                     for (const item of items) {
                         entries.set(item, {
@@ -1689,6 +1692,13 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 const selected_bounds = paint_entries.flatMap((entry) => [
                     ...board_viewer.layers.query_item_bboxes(entry.item),
                 ]);
+                board_viewer.clear_overlay_scene(
+                    ECadViewer.#DIFF_SELECTION_CHANNEL,
+                );
+                board_viewer.paint_diff_selection(
+                    paint_entries,
+                    this.#base_diff_layer_visibility ?? new Map(),
+                );
                 if (selected_bounds.length) {
                     const combined = BBox.combine(selected_bounds);
                     target = {
@@ -1700,16 +1710,15 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                             combined.h,
                         ],
                     };
+                    this.#emit_view_state_change();
+                    return target;
                 }
-                board_viewer.clear_overlay_scene(
-                    ECadViewer.#DIFF_SELECTION_CHANNEL,
-                );
-                board_viewer.paint_diff_selection(
-                    paint_entries,
-                    this.#base_diff_layer_visibility ?? new Map(),
-                );
-                this.#emit_view_state_change();
-                return target;
+                // Nothing native to paint here: an added object selected on the
+                // base pane, or a removed one on the compare pane. The scene
+                // stays subdued (paint_diff_selection with no entries cleared
+                // the previous highlight and restored layer visibility) and the
+                // dashed outline below marks where the object lands, so the two
+                // panes still point at the same place on the board.
             }
         }
 
@@ -2117,6 +2126,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.#cancel_diff_animation();
         this.#selected_document_diff = null;
         this.#preview_document_diff = null;
+        this.#base_diff_layer_visibility = null;
+        this.#active_diff_scenes = null;
         this.#document_comparison = null;
         this.#document_comparison_key = null;
         this.#document_comparison_revision_keys = null;

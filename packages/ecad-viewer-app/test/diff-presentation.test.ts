@@ -8,6 +8,7 @@ import {
     apply_diff_color,
     build_diff_focus_presentation,
     build_diff_presentation,
+    build_diff_side_presentation,
     index_paint_items,
     source_id_of,
 } from "../src/viewers/base/diff-presentation";
@@ -155,6 +156,61 @@ suite("native diff presentation", () => {
 
         expect(presentation.colorizeChanges).to.equal(true);
         expect(presentation.statusByItem.get(item)).to.equal("modified");
+    });
+
+    test("colors a modified object on the base pane, which names only the compare side", () => {
+        // The regression this exists to stop: a modified change carries
+        // sourceSide "comparison" only, so the composite scene indexes just the
+        // compare revision's object. Painting the base pane with it left every
+        // modification there reading as unchanged, and the pane could highlight
+        // removals and nothing else.
+        const baseTrack = new PaintItem("track-1");
+        const headTrack = new PaintItem("track-1");
+        const removedTrack = new PaintItem("track-2");
+        const addedTrack = new PaintItem("track-3");
+        const index = buildDocumentDiffIndex({
+            path: "root.kicad_pcb",
+            docType: "kicad_pcb",
+            changes: [
+                { ...change("/track-1", "modified"), typeName: "PCB_TRACK" },
+                { ...change("/track-2", "removed"), typeName: "PCB_TRACK" },
+                { ...change("/track-3", "added"), typeName: "PCB_TRACK" },
+            ],
+        });
+
+        const base = build_diff_side_presentation(
+            index,
+            new PaintDocument([baseTrack, removedTrack]),
+            "reference",
+        );
+        const head = build_diff_side_presentation(
+            index,
+            new PaintDocument([headTrack, addedTrack]),
+            "comparison",
+        );
+
+        // Modified resolves on both panes, against each pane's own object.
+        expect(base.statusByItem.get(baseTrack)).to.equal("modified");
+        expect(head.statusByItem.get(headTrack)).to.equal("modified");
+        expect(base.itemsBySideAndSourceId.get("reference:track-1")).to.deep.equal(
+            [baseTrack],
+        );
+        expect(
+            head.itemsBySideAndSourceId.get("comparison:track-1"),
+        ).to.deep.equal([headTrack]);
+
+        // Each one-sided object resolves only on the pane that actually has it.
+        expect(base.statusByItem.get(removedTrack)).to.equal("removed");
+        expect(head.itemsBySourceId.get("track-2")).to.equal(undefined);
+        expect(head.statusByItem.get(addedTrack)).to.equal("added");
+        expect(base.itemsBySourceId.get("track-3")).to.equal(undefined);
+
+        // Retained reference geometry is a composite affordance; on a single
+        // revision pane the other pane already shows it.
+        expect(base.referenceItems).to.deep.equal([]);
+        expect(head.referenceItems).to.deep.equal([]);
+        expect(base.colorizeChanges).to.equal(true);
+        expect(base.signature).to.not.equal(head.signature);
     });
 
     test("builds a monochrome focus scene without coloring every change", () => {

@@ -367,6 +367,86 @@ export function build_diff_presentation(
 }
 
 /**
+ * Retained scene for one revision shown on its own: the base pane of Side by
+ * Side, or either half of Old/New.
+ *
+ * These panes cannot reuse the composite scene. A change carries exactly one
+ * `sourceSide` — `removed` resolves into the reference document, `added` and
+ * `modified` into the comparison document — so the composite scene's index
+ * holds, for a modified track, only the *comparison* revision's object. Paint
+ * the base pane with it and every modification there reads as unchanged.
+ *
+ * So resolve every change against this one document's own items instead. A
+ * modified object is found on both sides and is coloured on both. An added
+ * object has no base-side item and a removed object has no compare-side item;
+ * those simply do not resolve here, which is correct — the pane is showing a
+ * revision in which the object does not exist.
+ *
+ * `referenceItems` is empty by construction: retaining removed geometry over
+ * the live document is a composite affordance. Here the other pane already
+ * shows it.
+ */
+export function build_diff_side_presentation(
+    diff: EcadDocumentDiffIndex,
+    document: PaintableDocument,
+    side: "reference" | "comparison",
+): EcadDiffPresentation {
+    const item_index = build_paint_item_index(document);
+    const status_by_item = new Map<object, EcadDiffPaintStatus>();
+    const items_by_source_id = new Map<string, readonly object[]>();
+    const items_by_side_and_source_id = new Map<string, readonly object[]>();
+    let source_resolved = 0;
+
+    for (const entry of diff.changes) {
+        if (!entry.sourceId) continue;
+        const item = first_item(item_index.bySourceId, entry.sourceId);
+        // Absent on this side. Not a diagnostic: an added object is *expected*
+        // to be missing from the base revision.
+        if (!item) continue;
+        source_resolved += 1;
+        const presentation_item = item_index.rootByItem.get(item) ?? item;
+        status_by_item.set(item, status_for(entry));
+        status_by_item.set(presentation_item, status_for(entry));
+        items_by_source_id.set(entry.sourceId, [presentation_item]);
+        items_by_side_and_source_id.set(`${side}:${entry.sourceId}`, [
+            presentation_item,
+        ]);
+    }
+
+    return {
+        signature: `${JSON.stringify({
+            path: diff.document.path,
+            docType: diff.document.docType,
+            changes: diff.changes.map((entry) => [
+                entry.id,
+                entry.category,
+                entry.sourceId,
+            ]),
+        })}:${side}`,
+        colorizeChanges: true,
+        statusByItem: status_by_item,
+        itemsBySourceId: items_by_source_id,
+        itemsBySideAndSourceId: items_by_side_and_source_id,
+        referenceItems: [],
+        diagnostics: [],
+        resolution: {
+            changes: diff.changes.length,
+            sourceResolved: source_resolved,
+            ambiguousSourceIds: 0,
+            duplicateChangeTargets: 0,
+            targets: 0,
+            targetsWithPaintedBounds: 0,
+            targetsUsingProvidedBounds: 0,
+            targetsNonFocusable: 0,
+            visuals: 0,
+            visualsWithPaintedBounds: 0,
+            visualsUsingProvidedBounds: 0,
+            visualsNonFocusable: 0,
+        },
+    };
+}
+
+/**
  * Alternate retained scene used while one comparison target is selected on a
  * board. Emptying the status map subdues *everything* — changed geometry
  * included — so the one selected footprint or route, replayed into the board
