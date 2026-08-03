@@ -5,7 +5,11 @@ import {
     type KiCadDocumentDiff,
 } from "../src/ecad-viewer/document-diff";
 import {
+    DIFF_SELECTION_COLOR,
     apply_diff_color,
+    diff_context_primitives,
+    diff_status_color,
+    removal_leaders,
     build_diff_focus_presentation,
     build_diff_presentation,
     build_diff_side_presentation,
@@ -542,8 +546,8 @@ suite("native diff presentation", () => {
             Math.min(lightContext.r, lightContext.g, lightContext.b);
         expect(darkRange).to.be.lessThan(0.001);
         expect(lightRange).to.be.lessThan(0.001);
-        expect(darkContext.a).to.be.closeTo(0.76, 0.001);
-        expect(lightContext.a).to.be.closeTo(0.76, 0.001);
+        expect(darkContext.a).to.be.closeTo(0.55, 0.001);
+        expect(lightContext.a).to.be.closeTo(0.55, 0.001);
         expect(darkContext.r).to.not.equal(lightContext.r);
     });
 
@@ -605,5 +609,115 @@ suite("native diff presentation", () => {
         expect(fit_adaptive_stroke_width(3, 2, 1)).to.equal(4);
         expect(fit_adaptive_stroke_width(3, 3, 1)).to.equal(3);
         expect(fit_adaptive_stroke_width(3, 6, 1)).to.equal(3);
+    });
+
+    test("traces a selected route along its own shape", () => {
+        // A box around everything a route passes through says less than the
+        // route's own path, which is what the reviewer is following.
+        const primitives = diff_context_primitives("net:GND", [
+            {
+                category: "modified",
+                routing: true,
+                bounds: [0, 0, 10, 10],
+                overlayLines: [
+                    [
+                        [0, 0],
+                        [10, 0],
+                    ],
+                ],
+            },
+        ]);
+
+        expect(primitives).to.have.length(1);
+        expect(primitives[0]!.kind).to.equal("polyline");
+        expect(primitives[0]!.stroke).to.equal(DIFF_SELECTION_COLOR);
+    });
+
+    test("marks selection in its own colour, not a status colour", () => {
+        // Status answers what happened; this answers what is being reviewed.
+        // One mark cannot carry both without a route becoming unfollowable
+        // wherever it crosses an object of a different status.
+        const primitives = diff_context_primitives("cmp:R1", [
+            {
+                category: "modified",
+                routing: false,
+                bounds: [0, 0, 4, 4],
+                overlayLines: [],
+            },
+        ]);
+
+        expect(primitives[0]!.kind).to.equal("bbox");
+        expect(primitives[0]!.stroke).to.equal(DIFF_SELECTION_COLOR);
+        expect(primitives[0]!.stroke).to.not.equal(
+            diff_status_color("modified").to_css(),
+        );
+    });
+
+    test("ties the pieces of one removal together with dashed leaders", () => {
+        // A connector and the pads that went with it are one act; the tie is
+        // what makes that legible without a second pane.
+        const leaders = removal_leaders("cmp:J4", [
+            {
+                category: "removed",
+                routing: false,
+                bounds: [0, 0, 10, 10],
+                overlayLines: [],
+            },
+            {
+                category: "removed",
+                routing: false,
+                bounds: [20, 0, 2, 2],
+                overlayLines: [],
+            },
+            {
+                category: "removed",
+                routing: false,
+                bounds: [0, 20, 2, 2],
+                overlayLines: [],
+            },
+        ]);
+
+        expect(leaders).to.have.length(2);
+        for (const leader of leaders) {
+            expect(leader.kind).to.equal("polyline");
+            expect(leader.stroke).to.equal(diff_status_color("removed").to_css());
+            expect(leader.dash).to.deep.equal([5, 4]);
+            // Every leader starts at the largest piece, the one the reviewer
+            // recognises as the object rather than one of its pads.
+            expect((leader as { points: Array<[number, number]> }).points[0])
+                .to.deep.equal([5, 5]);
+        }
+    });
+
+    test("draws no leader when a removal has only one piece", () => {
+        expect(
+            removal_leaders("cmp:R9", [
+                {
+                    category: "removed",
+                    routing: false,
+                    bounds: [0, 0, 4, 4],
+                    overlayLines: [],
+                },
+            ]),
+        ).to.deep.equal([]);
+    });
+
+    test("does not tie together pieces that were not removed", () => {
+        const leaders = removal_leaders("net:VCC", [
+            {
+                category: "added",
+                routing: false,
+                bounds: [0, 0, 10, 10],
+                overlayLines: [],
+            },
+            {
+                category: "modified",
+                routing: false,
+                bounds: [20, 0, 2, 2],
+                overlayLines: [],
+            },
+        ]);
+
+        expect(leaders).to.deep.equal([]);
     });
 });
