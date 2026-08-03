@@ -5,11 +5,11 @@
 */
 
 import { BBox, Matrix3, Vec2 } from "../../../base/math";
-import { NullRenderer } from "../../../graphics/null-renderer";
 import type { SchematicTheme } from "../../../kicad";
 import * as schematic_items from "../../../kicad/schematic";
-import { LayerNames, LayerSet, ViewLayer } from "../layers";
-import { SchematicPainter } from "../painter";
+import { dnp_marker_bbox, dnp_marker_color, paint_dnp_cross } from "../dnp";
+import { LayerNames, ViewLayer } from "../layers";
+import { SchematicMeasurer } from "../measure";
 import { SchematicItemPainter } from "./base";
 
 export class LibSymbolPainter extends SchematicItemPainter {
@@ -125,12 +125,16 @@ export class SchematicSymbolPainter extends SchematicItemPainter {
         }
 
         if (si.dnp && layer.name == LayerNames.marks) {
-            const bbox = get_symbol_body_and_pins_bbox(this.theme, si);
-            const width = schematic_items.DefaultValues.line_width * 3;
-            const color = this.theme.erc_error;
+            const { body, body_and_pins } = measure_symbol_bboxes(
+                this.theme,
+                si,
+            );
 
-            this.gfx.line([bbox.top_left, bbox.bottom_right], width, color);
-            this.gfx.line([bbox.bottom_left, bbox.top_right], width, color);
+            paint_dnp_cross(
+                this.gfx,
+                dnp_marker_bbox(body, body_and_pins),
+                dnp_marker_color(this.theme),
+            );
         }
 
         this.view_painter.current_symbol = undefined;
@@ -218,6 +222,42 @@ export function get_symbol_transform(
 }
 
 /**
+ * Measures the given symbol by painting it into a throwaway renderer.
+ *
+ * `body` covers the symbol graphics alone, `body_and_pins` adds the pins.
+ * Neither includes fields or other text items. These are the two boxes KiCad's
+ * SCH_SYMBOL::GetBodyBoundingBox and ::GetBodyAndPinsBoundingBox return, and
+ * the DNP marker needs both to size its margins.
+ */
+export function measure_symbol_bboxes(
+    theme: SchematicTheme,
+    si: schematic_items.SchematicSymbol,
+): { body: BBox; body_and_pins: BBox } {
+    const measurer = new SchematicMeasurer(theme);
+
+    const body = measurer.measure_all(
+        [LayerNames.symbol_foreground, LayerNames.symbol_background],
+        [si],
+    );
+
+    // LibSymbolPainter ignores the pin layer, so the pins have to be handed to
+    // PinPainter directly. It reads the owning symbol's transform out of the
+    // painter's cache, which only the regular paint pass populates.
+    const pins = si.unit_pins;
+    const transform = get_symbol_transform(si);
+    for (const pin of pins) {
+        measurer.painter.pin_transform.set(pin, transform);
+    }
+
+    const body_and_pins = BBox.combine([
+        body,
+        measurer.measure(LayerNames.symbol_pin, pins),
+    ]);
+
+    return { body, body_and_pins };
+}
+
+/**
  * Determines the bounding box for the given symbol, including only the body
  * and the pins, not any fields or text items.
  */
@@ -225,24 +265,5 @@ export function get_symbol_body_and_pins_bbox(
     theme: SchematicTheme,
     si: schematic_items.SchematicSymbol,
 ): BBox {
-    const gfx = new NullRenderer();
-    const layerset = new LayerSet(theme);
-    const painter = new SchematicPainter(gfx, layerset, theme);
-
-    const layer_names = [
-        LayerNames.symbol_foreground,
-        LayerNames.symbol_background,
-        LayerNames.symbol_pin,
-    ];
-
-    const bboxes = [];
-
-    for (const layer_name of layer_names) {
-        const layer = layerset.by_name(layer_name)!;
-        layer.items.push(si);
-        painter.paint_layer(layer);
-        bboxes.push(layer.bbox);
-    }
-
-    return BBox.combine(bboxes);
+    return measure_symbol_bboxes(theme, si).body_and_pins;
 }
