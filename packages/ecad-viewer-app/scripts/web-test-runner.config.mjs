@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import { defaultReporter, summaryReporter } from "@web/test-runner";
 import { chromeLauncher } from "@web/test-runner-chrome";
 import { esbuildPlugin } from "@web/dev-server-esbuild";
@@ -12,6 +14,16 @@ export default {
     plugins: [
         esbuildPlugin({
             ts: true,
+            target: "es2022",
+            // The app relies on `useDefineForClassFields: false` — several
+            // painters redeclare a base class's constructor-assigned property
+            // purely to narrow its type. Without the tsconfig, esbuild emits
+            // those as real field definitions that overwrite the constructor's
+            // value with `undefined`, and tests that exercise src/ directly
+            // (rather than the prebuilt bundle) fall over.
+            tsconfig: fileURLToPath(
+                new URL("../tsconfig.json", import.meta.url),
+            ),
             loaders: {
                 ".js": "ts",
                 ".glsl": "text",

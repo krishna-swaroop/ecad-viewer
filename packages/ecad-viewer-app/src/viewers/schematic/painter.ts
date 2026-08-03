@@ -19,7 +19,9 @@ import { type SchematicTheme } from "../../kicad";
 import * as schematic_items from "../../kicad/schematic";
 import { TextAttributes } from "../../kicad/text";
 import { LibText, SchField, SchText, StrokeFont } from "../../kicad/text";
+import { dnp_marker_bbox, dnp_marker_color, paint_dnp_cross } from "./dnp";
 import { LayerNames, LayerSet, ViewLayer } from "./layers";
+import { SchematicMeasurer } from "./measure";
 import { BaseSchematicPainter, SchematicItemPainter } from "./painters/base";
 import {
     GlobalLabelPainter,
@@ -608,24 +610,38 @@ class SchematicSheetPainter extends SchematicItemPainter {
     classes = [schematic_items.SchematicSheet];
 
     layers_for(item: schematic_items.SchematicSheet) {
-        return [
+        const layers = [
             LayerNames.interactive,
             LayerNames.sheet,
             LayerNames.symbol_foreground,
             LayerNames.symbol_background,
             LayerNames.symbol_field,
         ];
+
+        if (item.dnp) {
+            layers.push(LayerNames.marks);
+        }
+
+        return layers;
     }
 
     paint(layer: ViewLayer, ss: schematic_items.SchematicSheet) {
-        const outline_color = this.theme.sheet;
-        const fill_color = this.theme.sheet_background;
-        const bbox = new BBox(
-            ss.at.position.x,
-            ss.at.position.y,
-            ss.size.x,
-            ss.size.y,
-        );
+        // Publishing the sheet lets `is_dimmed` desaturate the box and every
+        // field painted underneath it, the way KiCad hands a sheet's DNP state
+        // down to its children.
+        this.view_painter.current_sheet = ss;
+
+        try {
+            this.#paint(layer, ss);
+        } finally {
+            this.view_painter.current_sheet = undefined;
+        }
+    }
+
+    #paint(layer: ViewLayer, ss: schematic_items.SchematicSheet) {
+        const outline_color = this.dim_if_needed(this.theme.sheet);
+        const fill_color = this.dim_if_needed(this.theme.sheet_background);
+        const bbox = sheet_body_bbox(ss);
 
         if (layer.name == LayerNames.interactive) {
             this.gfx.polygon(Polygon.from_BBox(bbox.grow(3), fill_color));
@@ -650,7 +666,38 @@ class SchematicSheetPainter extends SchematicItemPainter {
                 this.view_painter.paint_item(layer, property);
             }
         }
+
+        if (ss.dnp && layer.name == LayerNames.marks) {
+            paint_dnp_cross(
+                this.gfx,
+                dnp_marker_bbox(bbox, measure_sheet_bbox(this.theme, ss)),
+                dnp_marker_color(this.theme),
+            );
+        }
     }
+}
+
+/** The sheet rectangle alone — KiCad's SCH_SHEET::GetBodyBoundingBox. */
+function sheet_body_bbox(ss: schematic_items.SchematicSheet): BBox {
+    return new BBox(ss.at.position.x, ss.at.position.y, ss.size.x, ss.size.y);
+}
+
+/**
+ * The sheet rectangle plus everything hung off it — sheet pins and visible
+ * fields. KiCad's SCH_SHEET::GetBoundingBox; the DNP marker sizes its margins
+ * from how far this overhangs the body.
+ */
+function measure_sheet_bbox(
+    theme: SchematicTheme,
+    ss: schematic_items.SchematicSheet,
+): BBox {
+    const measurer = new SchematicMeasurer(theme);
+
+    return BBox.combine([
+        sheet_body_bbox(ss),
+        measurer.measure(LayerNames.label, ss.hierarchicalSheetPins),
+        measurer.measure(LayerNames.symbol_field, [...ss.properties.values()]),
+    ]);
 }
 
 class TablePainter extends SchematicItemPainter {

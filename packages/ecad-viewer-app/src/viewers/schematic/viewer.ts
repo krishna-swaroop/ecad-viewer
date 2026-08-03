@@ -23,6 +23,7 @@ import { ViewerType } from "../base/viewer";
 import { LayerNames, LayerSet } from "./layers";
 import { SchematicPainter } from "./painter";
 import { get_symbol_transform } from "./painters/symbol";
+import { apply_schematic_render_defaults } from "./render-state";
 import { StrokeFont, TextAttributes } from "../../kicad/text";
 import type { PinCheckResult } from "../../proto/component_erc_result";
 import type {
@@ -32,6 +33,7 @@ import type {
 
 export function get_sch_bbox(theme: SchematicTheme, sch: KicadSch): BBox {
     const gfx = new NullRenderer();
+    apply_schematic_render_defaults(gfx, theme);
     const layerset = new LayerSet(theme);
     const painter = new SchematicPainter(gfx, layerset, theme);
 
@@ -249,9 +251,7 @@ export class SchematicViewer extends DocumentViewer<
 
     override create_renderer(canvas: HTMLCanvasElement): Renderer {
         const renderer = new Canvas2DRenderer(canvas);
-        renderer.state.fill = this.theme.note;
-        renderer.state.stroke = this.theme.note;
-        renderer.state.stroke_width = 0.1524;
+        apply_schematic_render_defaults(renderer, this.theme);
         renderer.background_color = Color.gray;
         return renderer;
     }

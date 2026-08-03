@@ -51,9 +51,11 @@ export abstract class LabelPainter extends SchematicItemPainter {
             this.get_schematic_text_offset(l, schtext),
         );
 
+        const color = this.dim_if_needed(this.color);
+
         this.gfx.state.push();
-        this.gfx.state.stroke = this.color;
-        this.gfx.state.fill = this.color;
+        this.gfx.state.stroke = color;
+        this.gfx.state.fill = color;
 
         StrokeFont.default().draw(
             this.gfx,
@@ -384,4 +386,17 @@ export class HierarchicalLabelPainter extends LabelPainter {
 
 export class HierarchicalSheetPinPainter extends HierarchicalLabelPainter {
     override classes: any[] = [schematic_items.HierarchicalSheetPin];
+
+    override paint(layer: ViewLayer, l: schematic_items.HierarchicalSheetPin) {
+        // Sheet pins are painted as free-standing items, outside the sheet's
+        // own paint pass, so the sheet has to be published here for them to
+        // inherit its DNP dimming the way KiCad's do.
+        this.view_painter.current_sheet = l.sheet;
+
+        try {
+            super.paint(layer, l);
+        } finally {
+            this.view_painter.current_sheet = undefined;
+        }
+    }
 }

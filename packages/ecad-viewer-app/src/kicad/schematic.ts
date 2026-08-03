@@ -532,9 +532,8 @@ export class Image {
         }
 
         this.#img = html` <img
-            src="data:image/png;base64,  ${
-                this.data
-            }  " />` as HTMLImageElement;
+            src="data:image/png;base64,  ${this
+                .data}  " />` as HTMLImageElement;
     }
 }
 
@@ -778,7 +777,14 @@ export class HierarchicalLabel extends Label {
     }
 }
 
-export class HierarchicalSheetPin extends HierarchicalLabel {}
+export class HierarchicalSheetPin extends HierarchicalLabel {
+    /**
+     * The sheet this pin belongs to. These pins are derived objects rebuilt on
+     * every read, so they carry the link themselves rather than being reachable
+     * from the sheet — the painter needs it to inherit the sheet's DNP state.
+     */
+    sheet?: SchematicSheet;
+}
 
 export class LibSymbols {
     *getChildren() {
@@ -1623,6 +1629,8 @@ export class SchematicSheet {
     fields_autoplaced: boolean;
     stroke: Stroke;
     fill: Fill;
+    /** KiCad 9 lets a hierarchical sheet be marked "do not populate". */
+    dnp = false;
     properties: Map<string, Property> = new Map();
     pins: SchematicSheetPin[] = [];
     uuid: string;
@@ -1635,6 +1643,7 @@ export class SchematicSheet {
 
         for (const pin of this.pins) {
             const label = new HierarchicalSheetPin();
+            label.sheet = this;
             label.at = pin.at.copy();
             label.effects = pin.effects;
             label.text = pin.name;
@@ -1685,6 +1694,7 @@ export class SchematicSheet {
         this.stroke = new Stroke(data.stroke);
         this.fill = data.fill ? new Fill(data.fill) : (undefined as any);
         this.fields_autoplaced = data.fields_autoplaced ?? false;
+        this.dnp = data.dnp ?? false;
         this.uuid = data.uuid;
         this.properties = new Map(
             data.properties?.map((p) => [p.name, new Property(p, this)]),

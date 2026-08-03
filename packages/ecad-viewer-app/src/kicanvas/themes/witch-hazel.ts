@@ -103,6 +103,7 @@ const theme: Theme = {
         component_body: Color.from_css("rgb(67, 62, 86)"),
         component_outline: Color.from_css("rgb(197, 163, 255)"),
         cursor: Color.from_css("rgb(220, 200, 255)"),
+        dnp_marker: Color.from_css("rgba(255, 55, 162, 0.850)"),
         erc_error: Color.from_css("rgba(255, 55, 162, 0.800)"),
         erc_warning: Color.from_css("rgba(255, 92, 0, 0.800)"),
         fields: Color.from_css("rgb(174, 129, 255)"),

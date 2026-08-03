@@ -107,6 +107,7 @@ const theme: Theme = {
         component_body: Color.from_css("rgb(255, 255, 194)"),
         component_outline: Color.from_css("rgb(132, 0, 0)"),
         cursor: Color.from_css("rgb(15, 15, 15)"),
+        dnp_marker: Color.from_css("rgba(220, 9, 13, 0.850)"),
         erc_error: Color.from_css("rgba(230, 9, 13, 0.800)"),
         // erc_exclusion: Color.from_css("rgba(94, 194, 194, 0.800)"),
         erc_warning: Color.from_css("rgba(209, 146, 0, 0.800)"),

@@ -112,6 +112,12 @@ export interface SchematicTheme extends BaseTheme {
     component_body: Color;
     component_outline: Color;
     cursor: Color;
+    /**
+     * KiCad's `schematic.dnp_marker` layer color. Optional so themes written
+     * before DNP markers existed still typecheck; painters fall back to
+     * `erc_error`.
+     */
+    dnp_marker?: Color;
     erc_error: Color;
     erc_warning: Color;
     fields: Color;
