@@ -21,7 +21,6 @@ import type { KCBoardLayersPanelElement } from "../../kicanvas/elements/kc-board
 import { DocumentViewer } from "../base/document-viewer";
 import { KiCanvasFitterMenuEvent, KiCanvasSelectEvent } from "../base/events";
 import type { VisibilityType } from "../base/view-layers";
-import type { EcadDiffPaintStatus } from "../base/diff-presentation";
 import { ViewerType } from "../base/viewer";
 import type {
     EcadOverlayAnchor,
@@ -31,13 +30,18 @@ import {
     LayerNames,
     LayerSet,
     ViewLayer,
-    copper_layers_between,
 } from "./layers";
 import { BoardPainter } from "./painter";
+import {
+    diff_selection_copper_layers,
+    type BoardDiffSelectionEntry,
+} from "./diff-layers";
 import { OrderedMap } from "immutable";
 const log = new Logger("pcb:viewer");
 
 export const ZONE_DEFAULT_OPACITY = 0.6;
+
+export type { BoardDiffSelectionEntry } from "./diff-layers";
 
 export class BoardViewer extends DocumentViewer<
     board_items.KicadPCB,
@@ -192,11 +196,7 @@ export class BoardViewer extends DocumentViewer<
      * copper layers actually used by the selected segments/vias.
      */
     public paint_diff_selection(
-        entries: ReadonlyArray<{
-            item: object;
-            status: Exclude<EcadDiffPaintStatus, "unchanged">;
-            routing: boolean;
-        }>,
+        entries: ReadonlyArray<BoardDiffSelectionEntry>,
         base_visibility: ReadonlyMap<string, boolean>,
     ): void {
         const routing_type_ids = new Set(["LineSegment", "ArcSegment", "Via"]);
@@ -207,28 +207,9 @@ export class BoardViewer extends DocumentViewer<
                     (entry.item as { typeId?: string }).typeId ?? "",
                 ),
         );
-        const selected_layers = new Set<string>();
-        if (routing) {
-            for (const { item } of entries) {
-                const candidate = item as {
-                    layer?: string | { name?: string };
-                    layers?: string[];
-                };
-                const layer =
-                    typeof candidate.layer === "string"
-                        ? candidate.layer
-                        : candidate.layer?.name;
-                if (layer?.endsWith(".Cu")) selected_layers.add(layer);
-                if (candidate.layers?.length === 2) {
-                    for (const name of copper_layers_between(
-                        candidate.layers[0]!,
-                        candidate.layers[1]!,
-                    )) {
-                        selected_layers.add(name);
-                    }
-                }
-            }
-        }
+        const selected_layers = routing
+            ? diff_selection_copper_layers(entries)
+            : new Set<string>();
 
         for (const layer of this.layers.in_ui_order()) {
             layer.visible =
