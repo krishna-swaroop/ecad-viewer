@@ -16,6 +16,7 @@ export abstract class BaseSchematicPainter extends DocumentPainter {
     override theme: SchematicTheme;
     current_symbol?: schematic_items.SchematicSymbol;
     current_symbol_transform?: SymbolTransform;
+    current_sheet?: schematic_items.SchematicSheet;
 }
 
 export abstract class SchematicItemPainter extends ItemPainter {
@@ -26,7 +27,12 @@ export abstract class SchematicItemPainter extends ItemPainter {
     }
 
     protected get is_dimmed() {
-        return this.view_painter.current_symbol?.dnp ?? false;
+        // KiCad passes the owner's DNP state down into every child it draws —
+        // a symbol's fields and pins, a sheet's fields and sheet pins.
+        return (
+            (this.view_painter.current_symbol?.dnp ?? false) ||
+            (this.view_painter.current_sheet?.dnp ?? false)
+        );
     }
 
     protected dim_color(color: Color) {

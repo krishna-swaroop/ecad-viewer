@@ -13,7 +13,8 @@ import { measure_symbol_bboxes } from "../src/viewers/schematic/painters/symbol"
 const theme = kicad_default_theme.schematic;
 
 /**
- * Two passives placed side by side, both marked DNP, plus one that is not.
+ * Two passives placed side by side, both marked DNP, plus one that is not, plus
+ * a DNP hierarchical sheet.
  *
  * `RZERO` is the shape of KiCad's stock `Device:R_Small_US`: every graphic
  * declares `(stroke (width 0))`, meaning "use the document default". `CWIDE` is
@@ -109,6 +110,26 @@ const FIXTURE = `
     (pin "1" (uuid "00000000-0000-0000-0000-0000000000p5"))
     (pin "2" (uuid "00000000-0000-0000-0000-0000000000p6"))
   )
+  (sheet
+    (at 40 40) (size 30 20)
+    (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp yes)
+    (stroke (width 0.1524) (type solid))
+    (fill (color 0 0 0 0.0000))
+    (uuid "00000000-0000-0000-0000-0000000000s1")
+    (pin "OPT_IN" input (at 40 50 180) (uuid "00000000-0000-0000-0000-0000000000n1") (effects (font (size 1.27 1.27)) (justify left)))
+    (property "Sheetname" "Optional" (at 40 39 0) (effects (font (size 1.27 1.27)) (justify left bottom)))
+    (property "Sheetfile" "optional.kicad_sch" (at 40 61 0) (effects (font (size 1.27 1.27)) (justify left top)))
+  )
+  (sheet
+    (at 90 40) (size 30 20)
+    (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no)
+    (stroke (width 0.1524) (type solid))
+    (fill (color 0 0 0 0.0000))
+    (uuid "00000000-0000-0000-0000-0000000000s2")
+    (pin "ALW_IN" input (at 90 50 180) (uuid "00000000-0000-0000-0000-0000000000n2") (effects (font (size 1.27 1.27)) (justify left)))
+    (property "Sheetname" "Always" (at 90 39 0) (effects (font (size 1.27 1.27)) (justify left bottom)))
+    (property "Sheetfile" "always.kicad_sch" (at 90 61 0) (effects (font (size 1.27 1.27)) (justify left top)))
+  )
 )
 `;
 
@@ -123,6 +144,14 @@ function symbol_by_reference(sch: KicadSch, reference: string) {
         }
     }
     throw new Error(`no symbol ${reference} in the fixture`);
+}
+
+function sheet_by_name(sch: KicadSch, name: string) {
+    const sheet = sch.sheets.find((s) => s.sheetname == name);
+    if (!sheet) {
+        throw new Error(`no sheet ${name} in the fixture`);
+    }
+    return sheet;
 }
 
 /** Paint one layer of the whole document and hand back what got drawn. */
@@ -207,19 +236,25 @@ suite("schematic DNP markers", () => {
         expect(layers_for(symbol_by_reference(sch, "R2"))).to.not.include(
             LayerNames.marks,
         );
+        expect(layers_for(sheet_by_name(sch, "Optional"))).to.include(
+            LayerNames.marks,
+        );
+        expect(layers_for(sheet_by_name(sch, "Always"))).to.not.include(
+            LayerNames.marks,
+        );
     });
 
     test("paints a cross over every DNP item and nothing else", () => {
         const sch = load();
         const marks = paint_layer(sch, LayerNames.marks);
 
-        // Two DNP symbols, two diagonals each.
+        // Two DNP symbols and one DNP sheet, two diagonals each.
         const shapes = (marks.graphics as unknown as { shapes: unknown[] })
             .shapes;
-        expect(shapes.length).to.equal(4);
+        expect(shapes.length).to.equal(6);
 
         const boxes = [...marks.bboxes.entries()];
-        expect(boxes.length).to.equal(2);
+        expect(boxes.length).to.equal(3);
 
         for (const [item, bbox] of boxes) {
             expect(bbox.valid, `${item} has an empty marker`).to.be.true;
@@ -230,5 +265,43 @@ suite("schematic DNP markers", () => {
         const r1 = marks.bboxes.get(symbol_by_reference(sch, "R1"))!;
         expect(r1.center.x).to.be.closeTo(100, 0.5);
         expect(r1.center.y).to.be.closeTo(100, 0.5);
+
+        const sheet = marks.bboxes.get(sheet_by_name(sch, "Optional"))!;
+        expect(sheet.center.x).to.be.closeTo(55, 1);
+        expect(sheet.center.y).to.be.closeTo(50, 2);
+    });
+
+    test("a DNP sheet dims its pins along with its box", () => {
+        const sch = load();
+        const label_colors = new Map<string, Set<string>>();
+
+        for (const name of ["Optional", "Always"]) {
+            const sheet = sheet_by_name(sch, name);
+            const gfx = new NullRenderer();
+            const layers = new LayerSet(theme);
+            const painter = new SchematicPainter(gfx, layers, theme);
+            const layer = layers.by_name(LayerNames.label)!;
+
+            layer.items.push(...sheet.hierarchicalSheetPins);
+            painter.paint_layer(layer);
+
+            const shapes = (
+                layer.graphics as unknown as {
+                    shapes: { color: { to_css(): string } }[];
+                }
+            ).shapes;
+            label_colors.set(
+                name,
+                new Set(shapes.map((s) => s.color.to_css())),
+            );
+        }
+
+        const dimmed = label_colors.get("Optional")!;
+        const plain = label_colors.get("Always")!;
+
+        expect(plain.size).to.be.greaterThan(0);
+        expect(dimmed.size).to.be.greaterThan(0);
+        // Same geometry, different colour: the DNP sheet's pins are desaturated.
+        expect([...dimmed].some((c) => plain.has(c))).to.be.false;
     });
 });
