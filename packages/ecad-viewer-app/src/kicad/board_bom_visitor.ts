@@ -38,12 +38,18 @@ export class BoardBomItemVisitor extends BoardVisitorBase {
         };
 
         this.#bom_list.push(schematicSymbol);
-        const existing_refs = this.designator_refs.get(node.Reference) ?? [];
-        existing_refs.push({
-            uuid: node.uuid,
-            sheet_name: "not_available",
-        });
-        this.designator_refs.set(node.Reference, existing_refs);
+        // Both are what a cross-probe resolves against: without a designator
+        // there is nothing to look the footprint up by, and without a uuid
+        // there is nothing to select once it is found.
+        if (node.Reference && node.uuid) {
+            const existing_refs =
+                this.designator_refs.get(node.Reference) ?? [];
+            existing_refs.push({
+                uuid: node.uuid,
+                sheet_name: "not_available",
+            });
+            this.designator_refs.set(node.Reference, existing_refs);
+        }
         return true;
     }
 }

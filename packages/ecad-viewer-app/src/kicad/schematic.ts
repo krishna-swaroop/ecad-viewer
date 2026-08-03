@@ -60,13 +60,13 @@ export const DefaultValues = {
 };
 
 export class KicadSch {
-    version: number;
+    version?: number;
     generator?: string;
-    uuid: string;
+    uuid?: string;
     paper?: Paper;
     title_block = new TitleBlock();
     lib_symbols?: LibSymbols;
-    generator_version: string;
+    generator_version?: string;
     wires: Wire[] = [];
     buses: Bus[] = [];
     bus_entries: BusEntry[] = [];
@@ -359,7 +359,7 @@ export class BusAlias {
 
     constructor(data: schematicProto.I_BusAlias) {
         this.name = data.name;
-        this.members = data.members;
+        this.members = data.members ?? [];
     }
 }
 
@@ -915,7 +915,11 @@ export class LibSymbol {
         }
 
         for (const property of this.properties.values()) {
-            this.#properties_by_id.set(property.id, property);
+            // A property the file left unnumbered cannot be looked up by id;
+            // indexing it would collide every such property on `undefined`.
+            if (property.id !== undefined) {
+                this.#properties_by_id.set(property.id, property);
+            }
         }
 
         for (const child of this.children) {
@@ -1069,7 +1073,7 @@ export class LibSymbol {
 export class Property {
     name: string;
     text: string;
-    id: number;
+    id?: number;
     at: At;
     show_name = false;
     do_not_autoplace = false;
@@ -1206,7 +1210,7 @@ export class SchematicSymbol {
     properties: Map<string, Property> = new Map();
     pins: PinInstance[] = [];
     exclude_from_sim = false;
-    default_instance: {
+    default_instance?: {
         reference: string;
         unit: string;
         value: string;

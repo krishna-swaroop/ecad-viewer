@@ -319,7 +319,7 @@ export class BoardBBoxVisitor extends BoardVisitorBase {
         const p = new PadInteractiveItem(
             pad.bbox,
             Depth.PAD,
-            pad?.net?.number,
+            pad?.net?.number ?? null,
             pad,
             new Set(pad.layers),
         );

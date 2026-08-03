@@ -8,15 +8,10 @@ import { Color } from "../base/color";
 import { BBox, Vec2 } from "../base/math";
 import { Paper, expand_text_vars } from "./common";
 import default_sheet from "./default_drawing_sheet.kicad_wks";
-import {
-    parse_drawing_sheet,
-    I_DrawingSheet,
-    I_TbText,
-    I_Bitmap,
-    I_Polygon,
-    I_Rect,
-    I_Line,
-} from "kicad-parser";
+// The parser publishes these shapes as a namespace, not as bare names — and
+// most of this file already spelled them `DS.*` while the imports above did
+// not, so neither half resolved.
+import { parse_drawing_sheet, drawingSheetProto as DS } from "kicad-parser";
 
 export type DrawingSheetDocument = {
     paper?: Paper;
@@ -35,7 +30,7 @@ export class DrawingSheet {
     sheet_name = "";
     kicad_version = "";
 
-    constructor(data: I_DrawingSheet) {
+    constructor(data: DS.I_DrawingSheet) {
         this.version = data.version;
         this.generator = data.generator;
         this.setup = new Setup(data.setup);
@@ -43,15 +38,15 @@ export class DrawingSheet {
         if (data.drawings) {
             for (const d of data.drawings) {
                 if (d.kind === "tbtext") {
-                    this.drawings.push(new TbText(d as I_TbText, this));
+                    this.drawings.push(new TbText(d as DS.I_TbText, this));
                 } else if (d.kind === "bitmap") {
-                    this.drawings.push(new Bitmap(d as I_Bitmap, this));
+                    this.drawings.push(new Bitmap(d as DS.I_Bitmap, this));
                 } else if (d.kind === "polygon") {
-                    this.drawings.push(new Polygon(d as I_Polygon, this));
+                    this.drawings.push(new Polygon(d as DS.I_Polygon, this));
                 } else if (d.kind === "rect") {
-                    this.drawings.push(new Rect(d as I_Rect, this));
+                    this.drawings.push(new Rect(d as DS.I_Rect, this));
                 } else if (d.kind === "line") {
-                    this.drawings.push(new Line(d as I_Line, this));
+                    this.drawings.push(new Line(d as DS.I_Line, this));
                 }
             }
         }

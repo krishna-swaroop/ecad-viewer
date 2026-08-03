@@ -6,15 +6,8 @@
 
 import { Color } from "../base/color";
 import { Vec2 } from "../base/math";
-import type {
-    I_At,
-    I_Effects,
-    I_Font,
-    I_Justify,
-    I_Paper,
-    I_Stroke,
-    I_TitleBlock,
-} from "kicad-parser";
+// Published by the parser as a namespace rather than as bare names.
+import type { commonProto } from "kicad-parser";
 
 export function unescape_string(str: string): string {
     const escape_vars = {
@@ -76,7 +69,7 @@ export class At {
     rotation = 0;
     unlocked = false;
 
-    constructor(expr?: I_At) {
+    constructor(expr?: commonProto.I_At) {
         if (expr) {
             if (expr.position) {
                 this.position.set(expr.position.x ?? 0, expr.position.y ?? 0);
@@ -121,7 +114,7 @@ export class Paper {
     height?: number;
     portrait = false;
 
-    constructor(expr: I_Paper) {
+    constructor(expr: commonProto.I_Paper) {
         Object.assign(this, expr);
 
         const paper_size = PaperSize[this.size];
@@ -147,7 +140,7 @@ export class TitleBlock {
     company = "";
     comment: Record<string, string> = {};
 
-    constructor(expr?: I_TitleBlock) {
+    constructor(expr?: commonProto.I_TitleBlock) {
         if (expr) {
             Object.assign(this, expr);
         }
@@ -177,7 +170,7 @@ export class Effects {
     justify = new Justify();
     hide = false;
 
-    constructor(expr?: I_Effects) {
+    constructor(expr?: commonProto.I_Effects) {
         if (expr) {
             if (expr.font) this.font = new Font(expr.font);
             if (expr.justify) this.justify = new Justify(expr.justify);
@@ -202,7 +195,7 @@ export class Font {
     italic = false;
     color: Color = Color.transparent_black;
 
-    constructor(expr?: I_Font) {
+    constructor(expr?: commonProto.I_Font) {
         if (expr) {
             this.face = expr.face;
             if (expr.size) {
@@ -239,7 +232,7 @@ export class Justify {
     vertical: "top" | "center" | "bottom" = "center";
     mirror = false;
 
-    constructor(expr?: I_Justify) {
+    constructor(expr?: commonProto.I_Justify) {
         if (expr) {
             this.horizontal = expr.horiz ?? "center";
             this.vertical = expr.vert ?? "center";
@@ -262,7 +255,7 @@ export class Stroke {
         "default";
     color?: Color;
 
-    constructor(expr: I_Stroke) {
+    constructor(expr: commonProto.I_Stroke) {
         if (expr) {
             this.width = expr.width;
             this.type = expr.type ?? "default";

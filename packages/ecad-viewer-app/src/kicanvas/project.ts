@@ -291,7 +291,6 @@ export class Project extends EventTarget implements IDisposable {
     }
 
     public static async import_cjk_glyphs() {
-        // @ts-expect-error It's imported in the import map
         const glyphModule = (window as Window & {
             ecadGlyphModuleName?: string;
         }).ecadGlyphModuleName ?? "glyph-full";
@@ -510,7 +509,7 @@ export class Project extends EventTarget implements IDisposable {
         const pod = await dedup_parse(blob.filename, blob.content, () => {
             const buffer = new TextEncoder().encode(blob.content).buffer;
             return this._pool.run(async (worker) => {
-                if (perf) await worker.set_perf_log?.(true);
+                if (perf) await worker.set_perf_log(true);
                 return is_pcb
                     ? worker.parse_board(Comlink.transfer(buffer, [buffer]))
                     : worker.parse_schematic(

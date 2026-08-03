@@ -1,5 +1,5 @@
 
-import type { I_Vec2, I_Color, I_Paper } from "./common";
+import type { I_Vec2, I_Color } from "./common";
 
 export interface I_Setup {
     linewidth?: number;

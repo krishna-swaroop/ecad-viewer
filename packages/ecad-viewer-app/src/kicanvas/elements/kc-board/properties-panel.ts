@@ -275,7 +275,7 @@ export class KCBoardPropertiesPanelElement extends KCUIElement {
             ${this.entry("Priority", zone.priority)}
             ${this.entry("Net", zone.net_name)}
             ${this.header("Zone properties")}
-            ${this.entry("File Mode", zone.fill.mode)}
+            ${this.entry("File Mode", zone.fill?.mode)}
             ${this.entry("Clearance Override", zone.connect_pads.clearance)}
             ${this.entry("Minimum width", zone.min_thickness, "mm")}
             ${this.entry(
@@ -283,10 +283,10 @@ export class KCBoardPropertiesPanelElement extends KCUIElement {
                 zone.connect_pads.type ?? "Thermal reliefs",
             )}
             ${this.entry("Minimum width", zone.min_thickness, "mm")}
-            ${this.entry("Thermal Relief Gap", zone.fill.thermal_gap, "mm")}
+            ${this.entry("Thermal Relief Gap", zone.fill?.thermal_gap, "mm")}
             ${this.entry(
                 "Thermal Relief Spoke Width",
-                zone.fill.thermal_bridge_width,
+                zone.fill?.thermal_bridge_width,
                 "mm",
             )}
         `;

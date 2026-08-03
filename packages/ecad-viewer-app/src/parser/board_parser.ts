@@ -15,8 +15,6 @@ import {
 } from "./common";
 import { listify, type List } from "./tokenizer";
 
-const is_string = (e: any): e is string => typeof e === "string";
-
 function parseLayer(expr: Parseable): B.I_Layer {
     return parse_expr(
         expr,

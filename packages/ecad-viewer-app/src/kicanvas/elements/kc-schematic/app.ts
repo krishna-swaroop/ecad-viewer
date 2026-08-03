@@ -14,6 +14,7 @@ import "./properties-panel";
 import "./viewer";
 import "./erc-inspector";
 import type { KCErcInspectorElement } from "./erc-inspector";
+import type { PinCheckResult } from "../../../proto/component_erc_result";
 
 import { KicadSch } from "../../../kicad";
 import { SchematicSheet } from "../../../kicad/schematic";
@@ -87,8 +88,8 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
         window.addEventListener(SelectDesignatorEvent.type, (e) => {
             const refs = this.project.find_designator(e.detail.designator);
 
-            if (refs && refs.length > 0) {
-                const ref = refs[0];
+            const ref = refs?.[0];
+            if (ref) {
                 this.#select_item({
                     sheet: ref.sheet_name,
                     uuid: ref.uuid,
@@ -137,10 +138,13 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
                 ([uuid, pins]) => ({ uuid, pins }),
             );
 
-            const first_ref = this.project.find_designator_by_pin(
-                designator,
-                component_erc_result.pins[0].pin_num,
-            );
+            const first_pin = component_erc_result.pins[0];
+            const first_ref = first_pin
+                ? this.project.find_designator_by_pin(
+                    designator,
+                    first_pin.pin_num,
+                )
+                : null;
 
             if (first_ref) {
                 if (first_ref.sheet_name !== this.sch_viewer.sch_name) {
@@ -151,11 +155,9 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
                 }
 
                 setTimeout(() => {
-                    if (erc_items.length === 1) {
-                        this.sch_viewer.show_erc(
-                            erc_items[0].uuid,
-                            erc_items[0].pins,
-                        );
+                    const only = erc_items.length === 1 ? erc_items[0] : null;
+                    if (only) {
+                        this.sch_viewer.show_erc(only.uuid, only.pins);
                     } else {
                         this.sch_viewer.show_erc_multi(erc_items);
                     }
@@ -250,11 +252,9 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
                 }
 
                 setTimeout(() => {
-                    if (erc_items.length === 1) {
-                        this.sch_viewer.show_erc(
-                            erc_items[0].uuid,
-                            erc_items[0].pins,
-                        );
+                    const only = erc_items.length === 1 ? erc_items[0] : null;
+                    if (only) {
+                        this.sch_viewer.show_erc(only.uuid, only.pins);
                     } else {
                         this.sch_viewer.show_erc_multi(erc_items);
                     }

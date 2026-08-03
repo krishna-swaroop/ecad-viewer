@@ -35,6 +35,20 @@ type PropertyDefinition = {
     fn: TypeProcessor;
 };
 
+/**
+ * Positional read from an s-expression's own list.
+ *
+ * `(at x y)` and `(color r g b a)` carry their values by position — the parser
+ * only reaches these processors once the token has matched — but indexed access
+ * is typed `T | undefined`, so the coordinates have to be read through
+ * something that says what happens when the file lies. A malformed expression
+ * yields 0 rather than an `undefined` that would surface much later as NaN
+ * geometry.
+ */
+function at(values: number[], index: number): number {
+    return values[index] ?? 0;
+}
+
 export const T = {
     any(obj: Obj, name: string, e: ListOrAtom): any {
         return e;
@@ -84,11 +98,11 @@ export const T = {
     },
     vec2(obj: Obj, name: string, e: ListOrAtom): { x: number; y: number } {
         const el = e as number[];
-        return { x: el[1], y: el[2] };
+        return { x: at(el, 1), y: at(el, 2) };
     },
     vec4(obj: Obj, name: string, e: ListOrAtom): { x: number; y: number; z: number; w: number } {
         const el = e as number[];
-        return { x: el[1], y: el[2], z: el[3], w: el[4] };
+        return { x: at(el, 1), y: at(el, 2), z: at(el, 3), w: at(el, 4) };
     },
     color(obj: Obj, name: string, e: ListOrAtom): I_Color {
         const el = e as [string, number, number, number, number?];

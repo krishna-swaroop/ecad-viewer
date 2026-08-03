@@ -227,7 +227,7 @@ export function* tokenize(input: string) {
 
 export type List = (string | number | List)[];
 
-function* listify_tokens(tokens: Generator<Token>): Generator<List> {
+export function* listify_tokens(tokens: Generator<Token>): Generator<List> {
     let token;
     let it;
 

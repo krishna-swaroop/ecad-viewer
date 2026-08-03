@@ -192,7 +192,9 @@ export class SchSelectionPopMenu extends KCUIElement {
         this.#index = ((index % n) + n) % n;
         this.#apply_positioned_update();
         if (!navigate) return;
+        // The index is moved by the caller, so it can point past the list.
         const item = this.#net_items[this.#index];
+        if (!item) return;
         this.viewer.dispatchEvent(
             new NetItemSelectEvent({
                 sheet: item.sheet_name,
@@ -233,9 +235,10 @@ export class SchSelectionPopMenu extends KCUIElement {
 
         const list = html`<ul class="modal-list"></ul>` as HTMLUListElement;
 
-        for (let i = 0; i < this.#net_items.length; i++) {
-            const item = this.#net_items[i];
-            const selection = html`<li>${this.build_item_desc(item)}</li>`;
+        for (const [i, item] of this.#net_items.entries()) {
+            // `html` can yield a fragment; this template is always one <li>.
+            const selection =
+                html`<li>${this.build_item_desc(item)}</li>` as HTMLLIElement;
             if (i === this.#index) {
                 selection.classList.add("active");
             }
