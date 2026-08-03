@@ -3,6 +3,7 @@ import type {
     EcadDocumentDiffIndex,
     EcadIndexedChange,
 } from "../../ecad-viewer/document-diff";
+import type { EcadOverlayPrimitive } from "./overlay-scene";
 import type { PaintableDocument } from "./painter";
 
 export type EcadDiffPaintStatus =
@@ -128,6 +129,138 @@ export function diff_status_color(
     status: Exclude<EcadDiffPaintStatus, "unchanged">,
 ): Color {
     return STATUS_COLORS[status];
+}
+
+/**
+ * Selection is its own channel, in its own colour.
+ *
+ * Status colour answers "what happened here"; this answers "this is the thing
+ * you are reviewing". Collapsing them into one mark means the extent of a
+ * selected net cannot be seen without also re-reading its status on every
+ * segment, and a reviewer tracing a route loses it the moment it crosses an
+ * object of a different status.
+ */
+export const DIFF_SELECTION_COLOR = "#4CA6FF";
+
+export const DIFF_CONTEXT_STYLE = {
+    /** Wider and solid, so the status outline reads as sitting inside it. */
+    strokeWidth: 3,
+    padding: 5,
+    opacity: 0.55,
+} as const;
+
+export const DIFF_LEADER_STYLE = {
+    dash: [5, 4],
+    strokeWidth: 1,
+    opacity: 0.75,
+} as const;
+
+/** The shape of a prepared target this module needs, and nothing more. */
+export type DiffContextVisual = {
+    category: EcadDiffPaintStatus | "conflict";
+    routing: boolean;
+    bounds: [number, number, number, number];
+    overlayLines: Array<Array<[number, number]>>;
+};
+
+/**
+ * Context marks are emitted as overlay primitives directly.
+ *
+ * They used to be described by a private shape that the caller then mapped onto
+ * an overlay primitive, which meant the anchor and the screen-space sizing —
+ * both decisions about how these marks are drawn — lived a file away from the
+ * code that decides everything else about them.
+ *
+ * Both live in screen space so a route's halo keeps its weight at any zoom;
+ * a polyline carries its own world coordinates, so its anchor is the origin.
+ */
+const WORLD_ORIGIN = { kind: "world", x: 0, y: 0 } as const;
+
+function bounds_centre(
+    bounds: [number, number, number, number],
+): [number, number] {
+    return [bounds[0] + bounds[2] / 2, bounds[1] + bounds[3] / 2];
+}
+
+/**
+ * Dashed ties from a removal's largest piece to each of its other pieces.
+ *
+ * A connector and the pins and wires that went with it are one act, and drawing
+ * the tie between them is what makes a removal legible in the composite scene
+ * without a second pane. The largest piece is the origin because it is the
+ * object the reviewer recognises — the connector body, not one of its pads.
+ *
+ * Altium instead draws these out to whatever survived on the other side of the
+ * connection. That needs the surviving endpoints, which the document diff does
+ * not carry, so it is not attempted here rather than guessed at.
+ */
+export function removal_leaders(
+    targetId: string,
+    visuals: readonly DiffContextVisual[],
+): EcadOverlayPrimitive[] {
+    const removed = visuals.filter((visual) => visual.category === "removed");
+    if (removed.length < 2) return [];
+
+    const area = (bounds: [number, number, number, number]) =>
+        Math.abs(bounds[2] * bounds[3]);
+    const origin = removed.reduce((largest, visual) =>
+        area(visual.bounds) > area(largest.bounds) ? visual : largest,
+    );
+    const from = bounds_centre(origin.bounds);
+
+    return removed
+        .filter((visual) => visual !== origin)
+        .map((visual, index) => ({
+            kind: "polyline" as const,
+            id: `context:${targetId}:leader:${index}`,
+            anchor: WORLD_ORIGIN,
+            sizing: "screen" as const,
+            points: [from, bounds_centre(visual.bounds)],
+            stroke: STATUS_COLORS.removed.to_css(),
+            opacity: DIFF_LEADER_STYLE.opacity,
+            strokeWidth: DIFF_LEADER_STYLE.strokeWidth,
+            dash: [...DIFF_LEADER_STYLE.dash],
+        }));
+}
+
+/**
+ * The selection's own extent: a solid halo over everything the target covers,
+ * so how far a net or part reaches is legible without reading each segment's
+ * status. A route is traced along its own shape, because that says more than a
+ * box around everything it happens to pass through.
+ */
+export function diff_context_primitives(
+    targetId: string,
+    visuals: readonly DiffContextVisual[],
+): EcadOverlayPrimitive[] {
+    const routing_lines = visuals.flatMap((visual) =>
+        visual.routing ? visual.overlayLines : [],
+    );
+
+    const primitives: EcadOverlayPrimitive[] = routing_lines.length
+        ? routing_lines.map((points, index) => ({
+              kind: "polyline" as const,
+              id: `context:${targetId}:line:${index}`,
+              anchor: WORLD_ORIGIN,
+              sizing: "screen" as const,
+              points,
+              stroke: DIFF_SELECTION_COLOR,
+              opacity: DIFF_CONTEXT_STYLE.opacity,
+              strokeWidth: DIFF_CONTEXT_STYLE.strokeWidth,
+              fitAdaptiveStroke: true,
+          }))
+        : visuals.map((visual, index) => ({
+              kind: "bbox" as const,
+              id: `context:${targetId}:bbox:${index}`,
+              anchor: { kind: "bbox" as const, bounds: visual.bounds },
+              sizing: "screen" as const,
+              stroke: DIFF_SELECTION_COLOR,
+              opacity: DIFF_CONTEXT_STYLE.opacity,
+              strokeWidth: DIFF_CONTEXT_STYLE.strokeWidth,
+              padding: DIFF_CONTEXT_STYLE.padding,
+          }));
+
+    return [...primitives, ...removal_leaders(targetId, visuals)];
 }
 
 export function source_id_of(item: unknown): string | undefined {
@@ -469,10 +602,13 @@ export function build_diff_focus_presentation(
 
 /**
  * Comparison paint transform:
- * - unchanged: softly mute theme/layer hues toward the page while preserving
- *   enough original color to keep schematic and copper context readable;
+ * - unchanged: mute theme/layer hues toward the page so context recedes far
+ *   enough that the delta is what the eye lands on;
  * - A/R/M/conflict: tint the original color toward the status palette so
  *   geometry stays readable while status stays vivid.
+ *
+ * Note on `Color.mix(other, amount)`: `amount` weights the *receiver*, not the
+ * argument. `color.mix(status, 0.18)` is therefore 18% original and 82% status.
  */
 export function apply_diff_color(
     color: Color,
@@ -480,12 +616,16 @@ export function apply_diff_color(
     background = Color.black,
 ): Color {
     if (status === "unchanged") {
-        const muted = color.grayscale.mix(background.grayscale, 0.72);
-        return muted.with_alpha(color.a * 0.76);
+        // Context existed to be recognisable, but at 72%/0.76 it still competed
+        // with the delta on a dense board. Pulled most of the way to the page so
+        // unchanged copper reads as a backdrop rather than as content.
+        const muted = color.grayscale.mix(background.grayscale, 0.42);
+        return muted.with_alpha(color.a * 0.55);
     }
     const status_color = diff_status_color(status);
-    // Bias toward status (~62%) while retaining some original layer identity.
-    const tinted = color.mix(status_color, 0.25);
+    // Bias hard toward status (~82%) while retaining some layer identity, so a
+    // changed object on an already-red schematic still reads as its status.
+    const tinted = color.mix(status_color, 0.18);
     return tinted.with_alpha(
         Math.min(1, Math.max(color.a, 0.72) * status_color.a),
     );

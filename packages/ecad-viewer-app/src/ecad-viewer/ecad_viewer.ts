@@ -43,6 +43,7 @@ import {
     TabMenuVisibleChangeEvent,
 } from "../viewers/base/events";
 import type {
+    EcadOverlayContext,
     EcadOverlayPrimitive,
     EcadOverlayScene,
 } from "../viewers/base/overlay-scene";
@@ -82,6 +83,7 @@ import {
     build_diff_focus_presentation,
     build_diff_presentation,
     build_diff_side_presentation,
+    diff_context_primitives,
 } from "../viewers/base/diff-presentation";
 import { merge_bounds_resolution } from "../viewers/base/diff-presentation";
 import type {
@@ -532,6 +534,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     #visible_ready: Promise<void> = Promise.resolve();
     #transition_trace_sequence = 0;
     static readonly #DIFF_SELECTION_CHANNEL = ":document-diff:selection";
+    /** Solid extent of the selection, painted beneath the status outline. */
+    static readonly #DIFF_CONTEXT_CHANNEL = ":document-diff:context";
     /** On/off dash lengths, in screen pixels, of the selection outline. */
     static readonly #DIFF_EMPHASIS_DASH = [10, 7];
     /**
@@ -1625,12 +1629,13 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 board_viewer.activate_cached_diff_presentation(scenes.scene);
             }
             this.#base_diff_layer_visibility = null;
-            this.#safe_schematic_viewer()?.clear_overlay_scene(
+            for (const channel of [
                 ECadViewer.#DIFF_SELECTION_CHANNEL,
-            );
-            board_viewer?.clear_overlay_scene(
-                ECadViewer.#DIFF_SELECTION_CHANNEL,
-            );
+                ECadViewer.#DIFF_CONTEXT_CHANNEL,
+            ]) {
+                this.#safe_schematic_viewer()?.clear_overlay_scene(channel);
+                board_viewer?.clear_overlay_scene(channel);
+            }
             return null;
         }
         let { target } = active;
@@ -1767,18 +1772,44 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             }
         });
         this.#diff_emphasis_painted = primitives.length > 0;
+        // Context first, then status: both sit in the foreground, so the order
+        // of these two calls is what puts the status outline on top of the
+        // selection halo rather than inside it.
+        this.#paint_diff_channel(
+            viewer,
+            ECadViewer.#DIFF_CONTEXT_CHANNEL,
+            active.context,
+            diff_context_primitives(target.id, target.visuals),
+        );
+        this.#paint_diff_channel(
+            viewer,
+            ECadViewer.#DIFF_SELECTION_CHANNEL,
+            active.context,
+            primitives,
+        );
+        viewer.draw();
+        return target;
+    }
+
+    /** Replace one diff channel's contents, leaving the other untouched. */
+    #paint_diff_channel(
+        viewer: {
+            set_overlay_scene: (scene: EcadOverlayScene, redraw: boolean) => void;
+        },
+        channelId: string,
+        context: EcadOverlayContext,
+        primitives: EcadOverlayPrimitive[],
+    ): void {
         viewer.set_overlay_scene(
             {
-                channelId: ECadViewer.#DIFF_SELECTION_CHANNEL,
-                context: active.context,
+                channelId,
+                context,
                 placement: "foreground",
                 visible: true,
                 primitives,
             },
             false,
         );
-        viewer.draw();
-        return target;
     }
 
     #diff_animation_suspended(): boolean {
