@@ -630,8 +630,22 @@ export function serializeSchematicSymbol(symbol: S.I_SchematicSymbol, level: num
     }
     if (symbol.dnp !== undefined) result += `${indentString(level + 1)}(dnp ${symbol.dnp ? "yes" : "no"})
 `;
-    if (typeof symbol.convert !== "undefined" && symbol.convert !== null) {
-        result += `${indentString(level + 1)}(convert ${symbol.convert})
+    // Write back whichever body-style token the file used. `body_style` is
+    // what a current KiCad writes and `convert` is the legacy spelling for the
+    // same value; the parser keeps them apart precisely so a round-trip can
+    // return the file's own spelling rather than normalising to one of them.
+    //
+    // Emitting `convert` unconditionally used to mean a KiCad 9 file — where
+    // `convert` is unset — round-tripped with no body-style token at all, and
+    // silently lost the value.
+    const body_style = symbol.body_style ?? symbol.convert;
+    if (typeof body_style !== "undefined" && body_style !== null) {
+        const token =
+            typeof symbol.body_style !== "undefined" &&
+            symbol.body_style !== null
+                ? "body_style"
+                : "convert";
+        result += `${indentString(level + 1)}(${token} ${body_style})
 `;
     }
     result += `${indentString(level + 1)}(fields_autoplaced ${symbol.fields_autoplaced ? "yes" : "no"})
