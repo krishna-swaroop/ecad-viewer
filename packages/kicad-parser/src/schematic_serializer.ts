@@ -15,22 +15,7 @@ function escapeString(str: string | undefined): string {
         .replaceAll("\n", "\\n");
 }
 
-/**
- * A boolean flag KiCad writes only when it is set.
- *
- * KiCad omits `fields_autoplaced` entirely when false rather than writing
- * `(fields_autoplaced no)` — across the sampled projects there are 134,113 of
- * the `yes` form and not one `no`. Writing the `no` form unconditionally
- * produced a token KiCad never emits, which is diff noise on its own, and it
- * did not survive a round-trip: the flag is parsed with `P.atom`, so the
- * written `no` came back as `true` and flipped to `yes` on the next save.
- *
- * Returns the leading space too, so a caller that omits the flag does not
- * leave a double space behind.
- */
-function serializeFlag(name: string, value: boolean | undefined): string {
-    return value ? ` (${name} yes)` : "";
-}
+
 
 function serializeAt(at: C.I_At | undefined, level: number = 0, forceRotation: boolean = false): string {
     if (!at) {
@@ -563,7 +548,7 @@ function serializeNoConnect(noConnect: S.I_NoConnect): string {
 
 function serializeNetLabel(label: S.I_NetLabel): string {
     let result = `(label "${escapeString(label.text)}" ${serializeAt(label.at, 0, true)} ${serializeEffects(label.effects)}`;
-    result += serializeFlag("fields_autoplaced", label.fields_autoplaced);
+    result += ` (fields_autoplaced ${label.fields_autoplaced ? "yes" : "no"})`;
     if (label.uuid) result += ` (uuid "${escapeString(label.uuid)}")`;
     result += ")";
     return result;
@@ -571,7 +556,7 @@ function serializeNetLabel(label: S.I_NetLabel): string {
 
 function serializeGlobalLabel(label: S.I_GlobalLabel): string {
     let result = `(global_label "${escapeString(label.text)}" ${serializeAt(label.at, 0, true)} ${serializeEffects(label.effects)}`;
-    result += serializeFlag("fields_autoplaced", label.fields_autoplaced);
+    result += ` (fields_autoplaced ${label.fields_autoplaced ? "yes" : "no"})`;
     if (label.uuid) result += ` (uuid "${escapeString(label.uuid)}")`;
     result += ` (shape ${label.shape})`;
     if (label.properties && label.properties.length > 0) {
@@ -585,7 +570,7 @@ function serializeGlobalLabel(label: S.I_GlobalLabel): string {
 
 function serializeHierarchicalLabel(label: S.I_HierarchicalLabel): string {
     let result = `(hierarchical_label "${escapeString(label.text)}" ${serializeAt(label.at, 0, true)} ${serializeEffects(label.effects)}`;
-    result += serializeFlag("fields_autoplaced", label.fields_autoplaced);
+    result += ` (fields_autoplaced ${label.fields_autoplaced ? "yes" : "no"})`;
     if (label.uuid) result += ` (uuid "${escapeString(label.uuid)}")`;
     result += ` (shape ${label.shape})`;
     result += ")";
@@ -663,10 +648,8 @@ export function serializeSchematicSymbol(symbol: S.I_SchematicSymbol, level: num
         result += `${indentString(level + 1)}(${token} ${body_style})
 `;
     }
-    if (symbol.fields_autoplaced) {
-        result += `${indentString(level + 1)}(fields_autoplaced yes)
+    result += `${indentString(level + 1)}(fields_autoplaced ${symbol.fields_autoplaced ? "yes" : "no"})
 `;
-    }
     result += `${indentString(level + 1)}(uuid "${escapeString(symbol.uuid)}")
 `;
     
@@ -790,11 +773,9 @@ function serializeSchematicSheet(sheet: S.I_SchematicSheet, level: number = 0): 
         result += `${indentString(level + 1)}(dnp ${sheet.dnp ? "yes" : "no"})
 `;
     }
-    if (sheet.fields_autoplaced) {
-        result += `${indentString(level + 1)}(fields_autoplaced yes)
+    result += `${indentString(level + 1)}(fields_autoplaced ${sheet.fields_autoplaced ? "yes" : "no"})
 `;
-    }
-
+    
     result += `${indentString(level + 1)}${serializeStroke(sheet.stroke)}
 `;
     const fillStr = serializeFill(sheet.fill);

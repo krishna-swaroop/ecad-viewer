@@ -202,9 +202,6 @@ export const P = {
     },
     atom(name: string, values?: string[]): PropertyDefinition {
         let typefn: TypeProcessor;
-        // Without `values` this is a boolean flag; with them it is one keyword
-        // out of a set, and a `(keyword ...)` list is not a form it can take.
-        const is_flag = !values;
 
         if (values) {
             typefn = T.string;
@@ -218,19 +215,8 @@ export const P = {
             name: name,
             accepts: values,
             fn(obj: Obj, name: string, e: ListOrAtom) {
-                if (Array.isArray(e)) {
-                    if (e.length == 1) {
-                        e = e[0]!;
-                    } else if (is_flag) {
-                        // `(flag yes)` / `(flag no)`. KiCad accepts the bare
-                        // token and the explicit pair for the same flag, and
-                        // writes the pair. Reading the whole list here instead
-                        // made every pair truthy, so `(flag no)` came back
-                        // `true` — invisible against KiCad's own files, which
-                        // only ever write `yes` and omit the token otherwise,
-                        // but wrong for anything that spells `no` out.
-                        e = e[1]!;
-                    }
+                if (Array.isArray(e) && e.length == 1) {
+                    e = e[0]!;
                 }
                 return typefn(obj, name, e);
             },
