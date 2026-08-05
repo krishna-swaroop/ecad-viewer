@@ -492,7 +492,14 @@ function parseSchematicSymbol(expr: Parseable): S.I_SchematicSymbol {
         P.pair("mirror", T.string),
         P.pair("exclude_from_sim", T.boolean),
         P.pair("unit", T.number),
+        // KiCad renamed this token: `convert` is the legacy spelling and
+        // `body_style` is what a current KiCad writes. Its own parser accepts
+        // both (T_convert and T_body_style share a case in
+        // sch_io_kicad_sexpr_parser.cpp), so both are read here. Unmatched
+        // tokens are dropped silently by `parse_expr`, which is why reading
+        // only `convert` made every modern file look like body style 1.
         P.pair("convert", T.number),
+        P.pair("body_style", T.number),
         P.pair("in_bom", T.boolean),
         P.pair("on_board", T.boolean),
         P.pair("dnp", T.boolean),

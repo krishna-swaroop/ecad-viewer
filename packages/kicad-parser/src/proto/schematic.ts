@@ -269,7 +269,10 @@ export interface I_SchematicSymbol {
     at: I_At;
     mirror?: "x" | "y";
     unit: number;
+    /** Legacy spelling of `body_style`; still written by older KiCad. */
     convert: number;
+    /** De Morgan body style, as a current KiCad spells it. */
+    body_style?: number;
     in_bom: boolean;
     on_board: boolean;
     dnp: boolean;

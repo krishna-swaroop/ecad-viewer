@@ -1235,7 +1235,11 @@ export class SchematicSymbol {
         this.mirror = data.mirror;
         this.exclude_from_sim = data.exclude_from_sim ?? false;
         this.unit = data.unit;
-        this.convert = data.convert ?? 1;
+        // `body_style` first: it is what a current KiCad writes, and `convert`
+        // is the legacy spelling for the same thing. A file carries one or the
+        // other, so the order only decides a malformed file carrying both —
+        // where the current spelling is the better answer.
+        this.convert = data.body_style ?? data.convert ?? 1;
         this.in_bom = data.in_bom ?? false;
         this.on_board = data.on_board ?? false;
         this.dnp = data.dnp ?? false;
