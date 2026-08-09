@@ -62,6 +62,7 @@ type MountedViewer = HTMLElement & {
             reference: SchematicPageState[];
             comparison: SchematicPageState[];
         };
+        dispose(): void;
     }>;
     selectDocumentDiff(selection: {
         kind: "change" | "group";
@@ -398,6 +399,17 @@ suite("warm source replacement", () => {
 
     test("drives two revision viewports from one prepared session without reparsing", async function () {
         const sourceId = "08c9fb50-bb86-43e9-b87c-3df8063952e8";
+        const repeatedDisposals: unknown[][] = [];
+        const originalTrace = console.trace;
+        console.trace = (...args: unknown[]) => {
+            if (
+                args[0] === "dispose() called on an already disposed resource"
+            ) {
+                repeatedDisposals.push(args);
+                return;
+            }
+            originalTrace(...args);
+        };
         const secondary = document.createElement(
             "ecad-viewer",
         ) as MountedViewer;
@@ -406,7 +418,7 @@ suite("warm source replacement", () => {
         secondary.style.height = "600px";
         document.body.append(secondary);
         try {
-            const session = await host.prepareComparison({
+            const request: EcadComparisonRequest = {
                 comparisonKey: "m6:shared-session",
                 reference: revision("m6-reference", schematicFixture),
                 comparison: revision("m6-comparison", schematicFixture),
@@ -439,7 +451,8 @@ suite("warm source replacement", () => {
                         },
                     ],
                 },
-            });
+            };
+            const session = await host.prepareComparison(request);
 
             const [reference, comparison] = await Promise.all([
                 session.setPresentation("reference", host),
@@ -482,7 +495,24 @@ suite("warm source replacement", () => {
                     id: `/${sourceId}`,
                 }),
             ).to.deep.include({ status: "applied" });
+            session.dispose();
+            session.dispose();
+
+            // A selected page creates a new session over the same two mounted
+            // hosts. Adopting its new project model must not rebuild and
+            // reconnect an otherwise unchanged custom-element shell.
+            const replacement = await host.prepareComparison({
+                ...request,
+                comparisonKey: "m6:replacement-page-session",
+                reference: revision("m6-reference-next", schematicFixture),
+                comparison: revision("m6-comparison-next", schematicFixture),
+            });
+            await replacement.setPresentation("comparison", secondary);
+            replacement.dispose();
+            replacement.dispose();
+            expect(repeatedDisposals).to.have.length(0);
         } finally {
+            console.trace = originalTrace;
             await new Promise<void>((resolve) =>
                 window.setTimeout(resolve, 50),
             );

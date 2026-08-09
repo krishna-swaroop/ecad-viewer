@@ -985,6 +985,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 heapBytesCurrent: comparison_heap_bytes(),
             }),
             dispose: () => {
+                if (state.disposed) return;
                 state.disposed = true;
                 if (
                     state.owner.#adopted_comparison_project !==
@@ -1023,6 +1024,11 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         refresh_shell = true,
     ): Promise<void> {
         if (this.#adopted_comparison_project === project && this.loaded) return;
+        const previous_capabilities = {
+            schematic: this.has_sch,
+            board: this.has_pcb,
+            bom: this.has_bom,
+        };
         this.#source_replace_generation += 1;
         this.#project.adopt(project);
         this.#adopted_comparison_project = project;
@@ -1030,7 +1036,15 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.#source_manifest_key = null;
         this.#source_names.clear();
         this.loaded = true;
-        if (!refresh_shell) {
+        const shell_capabilities_changed =
+            previous_capabilities.schematic !== this.has_sch ||
+            previous_capabilities.board !== this.has_pcb ||
+            previous_capabilities.bom !== this.has_bom;
+        if (!refresh_shell || !shell_capabilities_changed) {
+            // The rendered app shell depends on document capabilities, not on
+            // the adopted revision object. Re-rendering an unchanged shell
+            // disconnects and later reuses its nested custom elements; their
+            // one-shot disposable stacks then receive duplicate dispose calls.
             this.#ensure_camera_hook(this.#safe_board_viewer());
             this.#ensure_camera_hook(this.#safe_schematic_viewer());
             this.#apply_viewport_insets();
