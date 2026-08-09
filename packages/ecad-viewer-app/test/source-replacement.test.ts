@@ -15,6 +15,17 @@ type EcadComparisonRequest = {
     diff: unknown;
     diffFormat: "prism";
     documentPath: string;
+    referenceSheetPath?: string;
+    comparisonSheetPath?: string;
+    activeSheetPath?: string;
+};
+
+type SchematicPageState = {
+    projectPath: string;
+    sheetPath: string;
+    filename: string;
+    parentProjectPath?: string;
+    active: boolean;
 };
 
 type MountedViewer = HTMLElement & {
@@ -47,12 +58,17 @@ type MountedViewer = HTMLElement & {
             retainedViewports: number;
             retainedScenes: number;
         };
+        getSchematicPages(): {
+            reference: SchematicPageState[];
+            comparison: SchematicPageState[];
+        };
     }>;
     selectDocumentDiff(selection: {
         kind: "change" | "group";
         id: string;
     }): Promise<{ status: "applied" | "missing" | "superseded" }>;
     showPage(pageId: string): Promise<void>;
+    getActiveSchematicPage(): SchematicPageState | null;
     focusBBox(x: number, y: number, w: number, h: number): Promise<unknown>;
     resize(): void;
     setViewportInsets(
@@ -449,7 +465,10 @@ suite("warm source replacement", () => {
             expect(metrics.lastSwitchParserCount).to.equal(0);
             expect(metrics.maxSwitchMs).to.be.lessThan(150);
             expect(metrics.retainedViewports).to.equal(2);
-            expect(metrics.retainedScenes).to.equal(3);
+            // Exact side-instance activation may retain the owner's reference
+            // and comparison project scenes in addition to Composite. Keep the
+            // bound explicit so the page fix cannot grow the cache unbounded.
+            expect(metrics.retainedScenes).to.be.within(3, 4);
             expect(document.querySelectorAll("ecad-viewer")).to.have.length(2);
             expect(
                 await host.selectDocumentDiff({
@@ -470,4 +489,56 @@ suite("warm source replacement", () => {
             secondary.remove();
         }
     }).timeout(10_000);
+
+    test("catalogs both revisions and activates each side's exact sheet instance", async function () {
+        const referenceUuid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const comparisonUuid = "42e3b81c-e97d-4030-acfe-87c608ff8c69";
+        const referenceSource = schematicFixture.replace(
+            `(uuid "${comparisonUuid}")`,
+            `(uuid "${referenceUuid}")`,
+        );
+        const referencePath = `board.kicad_sch:/${referenceUuid}`;
+        const comparisonPath = `board.kicad_sch:/${comparisonUuid}`;
+        const session = await host.prepareComparison({
+            comparisonKey: "m7:side-specific-sheet",
+            reference: revision("m7-reference", referenceSource),
+            comparison: revision("m7-comparison", schematicFixture),
+            diffFormat: "prism",
+            documentPath: "board.kicad_sch",
+            referenceSheetPath: referencePath,
+            comparisonSheetPath: comparisonPath,
+            activeSheetPath: "board.kicad_sch",
+            diff: {
+                documents: [
+                    {
+                        path: "board.kicad_sch",
+                        docType: "kicad_sch",
+                        changes: [],
+                    },
+                ],
+            },
+        });
+
+        const catalogs = session.getSchematicPages();
+        expect(catalogs.reference[0]).to.deep.include({
+            projectPath: referencePath,
+            parentProjectPath: undefined,
+            active: true,
+        });
+        expect(catalogs.comparison[0]).to.deep.include({
+            projectPath: comparisonPath,
+            parentProjectPath: undefined,
+            active: true,
+        });
+
+        await session.setPresentation("reference", host);
+        expect(host.getActiveSchematicPage()?.projectPath).to.equal(
+            referencePath,
+        );
+        await session.setPresentation("comparison", host);
+        expect(host.getActiveSchematicPage()?.projectPath).to.equal(
+            comparisonPath,
+        );
+        session.dispose();
+    });
 });

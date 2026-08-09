@@ -160,10 +160,16 @@ export interface EcadSchematicPageState {
     projectPath: string;
     sheetPath: string;
     filename: string;
+    parentProjectPath?: string;
     name?: string;
     page?: string;
     depth: number;
     active: boolean;
+}
+
+export interface EcadComparisonSchematicPages {
+    reference: EcadSchematicPageState[];
+    comparison: EcadSchematicPageState[];
 }
 
 export interface EcadPcbLayerState {
@@ -251,6 +257,7 @@ export interface EcadComparisonSession {
     getPreparation(
         viewport?: ECadViewer,
     ): EcadDocumentComparisonPreparation | null;
+    getSchematicPages(): EcadComparisonSchematicPages;
     getMetrics(): EcadComparisonSessionMetrics;
     dispose(): void;
 }
@@ -287,6 +294,37 @@ type EcadComparisonSessionState = {
     disposed: boolean;
     metrics: EcadComparisonSessionMetrics;
 };
+
+function schematic_page_states(project: Project): EcadSchematicPageState[] {
+    const active = project.active_sch_name;
+    return project.pages.map((page) => ({
+        projectPath: page.project_path,
+        sheetPath: page.sheet_path,
+        filename: page.filename,
+        parentProjectPath: page.parent_project_path,
+        name: page.name,
+        page: page.page,
+        depth: Math.max(
+            0,
+            page.sheet_path.split("/").filter(Boolean).length - 1,
+        ),
+        active: page.project_path === active,
+    }));
+}
+
+function requested_comparison_sheet(
+    request: EcadDocumentComparisonRequest,
+    side: "reference" | "comparison",
+    fallback: string,
+): string {
+    return (
+        (side === "reference"
+            ? request.referenceSheetPath
+            : request.comparisonSheetPath) ??
+        request.activeSheetPath ??
+        fallback
+    );
+}
 
 function comparison_heap_bytes(): number | undefined {
     const memory = (
@@ -615,6 +653,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                   projectPath: page.project_path,
                   sheetPath: page.sheet_path,
                   filename: page.filename,
+                  parentProjectPath: page.parent_project_path,
                   name: page.name,
                   page: page.page,
               }
@@ -798,6 +837,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             detail: {
                 comparisonKey: request.comparisonKey,
                 activeSheetPath: request.activeSheetPath ?? null,
+                referenceSheetPath: request.referenceSheetPath ?? null,
+                comparisonSheetPath: request.comparisonSheetPath ?? null,
                 referenceRevision: request.reference.revisionKey,
                 comparisonRevision: request.comparison.revisionKey,
             },
@@ -843,6 +884,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 requestedPage: request.documentPath ?? null,
                 detail: {
                     activeSheetPath: request.activeSheetPath ?? null,
+                    referenceSheetPath: request.referenceSheetPath ?? null,
+                    comparisonSheetPath: request.comparisonSheetPath ?? null,
                     error:
                         error instanceof Error
                             ? { name: error.name, message: error.message }
@@ -873,11 +916,13 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 `Prepared comparison cache is missing ${preparation.document.path}`,
             );
         }
+        const comparison_project = new Project();
+        comparison_project.adopt(this.#project);
         const state: EcadComparisonSessionState = {
             owner: this,
             request,
             referenceProject: this.#reference_project,
-            comparisonProject: this.#project,
+            comparisonProject: comparison_project,
             document,
             preparations: new Map([[this, preparation]]),
             preparedPresentations: new Map([
@@ -931,12 +976,30 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 ),
             getPreparation: (viewport = state.owner) =>
                 state.preparations.get(viewport) ?? null,
+            getSchematicPages: () => ({
+                reference: schematic_page_states(state.referenceProject),
+                comparison: schematic_page_states(state.comparisonProject),
+            }),
             getMetrics: () => ({
                 ...state.metrics,
                 heapBytesCurrent: comparison_heap_bytes(),
             }),
             dispose: () => {
                 state.disposed = true;
+                if (
+                    state.owner.#adopted_comparison_project !==
+                    state.comparisonProject
+                ) {
+                    // Restore the comparison project synchronously. A host may
+                    // prepare the next selected page immediately after dispose,
+                    // and its warm-cache resolution must not inspect the
+                    // reference revision left behind by an Old view.
+                    state.owner.#project.adopt(state.comparisonProject);
+                    state.owner.#adopted_comparison_project =
+                        state.comparisonProject;
+                    state.owner.#revision_key =
+                        state.request.comparison.revisionKey;
+                }
                 for (const viewport of state.presentations.keys()) {
                     viewport
                         .#viewer_for_context(state.document.preparation.context)
@@ -948,6 +1011,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 state.metrics.retainedViewports = 0;
                 state.metrics.retainedScenes = 0;
                 state.metrics.heapBytesCurrent = comparison_heap_bytes();
+                state.comparisonProject.dispose();
             },
         };
         return session;
@@ -956,6 +1020,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     async #adopt_comparison_project(
         project: Project,
         revision_key: string,
+        refresh_shell = true,
     ): Promise<void> {
         if (this.#adopted_comparison_project === project && this.loaded) return;
         this.#source_replace_generation += 1;
@@ -965,6 +1030,12 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.#source_manifest_key = null;
         this.#source_names.clear();
         this.loaded = true;
+        if (!refresh_shell) {
+            this.#ensure_camera_hook(this.#safe_board_viewer());
+            this.#ensure_camera_hook(this.#safe_schematic_viewer());
+            this.#apply_viewport_insets();
+            return;
+        }
         this.loading = true;
         try {
             await this.update();
@@ -1014,9 +1085,11 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             presentation_mode === "reference"
                 ? state.request.reference.revisionKey
                 : state.request.comparison.revisionKey;
-        if (viewport !== state.owner) {
-            await viewport.#adopt_comparison_project(project, revision_key);
-        }
+        await viewport.#adopt_comparison_project(
+            project,
+            revision_key,
+            viewport !== state.owner,
+        );
 
         const context = state.document.preparation.context;
         if (context === "SCH" && viewport.#active_tab !== TabKind.sch) {
@@ -1030,7 +1103,13 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 : state.document.comparisonDocument;
         if (context === "SCH" && document.filename) {
             await viewport.#activate_comparison_sheet(
-                state.request.activeSheetPath ?? document.filename,
+                requested_comparison_sheet(
+                    state.request,
+                    presentation_mode === "reference"
+                        ? "reference"
+                        : "comparison",
+                    document.filename,
+                ),
                 document,
             );
         }
@@ -1220,10 +1299,14 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             }
             if (
                 cached.preparation.context === "SCH" &&
-                request.activeSheetPath
+                (request.comparisonSheetPath || request.activeSheetPath)
             ) {
                 await this.#activate_comparison_sheet(
-                    request.activeSheetPath,
+                    requested_comparison_sheet(
+                        request,
+                        "comparison",
+                        cached.comparisonDocument.filename,
+                    ),
                     cached.comparisonDocument as { filename?: string },
                 );
             }
@@ -1320,6 +1403,23 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         const missingReference = !reference_resolved;
         const missingComparison = !comparison_resolved;
 
+        if (prepared.context === "SCH" && reference_resolved) {
+            const requested_reference = requested_comparison_sheet(
+                request,
+                "reference",
+                reference_document.filename,
+            );
+            const reference_page = this.#resolve_schematic_page_in(
+                this.#reference_project,
+                requested_reference,
+            );
+            if (reference_page) {
+                this.#reference_project.activate_sch(
+                    reference_page.project_path,
+                );
+            }
+        }
+
         // Activate tab/sheet without a pre-load paint. Cold path settles once
         // via load_diff_document + reveal (not showPage/app.load round-trips).
         if (prepared.context === "SCH") {
@@ -1328,7 +1428,11 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             }
             if (comparison_resolved) {
                 await this.#activate_comparison_sheet(
-                    request.activeSheetPath ?? comparison_document.filename,
+                    requested_comparison_sheet(
+                        request,
+                        "comparison",
+                        comparison_document.filename,
+                    ),
                     comparison_document,
                 );
             }
@@ -1466,7 +1570,12 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             return;
         }
         if (this.#active_schematic_project_path !== page.project_path) {
-            this.#activate_schematic_page(page.project_path);
+            // Comparison owns the following diff-scene paint. Updating the
+            // instance selection directly avoids Project.change scheduling a
+            // plain app.load that can race the retained presentation and leave
+            // an unused full-colour scene cached behind it.
+            this.#active_schematic_project_path = page.project_path;
+            this.#project.active_sch_name = page.project_path;
         }
         this.#trace_transition("page.comparison.activated", {
             status: "ready",
@@ -1794,7 +1903,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     /** Replace one diff channel's contents, leaving the other untouched. */
     #paint_diff_channel(
         viewer: {
-            set_overlay_scene: (scene: EcadOverlayScene, redraw: boolean) => void;
+            set_overlay_scene: (
+                scene: EcadOverlayScene,
+                redraw: boolean,
+            ) => void;
         },
         channelId: string,
         context: EcadOverlayContext,
@@ -2658,9 +2770,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         }
     }
 
-    #resolve_schematic_page(pageId: string) {
+    #resolve_schematic_page_in(project: Project, pageId: string) {
         if (!pageId || pageId === "/") return undefined;
-        const pages = this.#project.pages;
+        const pages = project.pages;
         const normalize = (value: string) =>
             value.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
         const requested = normalize(pageId);
@@ -2714,7 +2826,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 by_filename.find(
                     (candidate) =>
                         candidate.project_path ===
-                        this.#active_schematic_project_path,
+                        (project === this.#project
+                            ? this.#active_schematic_project_path
+                            : project.active_sch_name),
                 ) ?? by_filename[0]
             );
         }
@@ -2733,6 +2847,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         return by_hierarchy_label.length === 1
             ? by_hierarchy_label[0]
             : undefined;
+    }
+
+    #resolve_schematic_page(pageId: string) {
+        return this.#resolve_schematic_page_in(this.#project, pageId);
     }
 
     #find_schematic_page_for_symbol(
@@ -2907,6 +3025,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                   projectPath: page.project_path,
                   sheetPath: page.sheet_path,
                   filename: page.filename,
+                  parentProjectPath: page.parent_project_path,
                   name: page.name,
                   page: page.page,
               }
@@ -2920,17 +3039,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         const active =
             this.#project.active_sch_name ??
             this.#active_schematic_page()?.project_path;
-        return this.#project.pages.map((page) => ({
-            projectPath: page.project_path,
-            sheetPath: page.sheet_path,
-            filename: page.filename,
-            name: page.name,
-            page: page.page,
-            depth: Math.max(
-                0,
-                page.sheet_path.split("/").filter(Boolean).length - 1,
-            ),
-            active: page.project_path === active,
+        return schematic_page_states(this.#project).map((page) => ({
+            ...page,
+            active: page.projectPath === active,
         }));
     }
 
