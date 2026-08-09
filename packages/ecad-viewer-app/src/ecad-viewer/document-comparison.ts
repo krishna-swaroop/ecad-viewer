@@ -30,7 +30,14 @@ export type EcadDocumentComparisonRequest = {
     diffFormat?: "native-kicad" | "prism";
     /** Required when a PROJECT_DIFF contains more than one matching document. */
     documentPath?: string;
-    /** Prefer this hierarchical schematic project path when activating SCH. */
+    /** Exact hierarchical schematic project path for the reference revision. */
+    referenceSheetPath?: string;
+    /** Exact hierarchical schematic project path for the comparison revision. */
+    comparisonSheetPath?: string;
+    /**
+     * Compatibility alias used for either side when its revision-specific path
+     * is absent. New hosts should send referenceSheetPath/comparisonSheetPath.
+     */
     activeSheetPath?: string;
 };
 
