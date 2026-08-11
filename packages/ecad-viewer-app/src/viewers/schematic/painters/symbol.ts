@@ -43,7 +43,11 @@ export class LibSymbolPainter extends SchematicItemPainter {
 
         const si = this.view_painter.current_symbol;
 
-        const symbol_unit = s.units.get(si?.unit || 1);
+        const symbol_unit = s.units.get(
+            (si && this.view_painter.active_instance_context?.unit(si)) ||
+                si?.unit ||
+                1,
+        );
 
         if (symbol_unit) {
             this.#paint_unit(layer, symbol_unit, body_style);
@@ -92,6 +96,8 @@ export class SchematicSymbolPainter extends SchematicItemPainter {
         const transform = get_symbol_transform(si);
 
         this.view_painter.current_symbol = si;
+        this.view_painter.current_instance_context =
+            this.view_painter.context_for_symbol(si);
         this.view_painter.current_symbol_transform = transform;
 
         this.gfx.state.push();
@@ -107,7 +113,10 @@ export class SchematicSymbolPainter extends SchematicItemPainter {
 
         this.gfx.state.pop();
 
-        for (const pin of si.unit_pins) {
+        const unit_pins =
+            this.view_painter.active_instance_context?.unit_pins(si) ??
+            si.unit_pins;
+        for (const pin of unit_pins) {
             this.view_painter.pin_transform.set(pin, transform);
         }
 
@@ -128,6 +137,7 @@ export class SchematicSymbolPainter extends SchematicItemPainter {
             const { body, body_and_pins } = measure_symbol_bboxes(
                 this.theme,
                 si,
+                this.view_painter.active_instance_context,
             );
 
             paint_dnp_cross(
@@ -138,6 +148,7 @@ export class SchematicSymbolPainter extends SchematicItemPainter {
         }
 
         this.view_painter.current_symbol = undefined;
+        this.view_painter.current_instance_context = undefined;
         this.view_painter.current_symbol_transform = undefined;
     }
 }
@@ -232,8 +243,9 @@ export function get_symbol_transform(
 export function measure_symbol_bboxes(
     theme: SchematicTheme,
     si: schematic_items.SchematicSymbol,
+    instance_context?: schematic_items.SchematicInstanceContext,
 ): { body: BBox; body_and_pins: BBox } {
-    const measurer = new SchematicMeasurer(theme);
+    const measurer = new SchematicMeasurer(theme, instance_context);
 
     const body = measurer.measure_all(
         [LayerNames.symbol_foreground, LayerNames.symbol_background],
@@ -243,7 +255,7 @@ export function measure_symbol_bboxes(
     // LibSymbolPainter ignores the pin layer, so the pins have to be handed to
     // PinPainter directly. It reads the owning symbol's transform out of the
     // painter's cache, which only the regular paint pass populates.
-    const pins = si.unit_pins;
+    const pins = instance_context?.unit_pins(si) ?? si.unit_pins;
     const transform = get_symbol_transform(si);
     for (const pin of pins) {
         measurer.painter.pin_transform.set(pin, transform);

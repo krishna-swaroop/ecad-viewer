@@ -14,9 +14,22 @@ import type { SymbolTransform } from "./symbol";
 
 export abstract class BaseSchematicPainter extends DocumentPainter {
     override theme: SchematicTheme;
+    instance_context?: schematic_items.SchematicInstanceContext;
+    current_instance_context?: schematic_items.SchematicInstanceContext;
     current_symbol?: schematic_items.SchematicSymbol;
     current_symbol_transform?: SymbolTransform;
     current_sheet?: schematic_items.SchematicSheet;
+
+    get active_instance_context() {
+        return this.current_instance_context ?? this.instance_context;
+    }
+
+    context_for_symbol(symbol: schematic_items.SchematicSymbol) {
+        return (
+            this.diff_presentation?.schematicContexts?.get(symbol.parent) ??
+            this.instance_context
+        );
+    }
 }
 
 export abstract class SchematicItemPainter extends ItemPainter {

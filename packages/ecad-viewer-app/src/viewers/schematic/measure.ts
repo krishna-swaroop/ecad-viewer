@@ -7,6 +7,7 @@
 import { BBox } from "../../base/math";
 import { NullRenderer } from "../../graphics/null-renderer";
 import type { SchematicTheme } from "../../kicad";
+import type { SchematicInstanceContext } from "../../kicad/schematic";
 import { LayerNames, LayerSet } from "./layers";
 import { SchematicPainter } from "./painter";
 import { apply_schematic_render_defaults } from "./render-state";
@@ -24,10 +25,18 @@ export class SchematicMeasurer {
     readonly layers: LayerSet;
     readonly painter: SchematicPainter;
 
-    constructor(theme: SchematicTheme) {
+    constructor(
+        theme: SchematicTheme,
+        instance_context?: SchematicInstanceContext,
+    ) {
         apply_schematic_render_defaults(this.gfx, theme);
         this.layers = new LayerSet(theme);
-        this.painter = new SchematicPainter(this.gfx, this.layers, theme);
+        this.painter = new SchematicPainter(
+            this.gfx,
+            this.layers,
+            theme,
+            instance_context,
+        );
     }
 
     /** Paint `items` onto `layer_name` and return what they covered. */

@@ -18,6 +18,7 @@ import {
     SchematicSymbol,
     Wire,
     type KicadSch,
+    type SchematicInstanceContext,
 } from "../kicad/schematic";
 import type { EcadBlob } from "../kicanvas/services/vfs";
 
@@ -127,22 +128,27 @@ const source_uuid = (item: object): string | undefined => {
 export function normalize_schematic_selection(
     item: unknown,
     schematic: KicadSch,
+    context?: SchematicInstanceContext,
 ): EcadSemanticSelectionDetail | null {
     if (!item || typeof item !== "object") return null;
     const base = {
         sourceContext: "SCH" as const,
         uuid: source_uuid(item),
-        sheet: schematic.filename,
-        page: schematic.filename,
+        sheet: context?.project_path ?? schematic.filename,
+        page: context?.project_path ?? schematic.filename,
     };
     if (item instanceof SchematicSymbol) {
-        return { ...base, itemType: "symbol", reference: item.reference };
+        return {
+            ...base,
+            itemType: "symbol",
+            reference: context?.reference(item) ?? item.reference,
+        };
     }
     if (item instanceof PinInstance) {
         return {
             ...base,
             itemType: "pin",
-            reference: item.parent.reference,
+            reference: context?.reference(item.parent) ?? item.parent.reference,
             pin: item.number,
         };
     }

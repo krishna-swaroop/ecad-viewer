@@ -10,7 +10,12 @@ import { Color, Polygon, Polyline, Renderer } from "../../graphics";
 import { Canvas2DRenderer } from "../../graphics/canvas2d";
 import { NullRenderer } from "../../graphics/null-renderer";
 import { type SchematicTheme } from "../../kicad";
-import { HierarchicalSheetPin, KicadSch, Label } from "../../kicad/schematic";
+import {
+    HierarchicalSheetPin,
+    KicadSch,
+    Label,
+    SchematicInstanceContext,
+} from "../../kicad/schematic";
 import { DocumentViewer } from "../base/document-viewer";
 import {
     HierarchicalSheetPinClickEvent,
@@ -31,11 +36,20 @@ import type {
     ResolvedOverlayAnchor,
 } from "../base/overlay-scene";
 
-export function get_sch_bbox(theme: SchematicTheme, sch: KicadSch): BBox {
+export function get_sch_bbox(
+    theme: SchematicTheme,
+    sch: KicadSch,
+    instance_context?: SchematicInstanceContext,
+): BBox {
     const gfx = new NullRenderer();
     apply_schematic_render_defaults(gfx, theme);
     const layerset = new LayerSet(theme);
-    const painter = new SchematicPainter(gfx, layerset, theme);
+    const painter = new SchematicPainter(
+        gfx,
+        layerset,
+        theme,
+        instance_context,
+    );
 
     const layer_names = [
         LayerNames.symbol_foreground,
@@ -69,6 +83,26 @@ export class SchematicViewer extends DocumentViewer<
 
     #focus_net_item?: string;
     #selected_bbox: BBox | null = null;
+    #instance_context?: SchematicInstanceContext;
+
+    get instance_context(): SchematicInstanceContext | undefined {
+        return this.#instance_context;
+    }
+
+    public set_instance_context(context: SchematicInstanceContext): boolean {
+        if (
+            this.#instance_context?.document === context.document &&
+            this.#instance_context.sheet_path === context.sheet_path
+        ) {
+            return false;
+        }
+        this.#instance_context = context;
+        return true;
+    }
+
+    protected override get scene_cache_context(): unknown {
+        return this.#instance_context?.sheet_path ?? "";
+    }
 
     get sch_name() {
         return this.document.filename;
@@ -79,8 +113,26 @@ export class SchematicViewer extends DocumentViewer<
     }
 
     override async load(src: KicadSch) {
+        if (this.#instance_context?.document !== src) {
+            const first_symbol = src.symbols.values().next().value;
+            const first_instance_path = first_symbol?.instances
+                .keys()
+                .next().value;
+            this.#instance_context = new SchematicInstanceContext(
+                src,
+                first_instance_path ?? (src.uuid ? `/${src.uuid}` : "/"),
+            );
+        }
         this.schematic_renderer.reset_scene_bbox();
-        await super.load(src);
+        const context_changed =
+            this.document === src &&
+            this.painter?.instance_context?.sheet_path !==
+                this.#instance_context?.sheet_path;
+        if (context_changed) {
+            await this.load_plain_document(src);
+        } else {
+            await super.load(src);
+        }
         this.dispatchEvent(new SheetLoadEvent(src.filename));
     }
 
@@ -228,7 +280,9 @@ export class SchematicViewer extends DocumentViewer<
             uuid = anchor.uuid;
         } else if (anchor.kind === "entity") {
             if (anchor.reference) {
-                uuid = this.schematic.find_symbol(anchor.reference)?.uuid;
+                uuid = this.#instance_context?.find_symbol(
+                    anchor.reference,
+                )?.uuid;
             } else if (anchor.net) {
                 for (const item of this.schematic.items()) {
                     if (item instanceof Label && item.text === anchor.net) {
@@ -260,6 +314,7 @@ export class SchematicViewer extends DocumentViewer<
             this.viewport.camera.bbox = get_sch_bbox(
                 this.theme,
                 this.document,
+                this.#instance_context,
             ).grow(10);
         else if (is_showing_design_block()) {
             this.viewport.camera.bbox =
@@ -288,7 +343,12 @@ export class SchematicViewer extends DocumentViewer<
     }
 
     protected override create_painter() {
-        return new SchematicPainter(this.renderer, this.layers, this.theme);
+        return new SchematicPainter(
+            this.renderer,
+            this.layers,
+            this.theme,
+            this.#instance_context,
+        );
     }
 
     protected override create_layer_set() {
@@ -376,7 +436,7 @@ export class SchematicViewer extends DocumentViewer<
         for (const erc_item of this.#erc_data) {
             const { uuid, pins } = erc_item;
             // Verify the item is still in the document
-            const symbol = this.document.find_symbol(uuid);
+            const symbol = this.#instance_context?.find_symbol(uuid);
             if (!symbol) {
                 continue;
             }

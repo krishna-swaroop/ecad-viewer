@@ -139,13 +139,17 @@ export class KCSchematicPropertiesPanelElement extends KCUIElement {
         } else if (it instanceof SchematicSymbol) {
             title.title = "Symbol";
             const lib = it.lib_symbol;
+            const context = this.viewer.instance_context;
 
             const properties = Array.from(it.properties.values()).map((v) => {
-                return entry(v.name, v.text);
+                return entry(
+                    v.name,
+                    context?.shown_property_text(v) ?? v.shown_text,
+                );
             });
 
             const pins = sorted_by_numeric_strings(
-                it.unit_pins,
+                context?.unit_pins(it) ?? it.unit_pins,
                 (pin) => pin.number,
             ).map((p) => {
                 return entry(p.number, p.definition.name.text);
@@ -166,10 +170,14 @@ export class KCSchematicPropertiesPanelElement extends KCUIElement {
                 )}
                 ${header("Instance properties")}
                 ${entry("Library link", it.lib_name ?? it.lib_id)}
-                ${it.unit
+                ${(context?.unit(it) ?? it.unit)
                     ? entry(
                           "Unit",
-                          String.fromCharCode("A".charCodeAt(0) + it.unit - 1),
+                          String.fromCharCode(
+                              "A".charCodeAt(0) +
+                                  (context?.unit(it) ?? it.unit)! -
+                                  1,
+                          ),
                       )
                     : ""}
                 ${entry("In BOM", checkbox(it.in_bom))}

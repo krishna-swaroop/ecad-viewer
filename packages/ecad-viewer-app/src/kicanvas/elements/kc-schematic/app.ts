@@ -93,6 +93,7 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
                 this.#select_item({
                     sheet: ref.sheet_name,
                     uuid: ref.uuid,
+                    project_path: ref.project_path,
                 });
             } else {
                 console.log(`cannot find designator ${e.detail.designator}`);
@@ -141,12 +142,15 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
             const first_pin = component_erc_result.pins[0];
             const first_ref = first_pin
                 ? this.project.find_designator_by_pin(
-                    designator,
-                    first_pin.pin_num,
-                )
+                      designator,
+                      first_pin.pin_num,
+                  )
                 : null;
 
             if (first_ref) {
+                if (first_ref.project_path) {
+                    this.project.activate_sch(first_ref.project_path);
+                }
                 if (first_ref.sheet_name !== this.sch_viewer.sch_name) {
                     const sch = this.project.file_by_name(first_ref.sheet_name);
                     if (sch instanceof KicadSch) {
@@ -185,8 +189,7 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
             let refs = its;
 
             if (kind === "net") {
-                const sheet =
-                    clicked?.sheet_name ?? this.sch_viewer.sch_name;
+                const sheet = clicked?.sheet_name ?? this.sch_viewer.sch_name;
                 refs = its.filter(
                     (it) => it.kind === "net" && it.sheet_name === sheet,
                 );
@@ -244,6 +247,9 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
             );
 
             if (first_ref) {
+                if (first_ref.project_path) {
+                    this.project.activate_sch(first_ref.project_path);
+                }
                 if (first_ref.sheet_name !== this.sch_viewer.sch_name) {
                     const sch = this.project.file_by_name(first_ref.sheet_name);
                     if (sch instanceof KicadSch) {
@@ -277,7 +283,15 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
         });
     }
 
-    #select_item(idx: NetItemIndex) {
+    #select_item(idx: NetItemIndex & { project_path?: string }) {
+        if (
+            idx.project_path &&
+            idx.project_path !== this.project.active_sch_name
+        ) {
+            this.sch_viewer.focus_net_item = idx.uuid;
+            this.project.activate_sch(idx.project_path);
+            return;
+        }
         const sch = this.project.file_by_name(idx.sheet);
         if (sch instanceof KicadSch) {
             if (sch.filename === this.sch_viewer.sch_name) {
@@ -310,6 +324,23 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
 
     override can_load(src: KicadAssert): boolean {
         return src instanceof KicadSch;
+    }
+
+    override async load(src: KicadAssert) {
+        if (src instanceof KicadSch) {
+            await this.viewerReady;
+            const page =
+                this.project.pages.find(
+                    (candidate) =>
+                        candidate.project_path === this.project.active_sch_name,
+                ) ??
+                this.project.pages.find(
+                    (candidate) => candidate.document === src,
+                );
+            const context = page?.schematic_context;
+            if (context) this.sch_viewer.set_instance_context(context);
+        }
+        await super.load(src);
     }
 
     protected override do_render() {

@@ -207,7 +207,7 @@ export class KicadSch {
         return pins;
     }
 
-    *items() {
+    *items(instance_context?: SchematicInstanceContext) {
         yield new BBox(0, 0, this.paper?.width, this.paper?.height);
         yield* this.wires;
         yield* this.buses;
@@ -224,7 +224,9 @@ export class KicadSch {
         yield* this.sheets;
 
         for (const it of this.symbols) {
-            for (const i of it[1].unit_pins) yield i;
+            for (const i of instance_context?.unit_pins(it[1]) ??
+                it[1].unit_pins)
+                yield i;
         }
 
         for (const it of this.sheets)
@@ -270,6 +272,171 @@ export class KicadSch {
         }
 
         return this.title_block.resolve_text_var(name);
+    }
+}
+
+/**
+ * Read-only view of one hierarchical instance of a schematic document.
+ *
+ * KiCad stores the authored symbol fields on the child schematic and the
+ * annotated values for each placement in `symbol.instances`. Keeping the
+ * selected sheet path here avoids rewriting the shared parsed document when a
+ * reused child sheet is opened on another page.
+ */
+export class SchematicInstanceContext {
+    constructor(
+        public readonly document: KicadSch,
+        public readonly sheet_path: string,
+        public readonly project_path = `${document.filename}:${sheet_path}`,
+    ) {}
+
+    instance(symbol: SchematicSymbol): SchematicSymbolInstance | undefined {
+        return symbol.instances.get(this.sheet_path);
+    }
+
+    property_text(symbol: SchematicSymbol, name: string): string | undefined {
+        const instance = this.instance(symbol);
+        switch (name) {
+            case "Reference":
+                return instance?.reference ?? symbol.get_property_text(name);
+            case "Value":
+            case "ALTIUM_VALUE":
+                return instance?.value ?? symbol.get_property_text(name);
+            case "Footprint":
+                return instance?.footprint ?? symbol.get_property_text(name);
+            default:
+                return symbol.get_property_text(name);
+        }
+    }
+
+    reference(symbol: SchematicSymbol): string {
+        return this.instance(symbol)?.reference ?? symbol.reference;
+    }
+
+    value(symbol: SchematicSymbol): string {
+        return this.instance(symbol)?.value ?? symbol.value;
+    }
+
+    footprint(symbol: SchematicSymbol): string {
+        return this.instance(symbol)?.footprint ?? symbol.footprint;
+    }
+
+    unit(symbol: SchematicSymbol): number | undefined {
+        return this.instance(symbol)?.unit ?? symbol.unit;
+    }
+
+    unit_suffix(symbol: SchematicSymbol): string {
+        const selected_unit = this.unit(symbol);
+        if (!selected_unit || symbol.lib_symbol?.unit_count <= 1) return "";
+
+        const first_letter = "A".charCodeAt(0);
+        let unit = selected_unit;
+        let suffix = "";
+        do {
+            const index = (unit - 1) % 26;
+            suffix = String.fromCharCode(first_letter + index) + suffix;
+            unit = Math.trunc((unit - index) / 26);
+        } while (unit > 0);
+        return suffix;
+    }
+
+    unit_pins(symbol: SchematicSymbol): PinInstance[] {
+        const selected_unit = this.unit(symbol);
+        return symbol.pins.filter(
+            (pin) => !selected_unit || !pin.unit || selected_unit === pin.unit,
+        );
+    }
+
+    shown_property_text(property: Property): string {
+        if (!(property.parent instanceof SchematicSymbol)) {
+            return property.shown_text;
+        }
+        const symbol = property.parent;
+        const source =
+            this.property_text(symbol, property.name) ?? property.text;
+        return expand_text_vars(source, {
+            resolve_text_var: (name: string) =>
+                this.resolve_symbol_text_var(symbol, name),
+        });
+    }
+
+    shown_text(text: Text, symbol?: SchematicSymbol): string {
+        if (symbol) {
+            return expand_text_vars(text.text, {
+                resolve_text_var: (name: string) =>
+                    this.resolve_symbol_text_var(symbol, name),
+            });
+        }
+        if (text.parent instanceof KicadSch) {
+            return expand_text_vars(text.text, this);
+        }
+        return text.shown_text;
+    }
+
+    resolve_symbol_text_var(
+        symbol: SchematicSymbol,
+        name: string,
+    ): string | undefined {
+        const property = symbol.properties.get(name);
+        if (property) return this.shown_property_text(property);
+
+        const footprint = this.footprint(symbol);
+        switch (name) {
+            case "REFERENCE":
+                return this.reference(symbol);
+            case "VALUE":
+            case "ALTIUM_VALUE":
+                return this.value(symbol);
+            case "FOOTPRINT":
+                return footprint;
+            case "DATASHEET":
+                return symbol.get_property_text("Datasheet");
+            case "FOOTPRINT_LIBRARY":
+                return footprint.split(":").at(0);
+            case "FOOTPRINT_NAME":
+                return footprint.split(":").at(-1);
+            case "UNIT":
+                return this.unit_suffix(symbol);
+            case "SYMBOL_LIBRARY":
+                return symbol.lib_symbol.library_name;
+            case "SYMBOL_NAME":
+                return symbol.lib_symbol.library_item_name;
+            case "SYMBOL_DESCRIPTION":
+                return symbol.lib_symbol.description;
+            case "SYMBOL_KEYWORDS":
+                return symbol.lib_symbol.keywords;
+            case "EXCLUDE_FROM_BOM":
+                return symbol.in_bom ? "" : "Excluded from BOM";
+            case "EXCLUDE_FROM_BOARD":
+                return symbol.on_board ? "" : "Excluded from board";
+            case "DNP":
+                return symbol.dnp ? "DNP" : "";
+        }
+        return this.resolve_text_var(name);
+    }
+
+    resolve_text_var(name: string): string | undefined {
+        if (name === "FILENAME") return this.document.filename;
+        if (name.includes(":")) {
+            const [uuid, field_name] = name.split(":") as [string, string];
+            const symbol = this.document.symbols.get(uuid);
+            if (symbol) return this.resolve_symbol_text_var(symbol, field_name);
+        }
+        return this.document.title_block.resolve_text_var(name);
+    }
+
+    find_symbol(uuid_or_ref: string): SchematicSymbol | null {
+        const by_uuid = this.document.symbols.get(uuid_or_ref);
+        if (by_uuid) return by_uuid;
+        for (const symbol of this.document.symbols.values()) {
+            if (
+                symbol.uuid === uuid_or_ref ||
+                this.reference(symbol) === uuid_or_ref
+            ) {
+                return symbol;
+            }
+        }
+        return null;
     }
 }
 

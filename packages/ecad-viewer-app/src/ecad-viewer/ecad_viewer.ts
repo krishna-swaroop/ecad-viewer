@@ -22,6 +22,7 @@ import { KCBoardAppElement } from "../kicanvas/elements/kc-board/app";
 import { KCSchematicAppElement } from "../kicanvas/elements/kc-schematic/app";
 import { BomApp } from "../kicanvas/elements/bom/app";
 import { KicadPCB, KicadSch } from "../kicad";
+import type { SchematicInstanceContext } from "../kicad/schematic";
 
 import { is_3d_model, is_kicad, TabHeaderElement } from "./tab_header";
 import {
@@ -400,7 +401,7 @@ import { ZipUtils } from "../utils/zip_utils";
 import { length } from "../base/iterator";
 import { PRISM_LOGO } from "../kc-ui/prism_logo";
 import type { BoardViewer } from "../viewers/board/viewer";
-import type { SchematicViewer } from "../viewers/schematic/viewer";
+import { SchematicViewer } from "../viewers/schematic/viewer";
 
 export class ECadViewer extends KCUIElement implements InputContainer {
     static override styles = [
@@ -1416,6 +1417,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             comparison_resolved ?? empty_diff_document(prepared.context, path);
         const missingReference = !reference_resolved;
         const missingComparison = !comparison_resolved;
+        let reference_schematic_context: SchematicInstanceContext | undefined;
+        let comparison_schematic_context: SchematicInstanceContext | undefined;
 
         if (prepared.context === "SCH" && reference_resolved) {
             const requested_reference = requested_comparison_sheet(
@@ -1428,6 +1431,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 requested_reference,
             );
             if (reference_page) {
+                reference_schematic_context = reference_page.schematic_context;
                 this.#reference_project.activate_sch(
                     reference_page.project_path,
                 );
@@ -1441,14 +1445,19 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 await this.#switchToTab(TabKind.sch);
             }
             if (comparison_resolved) {
+                const requested_comparison = requested_comparison_sheet(
+                    request,
+                    "comparison",
+                    comparison_document.filename,
+                );
                 await this.#activate_comparison_sheet(
-                    requested_comparison_sheet(
-                        request,
-                        "comparison",
-                        comparison_document.filename,
-                    ),
+                    requested_comparison,
                     comparison_document,
                 );
+                comparison_schematic_context =
+                    this.#resolve_schematic_page(
+                        requested_comparison,
+                    )?.schematic_context;
             }
         } else if (this.#active_tab !== TabKind.pcb) {
             await this.#switchToTab(TabKind.pcb);
@@ -1466,6 +1475,22 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             reference_document,
             comparison_document,
         );
+        const schematic_contexts = new Map<object, SchematicInstanceContext>();
+        if (reference_schematic_context) {
+            schematic_contexts.set(
+                reference_document,
+                reference_schematic_context,
+            );
+        }
+        if (comparison_schematic_context) {
+            schematic_contexts.set(
+                comparison_document,
+                comparison_schematic_context,
+            );
+        }
+        if (schematic_contexts.size) {
+            presentation.schematicContexts = schematic_contexts;
+        }
         const focus_presentation = build_diff_focus_presentation(presentation);
         const side_scene = (
             document: PaintableDocument,
@@ -1476,6 +1501,13 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 document,
                 side,
             );
+            const context =
+                side === "reference"
+                    ? reference_schematic_context
+                    : comparison_schematic_context;
+            if (context) {
+                scene.schematicContexts = new Map([[document, context]]);
+            }
             return { scene, focus: build_diff_focus_presentation(scene) };
         };
         const side_scenes = {
@@ -1590,6 +1622,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             // an unused full-colour scene cached behind it.
             this.#active_schematic_project_path = page.project_path;
             this.#project.active_sch_name = page.project_path;
+        }
+        const context = page.schematic_context;
+        if (context) {
+            this.#schematic_app.sch_viewer.set_instance_context(context);
         }
         this.#trace_transition("page.comparison.activated", {
             status: "ready",
@@ -2635,7 +2671,11 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 schematic.net_labels.find((l) => l.uuid === uuid) ??
                 schematic.hierarchical_labels.find((l) => l.uuid === uuid);
             if (item) {
-                const detail = normalize_schematic_selection(item, schematic);
+                const detail = normalize_schematic_selection(
+                    item,
+                    schematic,
+                    sch_viewer.instance_context,
+                );
                 if (detail) {
                     this.#attach_item_bounds_sch(detail, item, sch_viewer);
                     this.dispatchEvent(new EcadSemanticSelectionEvent(detail));
@@ -2679,7 +2719,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             | { find_symbol?: (r: string) => { uuid?: string } | null }
             | undefined;
         if (doc?.find_symbol) {
-            const sym = doc.find_symbol(reference);
+            const sym =
+                v instanceof SchematicViewer
+                    ? v.instance_context?.find_symbol(reference)
+                    : doc.find_symbol(reference);
             if (!sym?.uuid) return null;
             return this.focusItem(sym.uuid, { select: true });
         }
@@ -2882,13 +2925,15 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         for (const page of this.#project.pages) {
             const document = page.document;
             if (!(document instanceof KicadSch)) continue;
-            if (uuid) {
-                const by_uuid = document.find_symbol(uuid);
-                if (by_uuid?.uuid) return { page, uuid: by_uuid.uuid };
-            }
+            const context = page.schematic_context;
             if (designator) {
-                const by_ref = document.find_symbol(designator);
-                if (by_ref?.uuid) return { page, uuid: by_ref.uuid };
+                const by_ref = context?.find_symbol(designator);
+                if (by_ref?.uuid && (!uuid || by_ref.uuid === uuid)) {
+                    return { page, uuid: by_ref.uuid };
+                }
+            } else if (uuid) {
+                const by_uuid = context?.find_symbol(uuid);
+                if (by_uuid?.uuid) return { page, uuid: by_uuid.uuid };
             }
         }
         return null;
@@ -3152,6 +3197,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         const viewer = this.#safe_schematic_viewer();
         if (!page || !viewer || !(page.document instanceof KicadSch))
             return false;
+        const context = page.schematic_context;
+        if (context) viewer.set_instance_context(context);
         this.#active_schematic_project_path = page.project_path;
         this.#project.activate_sch(page.project_path);
         return true;
@@ -3988,7 +4035,11 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         const viewer = this.#safe_schematic_viewer();
         const schematic = viewer?.schematic;
         if (!schematic) return;
-        const detail = normalize_schematic_selection(item, schematic);
+        const detail = normalize_schematic_selection(
+            item,
+            schematic,
+            viewer?.instance_context,
+        );
         if (!detail) return;
         this.#attach_item_bounds_sch(detail, item, viewer!);
         const intent = select.detail.intent ?? "select";
@@ -4130,14 +4181,12 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             // Fall back to any provided wire/label uuid list from the host.
             uuid ??= request.uuids?.find(Boolean);
         } else if (!uuid) {
-            for (const schematic of this.#project.schematics()) {
-                const symbol = schematic.find_symbol(
-                    request.designator ?? value,
-                );
-                if (!symbol) continue;
-                sheet ??= schematic.filename;
-                uuid = symbol.uuid;
-                break;
+            const located = this.#find_schematic_page_for_symbol(
+                request.designator ?? value,
+            );
+            if (located) {
+                sheet ??= located.page.project_path;
+                uuid = located.uuid;
             }
         }
         if (!uuid && !request.designator && !value) {
@@ -4152,7 +4201,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 ),
             ];
             if (request.designator) {
-                const by_ref = viewer.schematic?.find_symbol(
+                const by_ref = viewer.instance_context?.find_symbol(
                     request.designator,
                 );
                 if (by_ref?.uuid) candidates.push(by_ref.uuid);
