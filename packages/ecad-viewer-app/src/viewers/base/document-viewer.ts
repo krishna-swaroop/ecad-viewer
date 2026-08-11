@@ -45,16 +45,20 @@ export abstract class DocumentViewer<
     #diff_presentation: EcadDiffPresentation | null = null;
     #paint_count = 0;
     #presentation_cache_enabled = false;
+    #active_scene_context: unknown = null;
     #retained_overlay_channels: ReadonlySet<string> = new Set();
     #presentation_scene_cache = new Map<
         DocumentT,
         Map<
-            EcadDiffPresentation | null,
-            {
-                layers: ViewLayerSetT;
-                painter: PainterT;
-                grid: Grid;
-            }
+            unknown,
+            Map<
+                EcadDiffPresentation | null,
+                {
+                    layers: ViewLayerSetT;
+                    painter: PainterT;
+                    grid: Grid;
+                }
+            >
         >
     >();
 
@@ -87,6 +91,10 @@ export abstract class DocumentViewer<
 
     protected abstract create_painter(): PainterT;
     protected abstract create_layer_set(): ViewLayerSetT;
+    /** Additional immutable identity for document scenes (for example, sheet instance). */
+    protected get scene_cache_context(): unknown {
+        return null;
+    }
     protected get grid_origin(): Vec2 {
         return new Vec2(0, 0);
     }
@@ -127,8 +135,8 @@ export abstract class DocumentViewer<
 
     public get presentation_cache_size(): number {
         let size = 0;
-        for (const scenes of this.#presentation_scene_cache.values()) {
-            size += scenes.size;
+        for (const contexts of this.#presentation_scene_cache.values()) {
+            for (const scenes of contexts.values()) size += scenes.size;
         }
         return size;
     }
@@ -147,10 +155,12 @@ export abstract class DocumentViewer<
     }
 
     public disable_presentation_cache(): void {
-        for (const scenes of this.#presentation_scene_cache.values()) {
-            for (const scene of scenes.values()) {
-                if (scene.layers !== this.layers) {
-                    this.disposables.disposeAndRemove(scene.layers);
+        for (const contexts of this.#presentation_scene_cache.values()) {
+            for (const scenes of contexts.values()) {
+                for (const scene of scenes.values()) {
+                    if (scene.layers !== this.layers) {
+                        this.disposables.disposeAndRemove(scene.layers);
+                    }
                 }
             }
         }
@@ -169,10 +179,15 @@ export abstract class DocumentViewer<
         ) {
             return;
         }
-        let scenes = this.#presentation_scene_cache.get(this.document);
+        let contexts = this.#presentation_scene_cache.get(this.document);
+        if (!contexts) {
+            contexts = new Map();
+            this.#presentation_scene_cache.set(this.document, contexts);
+        }
+        let scenes = contexts.get(this.#active_scene_context);
         if (!scenes) {
             scenes = new Map();
-            this.#presentation_scene_cache.set(this.document, scenes);
+            contexts.set(this.#active_scene_context, scenes);
         }
         scenes.set(this.#diff_presentation, {
             layers: this.layers,
@@ -187,11 +202,13 @@ export abstract class DocumentViewer<
     ): boolean {
         const cached = this.#presentation_scene_cache
             .get(src)
+            ?.get(this.scene_cache_context)
             ?.get(presentation);
         if (!cached) return false;
         this.#cache_current_presentation();
         this.document = src;
         this.#diff_presentation = presentation;
+        this.#active_scene_context = this.scene_cache_context;
         this.layers = cached.layers;
         this.painter = cached.painter;
         this.grid = cached.grid;
@@ -218,7 +235,9 @@ export abstract class DocumentViewer<
         presentation: EcadDiffPresentation | null,
     ): boolean {
         if (!this.document) return false;
-        const scenes = this.#presentation_scene_cache.get(this.document);
+        const scenes = this.#presentation_scene_cache
+            .get(this.document)
+            ?.get(this.scene_cache_context);
         const cached = scenes?.get(presentation);
         if (!scenes || !cached) return false;
         if (cached.layers === this.layers) return false;
@@ -341,6 +360,7 @@ export abstract class DocumentViewer<
         }
         const cached_current = this.#presentation_scene_cache
             .get(this.document)
+            ?.get(this.scene_cache_context)
             ?.get(this.#diff_presentation);
         if (
             !this.#presentation_cache_enabled ||
@@ -349,6 +369,7 @@ export abstract class DocumentViewer<
             this.disposables.disposeAndRemove(this.layers);
             this.#presentation_scene_cache
                 .get(this.document)
+                ?.get(this.scene_cache_context)
                 ?.delete(this.#diff_presentation);
         }
         this.layers = this.disposables.add(this.create_layer_set());
@@ -379,6 +400,7 @@ export abstract class DocumentViewer<
             this.theme.grid,
             this.theme.grid_axes,
         );
+        this.#active_scene_context = this.scene_cache_context;
         this.#cache_current_presentation();
     }
 

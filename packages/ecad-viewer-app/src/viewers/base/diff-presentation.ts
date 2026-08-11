@@ -5,6 +5,7 @@ import type {
 } from "../../ecad-viewer/document-diff";
 import type { EcadOverlayPrimitive } from "./overlay-scene";
 import type { PaintableDocument } from "./painter";
+import type { SchematicInstanceContext } from "../../kicad/schematic";
 
 export type EcadDiffPaintStatus =
     | "unchanged"
@@ -106,6 +107,8 @@ export type EcadDiffPresentation = {
     diagnostics: readonly EcadDiffResolutionDiagnostic[];
     /** Counters from identity resolution; bounds counters are added on paint. */
     resolution: EcadDiffResolutionSummary;
+    /** Instance views for schematic documents participating in this scene. */
+    schematicContexts?: ReadonlyMap<object, SchematicInstanceContext>;
 };
 
 type SourceIndex = Map<string, object[]>;

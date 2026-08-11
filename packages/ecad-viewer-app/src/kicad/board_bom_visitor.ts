@@ -6,6 +6,8 @@ export interface DesignatorRef {
     uuid: string;
     sheet_name: string;
     unit?: number;
+    sheet_path?: string;
+    project_path?: string;
 }
 
 export interface DesignatorRefs {

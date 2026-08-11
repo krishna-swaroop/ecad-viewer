@@ -115,7 +115,7 @@ export class DocumentPainter {
 
     *#items(document: PaintableDocument, extra_items: readonly object[]) {
         const seen = new Set<unknown>();
-        for (const item of document.items()) {
+        for (const item of this.items_for(document)) {
             if (seen.has(item)) continue;
             seen.add(item);
             yield item;
@@ -125,6 +125,12 @@ export class DocumentPainter {
             seen.add(item);
             yield item;
         }
+    }
+
+    protected items_for(
+        document: PaintableDocument,
+    ): Generator<unknown, void, void> {
+        return document.items();
     }
 
     *paintable_layers() {

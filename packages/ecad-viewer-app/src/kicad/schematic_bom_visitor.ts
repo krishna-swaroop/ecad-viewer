@@ -1,12 +1,17 @@
 import type { DesignatorRef } from "./board_bom_visitor";
 import type { BomItem } from "./bom_item";
-import type { KicadSch, SchematicSymbol } from "./schematic";
+import {
+    SchematicInstanceContext,
+    type KicadSch,
+    type SchematicSymbol,
+} from "./schematic";
 import { SchematicVisitorBase } from "./schematic_visitor_base";
 
 export class SchematicBomVisitor extends SchematicVisitorBase {
     #bom_list: BomItem[] = [];
     #designator_refs = new Map<string, DesignatorRef[]>();
     #current_sch_file: string;
+    #context?: SchematicInstanceContext;
     #existing_designators = new Set<string>();
 
     public constructor() {
@@ -23,30 +28,42 @@ export class SchematicBomVisitor extends SchematicVisitorBase {
 
     visitKicadSch(sheet: KicadSch) {
         this.#current_sch_file = sheet.filename;
+        if (this.#context?.document !== sheet) {
+            this.#context = undefined;
+        }
+    }
+
+    visit_instance(context: SchematicInstanceContext) {
+        this.#context = context;
+        this.visit(context.document);
     }
 
     visitSchematicSymbol(node: SchematicSymbol) {
         if (
-            node.footprint.length == 0 ||
+            (this.#context?.footprint(node) ?? node.footprint).length == 0 ||
             !node.in_bom
         )
             return;
 
+        const value = this.#context?.value(node) ?? node.value;
+        const footprint = this.#context?.footprint(node) ?? node.footprint;
+        const reference = this.#context?.reference(node) ?? node.reference;
+        const unit = this.#context?.unit(node) ?? node.unit;
+
         const schematicSymbol: BomItem = {
             Reference: "",
-            Name: node.value,
+            Name: value,
             Description: node.get_property_text("Description") ?? "",
             Datasheet: node.datasheet,
-            Footprint: node.footprint,
+            Footprint: footprint,
             DNP: node.dnp,
             Qty: 1,
             Price: 0,
         };
 
-        const Reference = node.reference;
+        const Reference = reference;
 
-        if (Reference.endsWith("?"))
-            return;
+        if (Reference.endsWith("?")) return;
 
         if (!this.#existing_designators.has(Reference)) {
             this.#existing_designators.add(Reference);
@@ -54,8 +71,8 @@ export class SchematicBomVisitor extends SchematicVisitorBase {
             this.#bom_list.push({
                 ...schematicSymbol,
                 Reference,
-                Name: node.value ?? schematicSymbol.Name,
-                Footprint: node.footprint ?? schematicSymbol.Footprint,
+                Name: value ?? schematicSymbol.Name,
+                Footprint: footprint ?? schematicSymbol.Footprint,
             });
         }
 
@@ -63,7 +80,9 @@ export class SchematicBomVisitor extends SchematicVisitorBase {
         existing_refs.push({
             uuid: node.uuid,
             sheet_name: this.#current_sch_file,
-            unit: node.unit,
+            unit,
+            sheet_path: this.#context?.sheet_path,
+            project_path: this.#context?.project_path,
         });
         this.#designator_refs.set(Reference, existing_refs);
     }

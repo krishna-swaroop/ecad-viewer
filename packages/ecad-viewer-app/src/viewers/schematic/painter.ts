@@ -365,7 +365,10 @@ class TextPainter extends SchematicItemPainter {
             return;
         }
 
-        const schtext = new SchText(t.shown_text);
+        const schtext = new SchText(
+            this.view_painter.active_instance_context?.shown_text(t) ??
+                t.shown_text,
+        );
 
         schtext.apply_at(t.at);
         schtext.apply_effects(t.effects);
@@ -460,10 +463,19 @@ class PropertyPainter extends SchematicItemPainter {
         const transform = this.view_painter.current_symbol_transform;
         const matrix = transform?.matrix ?? Matrix3.identity();
 
-        let text = p.shown_text;
+        let text =
+            this.view_painter.active_instance_context?.shown_property_text(p) ??
+            p.shown_text;
 
-        if (p.name == "Reference" && parent.unit) {
-            text += parent.unit_suffix;
+        if (
+            p.name == "Reference" &&
+            (this.view_painter.active_instance_context?.unit(parent) ??
+                parent.unit)
+        ) {
+            text +=
+                this.view_painter.active_instance_context?.unit_suffix(
+                    parent,
+                ) ?? parent.unit_suffix;
         } else if (p.name == "Sheetfile") text = `File: ${text}`;
 
         const schfield = new SchField(text, {
@@ -539,7 +551,12 @@ class LibTextPainter extends SchematicItemPainter {
         const current_symbol_transform =
             this.view_painter.current_symbol_transform!;
 
-        const libtext = new LibText(lt.shown_text);
+        const libtext = new LibText(
+            this.view_painter.active_instance_context?.shown_text(
+                lt,
+                this.view_painter.current_symbol,
+            ) ?? lt.shown_text,
+        );
 
         libtext.apply_effects(lt.effects);
         libtext.apply_at(lt.at);
@@ -839,9 +856,26 @@ export class SchematicPainter extends BaseSchematicPainter {
     pin_transform: Map<schematic_items.PinInstance, SymbolTransform> =
         new Map();
 
-    constructor(gfx: Renderer, layers: LayerSet, theme: SchematicTheme) {
+    protected override items_for(document: {
+        items(): Generator<unknown, void, void>;
+    }): Generator<unknown, void, void> {
+        return document instanceof schematic_items.KicadSch
+            ? document.items(
+                  this.diff_presentation?.schematicContexts?.get(document) ??
+                      this.instance_context,
+              )
+            : document.items();
+    }
+
+    constructor(
+        gfx: Renderer,
+        layers: LayerSet,
+        theme: SchematicTheme,
+        instance_context?: schematic_items.SchematicInstanceContext,
+    ) {
         super(gfx, layers, theme);
         this.theme = theme;
+        this.instance_context = instance_context;
         this.painter_list = [
             new RectanglePainter(this, gfx),
             new PolylinePainter(this, gfx),

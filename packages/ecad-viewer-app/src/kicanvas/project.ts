@@ -24,6 +24,7 @@ import {
     GlobalLabel,
     HierarchicalLabel,
     NetLabel,
+    SchematicInstanceContext,
 } from "../kicad/schematic";
 import { SchematicBomVisitor } from "../kicad/schematic_bom_visitor";
 import { NewStrokeGlyph } from "../kicad/text/newstroke-glyphs";
@@ -291,9 +292,12 @@ export class Project extends EventTarget implements IDisposable {
     }
 
     public static async import_cjk_glyphs() {
-        const glyphModule = (window as Window & {
-            ecadGlyphModuleName?: string;
-        }).ecadGlyphModuleName ?? "glyph-full";
+        const glyphModule =
+            (
+                window as Window & {
+                    ecadGlyphModuleName?: string;
+                }
+            ).ecadGlyphModuleName ?? "glyph-full";
         await import(glyphModule).then((mod) => {
             NewStrokeGlyph.glyph_data = mod.glyph_data;
         });
@@ -385,8 +389,8 @@ export class Project extends EventTarget implements IDisposable {
                 const sch_visitor = new SchematicBomVisitor();
                 if (has_root_sch) {
                     for (const page of this.pages) {
-                        const doc = page.document;
-                        if (doc instanceof KicadSch) sch_visitor.visit(doc);
+                        const context = page.schematic_context;
+                        if (context) sch_visitor.visit_instance(context);
                     }
                 } else {
                     for (const sch of this.schematics()) {
@@ -724,16 +728,56 @@ export class Project extends EventTarget implements IDisposable {
             }
         }
 
+        const filenames = Array.from(this._files_by_name.keys());
+        const normalized_filenames = filenames.map((filename) => ({
+            filename,
+            normalized: normalize(filename),
+        }));
+
+        // Loaded paths should already be normalized, but preserve the same
+        // exact relative/root priority when a host supplied separators or dot
+        // segments in its source names.
+        for (const candidate of [relative, requested]) {
+            const normalized_matches = normalized_filenames.filter(
+                ({ normalized }) => normalized === candidate,
+            );
+            if (normalized_matches.length === 1) {
+                return normalized_matches[0]!.filename;
+            }
+            if (normalized_matches.length > 1) return undefined;
+        }
+
         // Hosts sometimes flatten source paths. Only use a basename/suffix
         // fallback when it identifies exactly one loaded schematic.
-        const matches = Array.from(this._files_by_name.keys()).filter(
-            (filename) =>
-                filename === requested ||
-                filename.endsWith(`/${requested}`) ||
-                filename === relative ||
-                filename.endsWith(`/${relative}`),
+        const matches = normalized_filenames.filter(
+            ({ normalized }) =>
+                normalized.endsWith(`/${requested}`) ||
+                normalized.endsWith(`/${relative}`),
         );
-        return matches.length === 1 ? matches[0] : undefined;
+        if (matches.length === 1) return matches[0]!.filename;
+        if (matches.length > 1) return undefined;
+
+        // KiCad projects are commonly authored on case-insensitive filesystems.
+        // Preserve the actual loaded key, but only case-fold as a final fallback
+        // when it identifies one file. Case-collisions must fail closed.
+        const requested_folded = requested.toLowerCase();
+        const relative_folded = relative.toLowerCase();
+        const folded_matches = normalized_filenames.filter(({ normalized }) => {
+            const folded = normalized.toLowerCase();
+            return (
+                folded === requested_folded ||
+                folded.endsWith(`/${requested_folded}`) ||
+                folded === relative_folded ||
+                folded.endsWith(`/${relative_folded}`)
+            );
+        });
+        if (folded_matches.length === 1) return folded_matches[0]!.filename;
+        if (folded_matches.length > 1) {
+            log.warn(
+                `Ambiguous case-insensitive schematic path ${requested_filename}: ${folded_matches.map(({ filename }) => filename).join(", ")}`,
+            );
+        }
+        return undefined;
     }
 
     public *boards() {
@@ -948,5 +992,16 @@ export class ProjectPage {
 
     get document() {
         return this.project.file_by_name(this.filename)!;
+    }
+
+    get schematic_context(): SchematicInstanceContext | undefined {
+        const document = this.document;
+        return document instanceof KicadSch
+            ? new SchematicInstanceContext(
+                  document,
+                  this.sheet_path,
+                  this.project_path,
+              )
+            : undefined;
     }
 }
