@@ -46,6 +46,13 @@ export interface BoardInteractiveItem extends Interactive {
     net: number | null;
     item: BoardSelectable | null;
     is_on_layer: (name: string) => boolean;
+    /**
+     * The item's actual layer membership. Unlike is_on_layer, which is
+     * deliberately loose for picking (a pad matches any copper, a footprint
+     * matches everything), this reports the real layers the item lives on so
+     * layer isolation can decide selectability precisely.
+     */
+    on_layers: () => ReadonlySet<string>;
 }
 
 export class BoxInteractiveItem implements BoardInteractiveItem {
@@ -56,6 +63,9 @@ export class BoxInteractiveItem implements BoardInteractiveItem {
     }
     is_on_layer(name: string) {
         return this.layer.has(name);
+    }
+    on_layers(): ReadonlySet<string> {
+        return this.layer;
     }
 
     constructor(
@@ -99,6 +109,9 @@ export class LineInteractiveItem implements BoardInteractiveItem {
 
     is_on_layer(name: string) {
         return this.layer.has(name);
+    }
+    on_layers(): ReadonlySet<string> {
+        return this.layer;
     }
 
     constructor(

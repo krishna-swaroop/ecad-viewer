@@ -81,6 +81,12 @@ export class BoardViewer extends DocumentViewer<
         | { kind: "net"; num: number }
         | null = null;
 
+    // The layer the user isolated from the layer menu, if any. Layer isolation
+    // and net cross-probe both drive layers.highlight(), so clearing a
+    // selection would otherwise wipe the user's isolation as a side effect.
+    // Tracking it lets clear_selection restore isolation after clearing a probe.
+    #isolated_layer: string | null = null;
+
     public highlight_net(num: number | null, emit_selection = true) {
         this.#restore_native_layers();
         this.#restore_zone_layers();
@@ -177,7 +183,14 @@ export class BoardViewer extends DocumentViewer<
         this.#restore_zone_layers();
         this.painter.filter_net = null;
         this.painter?.clear_interactive();
-        this.layers?.highlight(null);
+        // Clearing a selection or net probe must not undo the user's layer
+        // isolation, which is an independent view choice made from the layer
+        // menu. Re-apply it after clearing rather than dropping to no highlight.
+        const isolated = this.#isolated_layer
+            ? this.layers?.by_name(this.#isolated_layer)
+            : null;
+        this.layers?.highlight(isolated ?? null);
+        this.#layer_visibility_ctrl?.update_item_states();
         this.draw();
     }
 
@@ -329,14 +342,32 @@ export class BoardViewer extends DocumentViewer<
 
         if (!this.#layer_visibility_ctrl) return items;
 
+        // When one or more layers are isolated (highlighted from the layer
+        // menu), only items on those layers are selectable. Otherwise a click
+        // could still land on a dimmed trace on another layer, e.g. picking an
+        // F.Cu trace while B.Cu is isolated. Fall back to plain layer
+        // visibility when nothing is isolated.
+        const highlighted_layers = new Set(
+            this.layers.highlighted_layer_names(),
+        );
+
         const visible_layers: Set<string> = new Set();
         for (const [k, v] of this.layer_visibility)
             if (v) visible_layers.add(k);
 
         const is_item_visible = (item: BoardInteractiveItem) => {
+            // Isolation restricts selection to items that actually live on an
+            // isolated layer. This uses the true layer set (on_layers), not the
+            // loose is_on_layer, so a footprint or pad on the opposite side is
+            // not selectable just because is_on_layer answers permissively.
+            if (highlighted_layers.size) {
+                for (const layer of item.on_layers())
+                    if (highlighted_layers.has(layer)) return true;
+                return false;
+            }
+            // No isolation: unchanged permissive picking against visible layers.
             for (const layer of visible_layers)
                 if (item.is_on_layer(layer)) return true;
-
             return false;
         };
 
@@ -472,7 +503,10 @@ export class BoardViewer extends DocumentViewer<
         if (!layer || !Array.from(this.layers.in_ui_order()).includes(layer))
             return false;
         layer.visible = visible;
-        if (!visible && layer.highlighted) this.layers.highlight(null);
+        if (!visible && layer.highlighted) {
+            this.layers.highlight(null);
+            if (this.#isolated_layer === name) this.#isolated_layer = null;
+        }
         this.#layer_visibility_ctrl?.update_item_states();
         this.draw();
         return true;
@@ -481,6 +515,7 @@ export class BoardViewer extends DocumentViewer<
     public set_host_layer_highlight(name: string | null) {
         if (!name) {
             this.layers.highlight(null);
+            this.#isolated_layer = null;
             this.#layer_visibility_ctrl?.update_item_states();
             this.draw();
             return true;
@@ -490,6 +525,7 @@ export class BoardViewer extends DocumentViewer<
             return false;
         const next = layer.highlighted ? null : layer;
         this.layers.highlight(next);
+        this.#isolated_layer = next ? name : null;
         if (next) next.visible = true;
         this.#layer_visibility_ctrl?.update_item_states();
         this.draw();

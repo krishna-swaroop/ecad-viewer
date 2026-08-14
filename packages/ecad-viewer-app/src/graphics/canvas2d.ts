@@ -106,8 +106,12 @@ export class Canvas2DRenderer extends Renderer {
     }
 
     override update_canvas_size() {
-        // const dpr = window.devicePixelRatio;
-        const dpr = 1;
+        // Size the backing store to physical pixels. The camera and every draw
+        // command work in CSS-pixel space; the devicePixelRatio scale that
+        // bridges the two is applied to the context in clear_canvas. Without it
+        // the buffer was one CSS pixel per device pixel and the browser
+        // upscaled it, blurring the whole schematic on any HiDPI display.
+        const dpr = window.devicePixelRatio || 1;
 
         const rect = this.canvas.getBoundingClientRect();
         const pixel_w = Math.round(rect.width * dpr);
@@ -124,11 +128,18 @@ export class Canvas2DRenderer extends Renderer {
         if (!ctx2d) return;
         this.update_canvas_size();
 
+        // Reset to the identity, then scale by devicePixelRatio so drawing in
+        // CSS-pixel coordinates fills the physical-pixel backing store. Layer
+        // rendering reads this as its base transform and composes the camera on
+        // top, so the whole scene renders at full device resolution.
+        const dpr = window.devicePixelRatio || 1;
         ctx2d.setTransform();
-        // this.ctx2d!.scale(window.devicePixelRatio, window.devicePixelRatio);
+        ctx2d.scale(dpr, dpr);
 
+        const css_w = this.canvas.width / dpr;
+        const css_h = this.canvas.height / dpr;
         ctx2d.fillStyle = this.background_color.to_css();
-        ctx2d.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        ctx2d.fillRect(0, 0, css_w, css_h);
         ctx2d.lineCap = "round";
         ctx2d.lineJoin = "round";
     }
