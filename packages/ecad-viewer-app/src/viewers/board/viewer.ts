@@ -329,12 +329,24 @@ export class BoardViewer extends DocumentViewer<
 
         if (!this.#layer_visibility_ctrl) return items;
 
-        const visible_layers: Set<string> = new Set();
-        for (const [k, v] of this.layer_visibility)
-            if (v) visible_layers.add(k);
+        // When one or more layers are isolated (highlighted from the layer
+        // menu), only items on those layers are selectable. Otherwise a click
+        // could still land on a dimmed trace on another layer, e.g. picking an
+        // F.Cu trace while B.Cu is isolated. Fall back to plain layer
+        // visibility when nothing is isolated.
+        const highlighted_layers = new Set(
+            this.layers.highlighted_layer_names(),
+        );
+        const selectable_layers: Set<string> = new Set();
+        if (highlighted_layers.size) {
+            for (const layer of highlighted_layers) selectable_layers.add(layer);
+        } else {
+            for (const [k, v] of this.layer_visibility)
+                if (v) selectable_layers.add(k);
+        }
 
         const is_item_visible = (item: BoardInteractiveItem) => {
-            for (const layer of visible_layers)
+            for (const layer of selectable_layers)
                 if (item.is_on_layer(layer)) return true;
 
             return false;

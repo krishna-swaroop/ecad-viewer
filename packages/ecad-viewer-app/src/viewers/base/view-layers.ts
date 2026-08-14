@@ -366,6 +366,15 @@ export class ViewLayerSet implements IDisposable {
         return false;
     }
 
+    /** Names of the currently highlighted (isolated) layers. */
+    *highlighted_layer_names(): Generator<string> {
+        for (const l of this.#layer_list) {
+            if (l.highlighted) {
+                yield l.name;
+            }
+        }
+    }
+
     *grid_layers() {
         yield this.by_name(ViewLayerNames.grid)!;
     }
