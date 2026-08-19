@@ -4,6 +4,7 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
+import { copyFileSync, existsSync } from "node:fs";
 import { bundle } from "./bundle.js";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +31,16 @@ let { context } = await bundle({
 });
 
 await context.watch();
+
+const glyphSrc = resolve(APP_DIR, "build/glyph-full.js");
+const glyphDst = resolve(APP_DIR, "static/ecad_viewer/glyph-full.js");
+if (existsSync(glyphSrc)) {
+    copyFileSync(glyphSrc, glyphDst);
+} else {
+    console.warn(
+        "[serve] build/glyph-full.js missing; schematics with CJK text will fail to load. Run: npm run build:glyph",
+    );
+}
 
 let { host, port } = await context.serve({
     servedir: resolve(APP_DIR, "static"),

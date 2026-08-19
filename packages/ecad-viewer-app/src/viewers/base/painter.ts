@@ -6,6 +6,7 @@
 
 import { Logger } from "../../base/log";
 import { Renderer } from "../../graphics";
+import { ecadPerfLog, isEcadPerfLogEnabled } from "../../kicanvas/perf_log";
 import type { BaseTheme } from "../../kicad";
 import {
     apply_diff_color,
@@ -87,8 +88,10 @@ export class DocumentPainter {
 
     paint(document: PaintableDocument, extra_items: readonly object[] = []) {
         log.debug("Painting");
-
         log.debug("Sorting paintable items into layers");
+
+        const perf = isEcadPerfLogEnabled();
+        const t0 = perf ? performance.now() : 0;
 
         for (const item of this.#items(document, extra_items)) {
             const painter = this.painter_for(item);
@@ -103,11 +106,49 @@ export class DocumentPainter {
             }
         }
 
+        const sort_ms = perf ? performance.now() - t0 : 0;
+        let tessellate_ms = 0;
+        let bbox_ms = 0;
+        let item_count = 0;
+        const layer_rows: {
+            name: string;
+            items: number;
+            tessellate_ms: number;
+            bbox_ms: number;
+        }[] = [];
+
         for (const layer of this.paintable_layers()) {
             log.debug(
                 `Painting layer ${layer.name} with ${layer.items.length} items`,
             );
-            this.paint_layer(layer);
+            const stats = this.paint_layer(layer, perf);
+            if (perf && stats) {
+                tessellate_ms += stats.tessellate_ms;
+                bbox_ms += stats.bbox_ms;
+                item_count += stats.items;
+                if (stats.items > 0) {
+                    layer_rows.push({
+                        name: layer.name,
+                        items: stats.items,
+                        tessellate_ms: stats.tessellate_ms,
+                        bbox_ms: stats.bbox_ms,
+                    });
+                }
+            }
+        }
+
+        if (perf) {
+            const total_ms = performance.now() - t0;
+            ecadPerfLog(
+                `paint sort=${sort_ms.toFixed(1)}ms tessellate=${tessellate_ms.toFixed(1)}ms bbox=${bbox_ms.toFixed(1)}ms total=${total_ms.toFixed(1)}ms layers=${layer_rows.length} items=${item_count}`,
+            );
+            layer_rows.sort((a, b) => b.tessellate_ms - a.tessellate_ms);
+            for (const row of layer_rows.slice(0, 16)) {
+                if (row.tessellate_ms < 1) continue;
+                ecadPerfLog(
+                    `  layer ${row.name} items=${row.items} tessellate=${row.tessellate_ms.toFixed(1)}ms bbox=${row.bbox_ms.toFixed(1)}ms`,
+                );
+            }
         }
 
         log.debug("Painting complete");
@@ -137,22 +178,35 @@ export class DocumentPainter {
         yield* this.layers.in_display_order();
     }
 
-    paint_layer(layer: ViewLayer) {
+    paint_layer(layer: ViewLayer, time = false) {
         const bboxes = new Map();
+        const t0 = time ? performance.now() : 0;
+        let bbox_ms = 0;
 
         this.gfx.start_layer(layer.name);
 
         for (const item of layer.items) {
+            const bbox_t0 = time ? performance.now() : 0;
             this.gfx.start_bbox();
+            if (time) bbox_ms += performance.now() - bbox_t0;
 
             this.paint_item(layer, item);
 
+            const bbox_t1 = time ? performance.now() : 0;
             const bbox = this.gfx.end_bbox(item);
             bboxes.set(item, bbox);
+            if (time) bbox_ms += performance.now() - bbox_t1;
         }
 
         layer.graphics = this.gfx.end_layer();
         layer.bboxes = bboxes;
+
+        if (!time) return;
+        return {
+            items: layer.items.length,
+            tessellate_ms: performance.now() - t0,
+            bbox_ms,
+        };
     }
 
     paint_item(layer: ViewLayer, item: unknown, ...rest: any[]) {

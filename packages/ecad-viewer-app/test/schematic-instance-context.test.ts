@@ -273,6 +273,7 @@ suite("schematic instance context", () => {
 
             viewer.set_instance_context(context_a);
             viewer.set_drawing_sheet(DrawingSheet.default());
+            viewer.paint();
             const scene_a = viewer.layers;
             expect(scene_a).not.to.equal(scene_b);
             expect(viewer.presentation_cache_size).to.equal(2);

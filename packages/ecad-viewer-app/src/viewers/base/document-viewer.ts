@@ -14,10 +14,10 @@ import { Grid } from "./grid";
 import type { DocumentPainter, PaintableDocument } from "./painter";
 import { ViewLayerNames, type ViewLayerSet } from "./view-layers";
 import { Viewer } from "./viewer";
-import { later } from "../../base/async";
 import { DrawingSheetPainter } from "../drawing-sheet/painter";
 import { is_showing_design_block } from "../../ecad-viewer/ecad_viewer_global";
 import { Color } from "../../graphics";
+import { ecadPerfLog, isEcadPerfLogEnabled } from "../../kicanvas/perf_log";
 import type { EcadDiffPresentation } from "./diff-presentation";
 
 type ViewableDocument = DrawingSheetDocument &
@@ -44,6 +44,7 @@ export abstract class DocumentViewer<
     protected grid: Grid;
     #diff_presentation: EcadDiffPresentation | null = null;
     #paint_count = 0;
+    #load_generation = 0;
     #presentation_cache_enabled = false;
     #active_scene_context: unknown = null;
     #retained_overlay_channels: ReadonlySet<string> = new Set();
@@ -68,11 +69,10 @@ export abstract class DocumentViewer<
         if (this.disposables.isDisposed) {
             return;
         }
+        // Assign only. Hosts used to tessellate the whole board here on every
+        // app.load because drawing_sheet_for() returns a new object each time.
+        // Cold load / presentation paint already includes the sheet.
         this.drawing_sheet = sheet;
-        if (this.document) {
-            this.paint();
-            this.draw();
-        }
     }
 
     /** True after the host custom element disconnected and disposed this viewer. */
@@ -301,28 +301,27 @@ export abstract class DocumentViewer<
             return;
         }
 
+        const generation = ++this.#load_generation;
         this.document = src;
+
+        // Tessellation is world-space, so a 0×0 canvas still earcuts every
+        // item. Wait for a real layout box, then paint once. Hosts must unhide
+        // the canvas before awaiting load so viewport.ready can open.
+        // load_diff_document already waits then paints once — leave it.
+        await this.viewport.ready;
+        if (
+            generation !== this.#load_generation ||
+            this.disposables.isDisposed
+        ) {
+            return;
+        }
+        const c = this.document as unknown as any;
+        this.viewport.bounds = c.bbox.grow(11);
+
         this.paint();
-
-        // Wait for a valid viewport size, then re-paint. The first paint above
-        // often runs before the host flex layout sizes the canvas (0×0 or the
-        // browser default 300×150), which left comparison scenes blank/wrong.
-        later(async () => {
-            await this.viewport.ready;
-            const c = this.document as unknown as any;
-            this.viewport.bounds = c.bbox.grow(11);
-
-            this.paint();
-
-            // Position the camera and draw the scene.
-            this.zoom_fit_top_item();
-
-            // Mark the viewer as loaded and notify event listeners
-            this.resolve_loaded(true);
-
-            // Draw
-            this.draw();
-        });
+        this.zoom_fit_top_item();
+        this.resolve_loaded(true);
+        this.draw();
     }
 
     protected override on_canvas_resize(): void {
@@ -341,6 +340,8 @@ export abstract class DocumentViewer<
             return;
         }
         this.#paint_count += 1;
+        const perf = isEcadPerfLogEnabled();
+        const t0 = perf ? performance.now() : 0;
 
         // Update the renderer's background color to match the theme.
         this.renderer.background_color = is_showing_design_block()
@@ -402,6 +403,12 @@ export abstract class DocumentViewer<
         );
         this.#active_scene_context = this.scene_cache_context;
         this.#cache_current_presentation();
+
+        if (perf) {
+            ecadPerfLog(
+                `viewer.paint #${this.#paint_count} ${this.document.filename} ${(performance.now() - t0).toFixed(1)}ms`,
+            );
+        }
     }
 
     public override zoom_in() {
