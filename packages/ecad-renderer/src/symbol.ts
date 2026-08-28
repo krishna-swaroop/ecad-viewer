@@ -6,11 +6,12 @@ import type { RenderOptions, RenderResult } from "./types";
 /**
  * KiCad keeps a symbol's body graphics and pins on per-unit child symbols named
  * `..._{unit}_{style}`; the root symbol rarely owns pins itself. Walk the root
- * and its descendants for every pin that applies to the (unit 1, style 1)
- * instance built below -- the common pins (unit 0) plus that unit's own.
+ * and its descendants for every pin that applies to the requested unit -- the
+ * common pins (unit 0) plus that unit's own.
  */
 function collect_unit_pins(
     symbol: schematicProto.I_LibSymbol,
+    wanted_unit: number,
 ): schematicProto.I_Pin[] {
     const result: schematicProto.I_Pin[] = [];
 
@@ -21,12 +22,15 @@ function collect_unit_pins(
     }
 
     function visit(sym: schematicProto.I_LibSymbol, is_root: boolean) {
-        // Unit 0 is common to every unit, style 0 to every style; 1 matches the
-        // instance below.
+        // Unit 0 is common to every unit, style 0 to every style; the
+        // requested unit and style 1 match the instance below.
         const { unit, style } = is_root
             ? { unit: 0, style: 0 }
             : unit_style_of(sym.name);
-        if ((unit === 0 || unit === 1) && (style === 0 || style === 1)) {
+        if (
+            (unit === 0 || unit === wanted_unit) &&
+            (style === 0 || style === 1)
+        ) {
             for (const pin of sym.pins ?? []) result.push(pin);
         }
         for (const child of sym.children ?? []) visit(child, false);
@@ -53,13 +57,17 @@ export function renderSymbol(
     symbol: schematicProto.I_LibSymbol,
     options: RenderOptions = {},
 ): Promise<RenderResult> {
-    const pins: schematicProto.I_PinInstance[] = collect_unit_pins(symbol).map(
-        (pin, index) => ({
-            number: pin.number?.text ?? String(index + 1),
-            uuid: `ecad-renderer-pin-${index}-${pin.number?.text ?? index}`,
-            alternate: "",
-        }),
-    );
+    // A unit below 1 is not a KiCad unit; treat it as the default rather than
+    // silently rendering a symbol with no unit-specific graphics at all.
+    const unit = Math.max(1, Math.trunc(options.unit ?? 1));
+    const pins: schematicProto.I_PinInstance[] = collect_unit_pins(
+        symbol,
+        unit,
+    ).map((pin, index) => ({
+        number: pin.number?.text ?? String(index + 1),
+        uuid: `ecad-renderer-pin-${index}-${pin.number?.text ?? index}`,
+        alternate: "",
+    }));
 
     return renderSchematic(
         {
@@ -72,7 +80,7 @@ export function renderSymbol(
                     uuid: "ecad-renderer-symbol-instance",
                     lib_id: symbol.name,
                     at: { position: { x: 0, y: 0 }, rotation: 0 },
-                    unit: 1,
+                    unit,
                     convert: 1,
                     in_bom: symbol.in_bom ?? false,
                     on_board: symbol.on_board ?? false,
