@@ -1,7 +1,10 @@
 import { expect } from "@esm-bundle/chai";
-import { BoardParser, SchematicParser } from "kicad-parser";
-
-import { renderFootprint, renderSymbol } from "../../ecad-renderer/src";
+import {
+    parseFootprint,
+    parseSymbolLibrary,
+    renderFootprint,
+    renderSymbol,
+} from "../../ecad-renderer/src";
 import { LayerNames } from "../src/viewers/schematic/layers";
 
 /**
@@ -76,16 +79,12 @@ function sized_container(): HTMLElement {
     return container;
 }
 
-const parse_symbols = (text: string) =>
-    new SchematicParser().parseLibSymbols(text);
-const parse_footprint = (text: string) =>
-    new BoardParser().parseFootprintFile(text);
-
 suite("parsing a library file", () => {
-    // parseLibSymbols already existed and is covered by the parser's own
-    // round-trip tests; these assert the shape the renderer depends on.
+    // These go through the renderer's own exports rather than the parser
+    // classes: that is the surface a host actually consumes, and it is
+    // what the built bundle exposes.
     test("reads every symbol in a .kicad_sym", () => {
-        const symbols = parse_symbols(SYMBOL_LIB);
+        const symbols = parseSymbolLibrary(SYMBOL_LIB);
         expect(symbols.length).to.equal(2);
         expect(symbols.map((s) => s.name)).to.deep.equal([
             "R_Small",
@@ -94,7 +93,7 @@ suite("parsing a library file", () => {
     });
 
     test("keeps a symbol's per-unit children and their pins", () => {
-        const [resistor] = parse_symbols(SYMBOL_LIB);
+        const [resistor] = parseSymbolLibrary(SYMBOL_LIB);
         const unit = resistor!.children?.find((c) => c.name.endsWith("_1_1"));
         expect(unit?.pins?.map((p) => p.number?.text)).to.deep.equal([
             "1",
@@ -103,7 +102,7 @@ suite("parsing a library file", () => {
     });
 
     test("reads a standalone .kicad_mod", () => {
-        const footprint = parse_footprint(FOOTPRINT);
+        const footprint = parseFootprint(FOOTPRINT);
         expect(footprint.library_link).to.equal("R_0603");
         expect(footprint.pads?.map((p) => p.number)).to.deep.equal(["1", "2"]);
     });
@@ -117,7 +116,7 @@ suite("rendering a library asset", () => {
 
     test("renders a symbol and paints its pins", async () => {
         const container = sized_container();
-        const [resistor] = parse_symbols(SYMBOL_LIB);
+        const [resistor] = parseSymbolLibrary(SYMBOL_LIB);
         const result = await renderSymbol(resistor!, {
             canvas: container.firstElementChild as HTMLCanvasElement,
         });
@@ -140,7 +139,7 @@ suite("rendering a library asset", () => {
 
     test("renders a footprint", async () => {
         const container = sized_container();
-        const result = await renderFootprint(parse_footprint(FOOTPRINT), {
+        const result = await renderFootprint(parseFootprint(FOOTPRINT), {
             canvas: container.firstElementChild as HTMLCanvasElement,
         });
         cleanup.push(() => {
@@ -152,7 +151,7 @@ suite("rendering a library asset", () => {
 
     test("draws no worksheet frame around a standalone asset", async () => {
         const container = sized_container();
-        const [resistor] = parse_symbols(SYMBOL_LIB);
+        const [resistor] = parseSymbolLibrary(SYMBOL_LIB);
         const result = await renderSymbol(resistor!, {
             canvas: container.firstElementChild as HTMLCanvasElement,
         });

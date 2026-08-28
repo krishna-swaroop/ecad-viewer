@@ -18,6 +18,13 @@ let { options, context } = await bundle({
     entryPoints: {
         "ecad-viewer": ENTRY,
         "parser.worker": resolve(APP_DIR, "src/kicanvas/parser.worker.ts"),
+        // The standalone symbol/footprint renderer. Built separately from the
+        // app so a host that only draws library assets -- the KiCad-embedded
+        // panel above all -- does not ship the whole viewer to do it.
+        "ecad-renderer": resolve(
+            ROOT_DIR,
+            "packages/ecad-renderer/src/index.ts",
+        ),
     },
     outdir: resolve(APP_DIR, "build"),
     minify: true,
