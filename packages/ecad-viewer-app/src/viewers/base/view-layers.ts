@@ -35,7 +35,9 @@ export enum ViewLayerNames {
 
 export type VisibilityType = boolean | (() => boolean);
 export type ExtensionLayerPlacement =
-    "underlay" | "content-overlay" | "foreground";
+    | "underlay"
+    | "content-overlay"
+    | "foreground";
 
 /**
  * A view layer
@@ -339,7 +341,10 @@ export class ViewLayerSet implements IDisposable {
      */
     highlight(
         layer_or_layers:
-            string | ViewLayer | null | Iterable<string | ViewLayer>,
+            | string
+            | ViewLayer
+            | null
+            | Iterable<string | ViewLayer>,
     ) {
         let layer_names: string[] = [];
         if (layer_or_layers) {

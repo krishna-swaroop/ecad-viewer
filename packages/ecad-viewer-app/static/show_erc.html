@@ -37,7 +37,7 @@
                 background-color: #fff;
                 border: 1px solid #ccc;
                 border-radius: 4px;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
             }
 
             button:hover {
@@ -59,7 +59,9 @@
         <script>
             const iframe = document.getElementById("ercFrame");
             const triggerBtn = document.getElementById("triggerErcBtn");
-            const projectTriggerBtn = document.getElementById("triggerProjectErcBtn");
+            const projectTriggerBtn = document.getElementById(
+                "triggerProjectErcBtn",
+            );
 
             /**
              * Sends a single component ERC result
@@ -107,24 +109,39 @@
                         {
                             designator: "U1",
                             pins: [
-                                { pin_num: "1", message: "Floating Input", severity: "warning" },
-                                { pin_num: "3", message: "Power overload potential", severity: "error" }
-
-                            ]
+                                {
+                                    pin_num: "1",
+                                    message: "Floating Input",
+                                    severity: "warning",
+                                },
+                                {
+                                    pin_num: "3",
+                                    message: "Power overload potential",
+                                    severity: "error",
+                                },
+                            ],
                         },
                         {
                             designator: "R1",
                             pins: [
-                                { pin_num: "2", message: "Power overload potential", severity: "error" }
-                            ]
+                                {
+                                    pin_num: "2",
+                                    message: "Power overload potential",
+                                    severity: "error",
+                                },
+                            ],
                         },
                         {
                             designator: "C5",
                             pins: [
-                                { pin_num: "1", message: "Polarity mismatch", severity: "error" }
-                            ]
-                        }
-                    ]
+                                {
+                                    pin_num: "1",
+                                    message: "Polarity mismatch",
+                                    severity: "error",
+                                },
+                            ],
+                        },
+                    ],
                 };
 
                 iframe.contentWindow.postMessage(

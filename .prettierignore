@@ -8,4 +8,9 @@ docs/site
 .vscode/
 CODE_OF_CONDUCT.md
 package-lock.json
-src/kicad/text/newstroke-glyphs.ts
+**/src/kicad/text/newstroke-glyphs.ts
+
+# Vendored and generated output. Not ours to format, and reformatting it would
+# bury every real change in a few hundred thousand lines of noise.
+**/static/three/
+**/dist/

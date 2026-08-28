@@ -175,7 +175,7 @@ export class Vec2 {
 
     mul(s: Vec2 | number) {
         return this.multiply(s);
-    }    
+    }
 
     resize(len: number) {
         return this.normalize().multiply(len);

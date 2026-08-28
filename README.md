@@ -15,13 +15,11 @@ We are open to introducing ready-made frameworks, unlike the original, which ins
 While remaining a reusable component, ECAD-Viewer offers the following features out of the box, combining the most advanced and leading-edge technologies, some of which were not intended in the original:
 
 - **General Features:**
-
     - In-depth secondary development based on KiCad to support the import of Altium designs and the generation of 3D models from `kicad_pcb`.
     - Support for loading projects from ZIP files.
     - Maintain support for the latest KiCad file formats.
 
 - **PCB:**
-
     - Option to select and display properties of VIAs and ZONES.
     - Other areas become grayed out when selecting a net/component package.
     - Selection priority: Track -> Pad/Drill -> Footprint -> Zone. A pop-up menu is provided for selection when overlaps occur.
@@ -32,7 +30,6 @@ While remaining a reusable component, ECAD-Viewer offers the following features 
     - Display properties of wire width and color.
 
 - **SCH:**
-
     - Inspection of symbol and sub-sheet properties.
     - Navigation between labels with the same name through clicking.
     - Addition of hierarchical_labels.
@@ -43,19 +40,16 @@ While remaining a reusable component, ECAD-Viewer offers the following features 
     - Highlighting of wires, buses, pins, symbols, and labels on hover.
 
 - **3D:**
-
     - Integration with kicad-cli-docker for generating 3D models from PCB, with priority given to using package 3D models in the project's root directory.
     - Use of gltfpack for model compression to save bandwidth and improve rendering efficiency.
     - Integration of Three.js for displaying 3D models.
 
 - **BOM:**
-
     - Generation of a Bill of Materials (BOM) from the schematic.
     - Extraction of BOM from the schematic.
     - Priority given to extracting BOM from the schematic; if no schematic is available, extract from the PCB.
 
 - **Bug Fixes During Development and Feedback:**
-
     - Incorrect pin positions in SCH sheets.
     - Parsing of ALTIUM_VALUE attributes in SCH drawings converted from AD.
     - Disorder of package information in PCB designs imported from AD.

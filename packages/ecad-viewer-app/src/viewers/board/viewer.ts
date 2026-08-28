@@ -26,11 +26,7 @@ import type {
     EcadOverlayAnchor,
     ResolvedOverlayAnchor,
 } from "../base/overlay-scene";
-import {
-    LayerNames,
-    LayerSet,
-    ViewLayer,
-} from "./layers";
+import { LayerNames, LayerSet, ViewLayer } from "./layers";
 import { BoardPainter } from "./painter";
 import {
     diff_selection_copper_layers,

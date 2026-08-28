@@ -39,17 +39,11 @@ export function diff_selection_copper_layers(
             typeof candidate.layer === "string"
                 ? candidate.layer
                 : candidate.layer?.name;
-        if (
-            layer?.endsWith(".Cu") &&
-            candidate.typeId !== "Via"
-        ) {
+        if (layer?.endsWith(".Cu") && candidate.typeId !== "Via") {
             track_layers.add(layer);
         }
         if (candidate.typeId === "Via" && candidate.layers?.length) {
-            const endpoints = [
-                candidate.layers[0],
-                candidate.layers.at(-1),
-            ];
+            const endpoints = [candidate.layers[0], candidate.layers.at(-1)];
             for (const name of endpoints) {
                 if (name?.endsWith(".Cu")) via_end_layers.add(name);
             }

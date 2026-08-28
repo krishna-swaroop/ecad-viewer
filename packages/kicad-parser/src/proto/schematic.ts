@@ -14,7 +14,7 @@ export enum MANDATORY_FIELD_T {
     FOOTPRINT_FIELD,
     DATASHEET_FIELD,
     DESCRIPTION_FIELD,
-    MANDATORY_FIELD_COUNT
+    MANDATORY_FIELD_COUNT,
 }
 
 export interface I_Fill {
@@ -384,7 +384,15 @@ export interface I_KicadSch {
     hierarchical_labels?: I_HierarchicalLabel[];
     symbols?: I_SchematicSymbol[];
     no_connects?: I_NoConnect[];
-    drawings?: (I_Polyline | I_Rectangle | I_Arc | I_Text | I_Bezier | I_TextBox | I_Circle)[];
+    drawings?: (
+        | I_Polyline
+        | I_Rectangle
+        | I_Arc
+        | I_Text
+        | I_Bezier
+        | I_TextBox
+        | I_Circle
+    )[];
     images?: I_Image[];
     tables?: I_Table[];
     sheet_instances?: I_SheetInstance[];

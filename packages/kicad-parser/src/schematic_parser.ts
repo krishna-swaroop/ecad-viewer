@@ -694,17 +694,13 @@ export class SchematicParser {
             P.item("title_block", parseTitleBlock),
             // lib_symbols parsed as collection of symbols inside lib_symbols item
             P.item("lib_symbols", (e) => {
-        const parsed = parse_expr(
-            e,
-            P.start("lib_symbols"),
-            P.collection(
-                "symbols",
-                "symbol",
-                T.item(parseLibSymbol),
-            ),
-        ) as any;
-        return parsed["symbols"] ?? [];
-    }),
+                const parsed = parse_expr(
+                    e,
+                    P.start("lib_symbols"),
+                    P.collection("symbols", "symbol", T.item(parseLibSymbol)),
+                ) as any;
+                return parsed["symbols"] ?? [];
+            }),
             P.collection("wires", "wire", T.item(parseWire)),
             P.collection("buses", "bus", T.item(parseBus)),
             P.collection("bus_entries", "bus_entry", T.item(parseBusEntry)),
@@ -752,9 +748,10 @@ export class SchematicParser {
         return serializeSchematic(schematic);
     }
 
-    public parseLibSymbols(text: string): S.I_LibSymbol[] { 
+    public parseLibSymbols(text: string): S.I_LibSymbol[] {
         const expr = listify(text);
-        const root = expr.length === 1 && Array.isArray(expr[0]) ? expr[0] : expr;
+        const root =
+            expr.length === 1 && Array.isArray(expr[0]) ? expr[0] : expr;
 
         const parsed = parse_expr(
             root,
@@ -767,18 +764,18 @@ export class SchematicParser {
 
         return parsed["symbols"] ?? [];
     }
-    public saveLibSymbols(libSymbols: S.I_LibSymbol[]): string { 
+    public saveLibSymbols(libSymbols: S.I_LibSymbol[]): string {
         let result = "(kicad_symbol_lib\n";
         const indent = 1;
-        
+
         result += `${"\t".repeat(indent)}(version 20251024)\n`;
         result += `${"\t".repeat(indent)}(generator "kicad_symbol_editor")\n`;
         result += `${"\t".repeat(indent)}(generator_version "10.0")\n`;
-        
+
         for (const symbol of libSymbols) {
             result += serializeLibSymbol(symbol, indent);
         }
-        
+
         result += `)\n`;
         return result;
     }
