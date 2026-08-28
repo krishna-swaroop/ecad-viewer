@@ -720,6 +720,20 @@ function parseGroup(expr: Parseable): B.I_Group {
 }
 
 export class BoardParser {
+    /**
+     * Parse a `.kicad_mod` file into one footprint.
+     *
+     * A footprint file is a bare `(footprint ...)` expression, not a board, so
+     * `parse` cannot read one -- it starts at `kicad_pcb`. This mirrors
+     * `SchematicParser.parseLibSymbols` for the other half of a library asset.
+     */
+    public parseFootprintFile(text: string): B.I_Footprint {
+        const expr = listify(text);
+        const root =
+            expr.length === 1 && Array.isArray(expr[0]) ? expr[0] : expr;
+        return parseFootprint(root);
+    }
+
     public parse(text: string): B.I_KicadPCB {
         const want_breakdown =
             isEcadPerfLogEnabled() && text.length > 1_000_000;

@@ -1,0 +1,43 @@
+{
+    // Mirrors packages/ecad-viewer-app/tsconfig.json. The renderer imports the
+    // app's painters and viewers directly, so those files are typechecked as
+    // part of this project; a stricter setting here would report errors in the
+    // app that its own build does not have and that no renderer change fixes.
+    "compilerOptions": {
+        "target": "es2022",
+        "moduleResolution": "bundler",
+        "experimentalDecorators": true,
+        "useDefineForClassFields": false,
+        "module": "es2022",
+        "verbatimModuleSyntax": true,
+        "allowArbitraryExtensions": true,
+        "allowJs": true,
+        "checkJs": true,
+        "noEmit": true,
+        "forceConsistentCasingInFileNames": true,
+        "noImplicitAny": true,
+        "strictNullChecks": true,
+        "strictFunctionTypes": true,
+        "strictBindCallApply": true,
+        "noImplicitThis": true,
+        "useUnknownInCatchVariables": true,
+        "alwaysStrict": true,
+        "noUnusedLocals": true,
+        "noImplicitReturns": true,
+        "noFallthroughCasesInSwitch": true,
+        "noUncheckedIndexedAccess": true,
+        "noImplicitOverride": true,
+        "noPropertyAccessFromIndexSignature": true,
+        "allowUnusedLabels": false,
+        "allowUnreachableCode": false,
+        "types": [],
+        "baseUrl": ".",
+        "paths": {
+            "kicad-parser": ["../kicad-parser/src"],
+        },
+    },
+    // The app declares its asset imports (.glsl, .kicad_wks, .css, .svg) in
+    // ambient .d.ts files under its own src. Those are not reachable from this
+    // package's include, so name them here.
+    "include": ["./src/**/*", "../ecad-viewer-app/src/**/*.d.ts"],
+}
