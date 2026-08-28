@@ -748,10 +748,12 @@ export class BoardParser {
             P.item("paper", parsePaper),
             P.item("title_block", parseTitleBlock),
             P.item("setup", parseSetup),
-            P.dict("properties", "property", (obj, name, e) => {
-                const el = e as [string, string, string];
-                return { name: el[1], value: el[2] };
-            }),
+            // `P.dict` has already taken the key from the expression and
+            // passes the value here. Treating that value as the expression
+            // again indexed into the string: `(property "VERSION" "1.4.0")`
+            // parsed to `"4"`, so a board's text variables resolved to a
+            // single character of themselves.
+            P.dict("properties", "property", T.string),
             P.list("layers", T.item(parseLayer)),
             P.collection("nets", "net", T.item(parseNet)),
             P.collection("footprints", "footprint", T.item(parseFootprint)),
