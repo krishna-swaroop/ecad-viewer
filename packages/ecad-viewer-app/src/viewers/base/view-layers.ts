@@ -82,6 +82,18 @@ export class ViewLayer implements IDisposable {
     bboxes: Map<any, BBox> = new Map();
 
     /**
+     * How far outside an item's bounding box, in document units, a point may
+     * fall and still count as a hit on this layer.
+     *
+     * A painted bounding box is exactly the geometry that was drawn, which for
+     * anything stroked as a bare line -- a symbol pin most of all -- is only as
+     * wide as the stroke. That is honest for fitting a view and useless for
+     * pointing at. The allowance lives here rather than in the recorded box so
+     * that `bbox`, and everything that fits a camera to it, stays exact.
+     */
+    hit_margin = 0;
+
+    /**
      * Create a new Layer.
      * @param  ayer_set - the LayerSet that this Layer belongs to
      * @param name - this layer's name
@@ -137,7 +149,11 @@ export class ViewLayer implements IDisposable {
     /** @yields a list of BBoxes that contain the given point */
     *query_point(p: Vec2) {
         for (const bb of this.bboxes.values()) {
-            if (bb.contains_point(p)) {
+            const target = this.hit_margin ? bb.grow(this.hit_margin) : bb;
+            if (target.contains_point(p)) {
+                // The recorded box is yielded, not the grown one: callers
+                // outline what was painted, and the margin is only ever a
+                // question about where the pointer was.
                 yield bb;
             }
         }
