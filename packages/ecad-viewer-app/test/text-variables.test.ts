@@ -2,6 +2,7 @@ import { expect } from "@esm-bundle/chai";
 import { BoardParser, SchematicParser } from "kicad-parser";
 
 import { DrawingSheet, KicadPCB, KicadSch } from "../src/kicad";
+import { SchematicInstanceContext, Text } from "../src/kicad/schematic";
 import { expand_text_vars } from "../src/kicad/common";
 import { Project } from "../src/kicanvas/project";
 
@@ -74,6 +75,52 @@ function schematic_in_project(): KicadSch {
     );
     schematic.project = project_with_settings();
     return schematic;
+}
+
+// The painter never reads a KicadSch directly; it goes through a
+// SchematicInstanceContext so a reused child sheet shows the right annotated
+// reference. This fixture carries a project variable in the two places that
+// context resolves: a plain text item on the sheet, and a symbol property.
+const SHEET_WITH_VARS = `
+(kicad_sch
+  (version 20231120)
+  (generator "eeschema")
+  (uuid "00000000-0000-0000-0000-000000000002")
+  (paper "A4")
+  (title_block (title "Fixture") (rev "\${VERSION}"))
+  (lib_symbols
+    (symbol "Device:R"
+      (property "Reference" "R" (at 0 0 0))
+      (property "Value" "R" (at 0 0 0))
+    )
+  )
+  (text "Build \${VERSION}" (at 10 10 0))
+  (symbol
+    (lib_id "Device:R")
+    (at 20 20 0)
+    (unit 1)
+    (uuid "00000000-0000-0000-0000-0000000000aa")
+    (property "Reference" "R1" (at 20 18 0))
+    (property "Datasheet" "docs/\${VERSION}.pdf" (at 20 22 0))
+    (instances
+      (project "fixture"
+        (path "/00000000-0000-0000-0000-000000000002"
+          (reference "R1") (unit 1))))
+  )
+)
+`;
+
+function sheet_in_project(): KicadSch {
+    const schematic = new KicadSch(
+        "sheet.kicad_sch",
+        new SchematicParser().parse(SHEET_WITH_VARS) as never,
+    );
+    schematic.project = project_with_settings();
+    return schematic;
+}
+
+function context_for(document: KicadSch): SchematicInstanceContext {
+    return new SchematicInstanceContext(document, `/${document.uuid}`);
 }
 
 suite("project text variables", () => {
@@ -161,5 +208,65 @@ suite("expansion through a title block", () => {
         expect(expand_text_vars("${SELF}", board_in_project())).to.equal(
             "${SELF}",
         );
+    });
+});
+/**
+ * Issue #194 follow-up. The document-level fix resolved variables on a board
+ * and through a title block, but the schematic painter reads its text through
+ * SchematicInstanceContext, whose own resolver stopped at the title block and
+ * never asked the project. A sheet drawn through a context therefore still
+ * showed `${VERSION}` verbatim.
+ */
+suite("text variables through a schematic instance context", () => {
+    test("resolves a project variable used in a sheet text item", () => {
+        const document = sheet_in_project();
+        const context = context_for(document);
+        const text = document.drawings.find(
+            (drawing): drawing is Text => drawing instanceof Text,
+        )!;
+        expect(context.shown_text(text)).to.equal("Build 1.4.0");
+    });
+
+    test("resolves a project variable used in a symbol property", () => {
+        const document = sheet_in_project();
+        const context = context_for(document);
+        const symbol = document.symbols.values().next().value!;
+        const property = symbol.properties.get("Datasheet")!;
+        expect(context.shown_property_text(property)).to.equal(
+            "docs/1.4.0.pdf",
+        );
+    });
+
+    test("resolves a project variable asked for by name", () => {
+        expect(
+            context_for(sheet_in_project()).resolve_text_var("VERSION"),
+        ).to.equal("1.4.0");
+    });
+
+    test("keeps the instance context's own answers ahead of the project", () => {
+        // FILENAME is the context's to answer; the project fallback must not
+        // shadow it.
+        const context = context_for(sheet_in_project());
+        expect(context.resolve_text_var("FILENAME")).to.equal(
+            "sheet.kicad_sch",
+        );
+    });
+
+    test("expands a title block field that is itself a project variable", () => {
+        // resolve_text_var is a single lookup; expand_text_vars drives the
+        // recursion. REVISION answers "${VERSION}", which only the project
+        // can finish.
+        expect(
+            expand_text_vars(
+                "Rev: ${REVISION}",
+                context_for(sheet_in_project()),
+            ),
+        ).to.equal("Rev: 1.4.0");
+    });
+
+    test("leaves an undefined variable alone", () => {
+        expect(
+            context_for(sheet_in_project()).resolve_text_var("NOT_DEFINED"),
+        ).to.equal(undefined);
     });
 });

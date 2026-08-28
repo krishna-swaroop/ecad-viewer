@@ -436,6 +436,14 @@ export class SchematicInstanceContext {
             const symbol = this.document.symbols.get(uuid);
             if (symbol) return this.resolve_symbol_text_var(symbol, field_name);
         }
+        // This context is a view of the document, so it resolves through the
+        // document's chain -- project variables included. Without this the
+        // painter, which only ever reads text through a context, drew
+        // `${VAR}` verbatim for every project variable on a sheet.
+        const from_project = this.document.project?.resolve_text_var(name);
+        if (from_project !== undefined) {
+            return from_project;
+        }
         return this.document.title_block.resolve_text_var(name);
     }
 
