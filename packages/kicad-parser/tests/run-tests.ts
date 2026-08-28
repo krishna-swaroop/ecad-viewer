@@ -46,7 +46,7 @@ function testSchematicFile(filePath: string): boolean {
 
         // Check parse/serialize/parse/serialize cycle
         const reparsed = parser.parse(serialized);
-        const reserialized = parser.save(reparsed);
+        parser.save(reparsed);
 
         // Verify with KiCad CLI
         const kicadCliPath = "kicad-cli";
