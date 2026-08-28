@@ -63,6 +63,31 @@ const FOOTPRINT = `
 )
 `;
 
+const DUAL_UNIT_LIB = `
+(kicad_symbol_lib
+  (version 20231120)
+  (generator "kicad_symbol_editor")
+  (symbol "Opamp_Dual"
+    (property "Reference" "U" (at 0 0 0))
+    (symbol "Opamp_Dual_1_1"
+      (rectangle (start -2.54 2.54) (end 2.54 -2.54))
+      (pin input line (at -5.08 2.54 0) (length 2.54)
+        (name "A" (effects (font (size 1.27 1.27))))
+        (number "1" (effects (font (size 1.27 1.27)))))
+    )
+    (symbol "Opamp_Dual_2_1"
+      (rectangle (start -2.54 2.54) (end 2.54 -2.54))
+      (pin input line (at -5.08 2.54 0) (length 2.54)
+        (name "B" (effects (font (size 1.27 1.27))))
+        (number "5" (effects (font (size 1.27 1.27)))))
+      (pin input line (at -5.08 -2.54 0) (length 2.54)
+        (name "C" (effects (font (size 1.27 1.27))))
+        (number "6" (effects (font (size 1.27 1.27)))))
+    )
+  )
+)
+`;
+
 /**
  * A canvas with no layout size gives the viewport a zero-sized camera, and
  * every bbox assertion below would read zero regardless of what was painted.
@@ -135,6 +160,51 @@ suite("rendering a library asset", () => {
         const pins = viewer.layers.by_name(LayerNames.symbol_pin);
         expect(pins, "symbol pin layer").to.not.equal(null);
         expect(pins!.bbox.w).to.be.greaterThan(0);
+    });
+
+    test("renders the requested unit of a multi-unit symbol", async () => {
+        // Unit 1 owns one pin and unit 2 owns two. Rendering unit 2 while
+        // collecting unit 1's pins would draw the wrong part of the package,
+        // which is exactly what the per-unit preview tabs exist to show.
+        const [opamp] = parseSymbolLibrary(DUAL_UNIT_LIB);
+        const counts: number[] = [];
+        for (const unit of [1, 2]) {
+            const container = sized_container();
+            const result = await renderSymbol(opamp!, {
+                canvas: container.firstElementChild as HTMLCanvasElement,
+                unit,
+            });
+            cleanup.push(() => {
+                result.dispose();
+                container.remove();
+            });
+            const viewer = result.viewer as {
+                document: { symbols: Map<string, { unit_pins: unknown[] }> };
+            };
+            const placed = [...viewer.document.symbols.values()][0]!;
+            counts.push(placed.unit_pins.length);
+        }
+        expect(counts).to.deep.equal([1, 2]);
+    });
+
+    test("defaults to unit 1 and ignores a nonsense unit", async () => {
+        const [opamp] = parseSymbolLibrary(DUAL_UNIT_LIB);
+        for (const unit of [undefined, 0, -3]) {
+            const container = sized_container();
+            const result = await renderSymbol(opamp!, {
+                canvas: container.firstElementChild as HTMLCanvasElement,
+                unit,
+            });
+            cleanup.push(() => {
+                result.dispose();
+                container.remove();
+            });
+            const viewer = result.viewer as {
+                document: { symbols: Map<string, { unit_pins: unknown[] }> };
+            };
+            const placed = [...viewer.document.symbols.values()][0]!;
+            expect(placed.unit_pins.length, `unit ${unit}`).to.equal(1);
+        }
     });
 
     test("renders a footprint", async () => {

@@ -12,6 +12,14 @@ export interface RenderOptions {
     /** Attach a generated canvas to this element so it receives layout dimensions. */
     container?: HTMLElement;
     interactive?: boolean;
+    /**
+     * Which unit of a multi-unit symbol to draw. Defaults to 1.
+     *
+     * KiCad splits a multi-unit part (an opamp package, a relay) across units
+     * that share one library entry, so a symbol preview is per unit, not per
+     * symbol. Ignored by `renderFootprint`.
+     */
+    unit?: number;
 }
 
 export interface RenderResult<TViewer = unknown> {
