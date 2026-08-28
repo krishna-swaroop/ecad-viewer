@@ -7,8 +7,6 @@
 import { DrawingSheet } from ".";
 import { Color } from "../base/color";
 import type { CrossHightAble } from "../base/cross_highlight_able";
-import type { HighlightAble } from "../base/highlightable";
-import type { IndexAble } from "../base/index_able";
 import { Arc as MathArc, BBox, Matrix3, Vec2 } from "../base/math";
 import { html } from "../base/web-components";
 import {
@@ -1666,7 +1664,7 @@ export class SchematicSymbolInstance {
     constructor() {}
 }
 
-export class PinInstance implements HighlightAble, IndexAble {
+export class PinInstance implements CrossHightAble {
     number: string;
     uuid: string;
     alternate: string;
@@ -1718,6 +1716,17 @@ export class PinInstance implements HighlightAble, IndexAble {
 
     public get index() {
         return `symbol_pin_${this.number}`;
+    }
+
+    /**
+     * The pad this pin probes to.
+     *
+     * `Pad` already carries the mirrored pair, and a placed pin is what the
+     * schematic hit-test hands back, so both ends of a cross-probe can be
+     * matched on these keys alone without either side knowing the other's type.
+     */
+    public get cross_index() {
+        return `pad_${this.number}`;
     }
 }
 

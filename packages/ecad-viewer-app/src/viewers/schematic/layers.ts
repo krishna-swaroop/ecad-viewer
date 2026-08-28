@@ -11,6 +11,7 @@ import {
 } from "../base/view-layers";
 import { Color } from "../../base/color";
 import type { SchematicTheme } from "../../kicad";
+import { DefaultValues } from "../../kicad/schematic";
 export { ViewLayer };
 
 export enum LayerNames {
@@ -61,6 +62,14 @@ export class LayerSet extends BaseLayerSet {
 
         this.by_name(LayerNames.interactive)!.visible = false;
         this.by_name(LayerNames.interactive)!.interactive = true;
+
+        // A pin is drawn as one stroked line, so its painted box is a hair
+        // under 0.31mm wide -- about three screen pixels on a fitted preview,
+        // and a miss there selects nothing at all, since the pin sticks out
+        // past the symbol body that would otherwise catch the click. KiCad
+        // sizes its own pin target with this same constant.
+        this.by_name(LayerNames.symbol_pin)!.hit_margin =
+            DefaultValues.target_pin_radius;
         this.by_name(LayerNames.drawing_sheet)!.color =
             (this.theme["worksheet"] as Color) ?? Color.white;
     }
