@@ -38,6 +38,40 @@ export type HasResolveTextVars = {
     resolve_text_var: (name: string) => string | undefined;
 };
 
+/**
+ * How many times a resolved value may itself be expanded.
+ *
+ * KiCad's own `ExpandTextVars` recurses with a depth limit, and designs rely on
+ * it: a title block routinely reads `(rev "${VERSION}")`, so the drawing
+ * sheet's `${REVISION}` resolves to another variable rather than to a value.
+ * A single pass left exactly that on screen. The limit is what stops
+ * `A -> ${B} -> ${A}` from looping.
+ */
+const MAX_TEXT_VAR_DEPTH = 10;
+
+function substitute_text_vars(
+    text: string,
+    resolveable: HasResolveTextVars,
+    depth: number,
+): string {
+    return text.replaceAll(
+        /(\$\{(.+?)\})/g,
+        (substring: string, all: string, name: string) => {
+            const val = resolveable.resolve_text_var(name);
+
+            if (val === undefined) {
+                return all;
+            }
+
+            if (depth >= MAX_TEXT_VAR_DEPTH) {
+                return val;
+            }
+
+            return substitute_text_vars(val, resolveable, depth + 1);
+        },
+    );
+}
+
 export function expand_text_vars(
     text: string,
     resolveable: HasResolveTextVars | undefined,
@@ -48,20 +82,7 @@ export function expand_text_vars(
         return text;
     }
 
-    text = text.replaceAll(
-        /(\$\{(.+?)\})/g,
-        (substring: string, all: string, name: string) => {
-            const val = resolveable.resolve_text_var(name);
-
-            if (val === undefined) {
-                return all;
-            }
-
-            return val;
-        },
-    );
-
-    return text;
+    return substitute_text_vars(text, resolveable, 0);
 }
 
 export class At {

@@ -14,6 +14,7 @@ import { html } from "../base/web-components";
 import {
     At,
     Effects,
+    type HasResolveTextVars,
     Paper,
     Stroke,
     TitleBlock,
@@ -84,6 +85,14 @@ export class KicadSch {
     symbol_instances?: SymbolInstances;
     sheets: SchematicSheet[] = [];
     is_converted_from_ad = false;
+    /**
+     * The project this sheet belongs to, when one is loaded.
+     *
+     * A schematic has no equivalent of the board's mirrored `(property ...)`
+     * entries, so a project text variable used on a sheet can only ever be
+     * resolved through here.
+     */
+    project?: HasResolveTextVars;
 
     public get bbox() {
         return DrawingSheet.default().page_bbox;
@@ -269,6 +278,11 @@ export class KicadSch {
             if (symbol) {
                 return symbol.resolve_text_var(field_name);
             }
+        }
+
+        const from_project = this.project?.resolve_text_var(name);
+        if (from_project !== undefined) {
+            return from_project;
         }
 
         return this.title_block.resolve_text_var(name);

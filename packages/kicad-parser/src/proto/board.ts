@@ -452,7 +452,7 @@ export interface I_KicadPCB {
     paper?: I_Paper;
     title_block: I_TitleBlock;
     setup?: I_Setup;
-    properties?: Record<string, { name: string; value: string }>;
+    properties?: Record<string, string>;
     layers: I_Layer[];
     nets: I_Net[];
     footprints: I_Footprint[];

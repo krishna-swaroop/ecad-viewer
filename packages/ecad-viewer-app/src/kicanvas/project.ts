@@ -205,6 +205,20 @@ export class Project extends EventTarget implements IDisposable {
 
     public loaded: Barrier = new Barrier();
     public settings: ProjectSettings = new ProjectSettings();
+
+    /**
+     * Resolve one of the project's own text variables.
+     *
+     * `.kicad_pro` has always been parsed into `settings.text_variables`, and
+     * nothing ever read it: a design using `${VERSION}` on a sheet, on
+     * silkscreen or in its title block drew the variable's name instead of its
+     * value. Documents hold a reference to the project rather than a copy of
+     * this map, because the host may append the `.kicad_pro` after the sheet it
+     * belongs to has already been parsed.
+     */
+    resolve_text_var(name: string): string | undefined {
+        return this.settings.text_variables?.[name];
+    }
     _root_schematic_page?: ProjectPage;
     _pages_by_path: Map<string, ProjectPage> = new Map();
 
@@ -530,6 +544,7 @@ export class Project extends EventTarget implements IDisposable {
         } else {
             doc = new KicadSch(filename, pod as any);
         }
+        doc.project = this;
 
         const t_model1 = perf ? performance.now() : 0;
 

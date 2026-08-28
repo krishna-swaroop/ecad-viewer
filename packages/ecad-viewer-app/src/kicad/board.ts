@@ -11,6 +11,7 @@ import { LayerNames } from "../viewers/board/layers";
 import {
     At,
     Effects,
+    type HasResolveTextVars,
     Paper,
     Stroke,
     TitleBlock,
@@ -54,6 +55,14 @@ export class KicadPCB implements BoardNode {
     title_block = new TitleBlock();
     setup?: Setup;
     properties = new Map<string, Property>();
+    /**
+     * The project this board belongs to, when one is loaded.
+     *
+     * A live reference rather than a copy of its settings: the host may append
+     * the `.kicad_pro` after the board has already been parsed, and the
+     * variables have to resolve once it arrives.
+     */
+    project?: HasResolveTextVars;
     layers: Layer[] = [];
     nets: Net[] = [];
     footprints: Footprint[] = [];
@@ -92,7 +101,7 @@ export class KicadPCB implements BoardNode {
 
         if (data.properties) {
             for (const [k, v] of Object.entries(data.properties)) {
-                this.properties.set(k, new Property(v));
+                this.properties.set(k, new Property({ name: k, value: v }));
             }
         }
 
@@ -272,6 +281,15 @@ export class KicadPCB implements BoardNode {
     resolve_text_var(name: string): string | undefined {
         if (name == "FILENAME") {
             return this.filename;
+        }
+
+        // The project is authoritative and the board's own `(property ...)`
+        // entries are the copy KiCad writes so the board still resolves when
+        // opened without one. Consulting the copy first would pin a board to
+        // whatever its variables were when it was last saved.
+        const from_project = this.project?.resolve_text_var(name);
+        if (from_project !== undefined) {
+            return from_project;
         }
 
         if (this.properties.has(name)) {
