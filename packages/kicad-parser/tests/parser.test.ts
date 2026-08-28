@@ -9,6 +9,81 @@ import { diff } from "jest-diff";
 const demosDir = path.join(__dirname, "demos");
 
 /**
+ * Locate the `kicad-cli` executable, or return null if KiCad is not installed.
+ *
+ * The ERC check below shells out to KiCad itself. Invoking it by bare name
+ * only works when KiCad happens to be on PATH, which it is not after a stock
+ * macOS install -- the binary lives inside the .app bundle -- so every ERC
+ * case failed with "command not found" and read as though the parser had
+ * broken the file it serialized.
+ */
+function resolveKicadCli(): string | null {
+    const override = process.env["KICAD_CLI"];
+    if (override) {
+        return fs.existsSync(override) ? override : null;
+    }
+
+    const onPath = process.platform === "win32" ? "where" : "which";
+    try {
+        const found = execSync(`${onPath} kicad-cli`, {
+            stdio: "pipe",
+            encoding: "utf8",
+        })
+            .split(/\r?\n/)[0]
+            ?.trim();
+        if (found) return found;
+    } catch {
+        // Not on PATH; fall through to the places KiCad actually installs to.
+    }
+
+    const candidates: string[] = [];
+    if (process.platform === "darwin") {
+        candidates.push(
+            "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli",
+        );
+    } else if (process.platform === "win32") {
+        for (const root of [
+            "C:\\Program Files\\KiCad",
+            "C:\\Program Files (x86)\\KiCad",
+        ]) {
+            // Installs are versioned (KiCad\9.0\bin), so the version
+            // directory has to be discovered rather than guessed.
+            try {
+                for (const version of fs.readdirSync(root)) {
+                    candidates.push(
+                        path.join(root, version, "bin", "kicad-cli.exe"),
+                    );
+                }
+            } catch {
+                // Root absent; nothing to add.
+            }
+        }
+    } else {
+        candidates.push("/usr/bin/kicad-cli", "/usr/local/bin/kicad-cli");
+    }
+
+    return candidates.find((c) => fs.existsSync(c)) ?? null;
+}
+
+const kicadCli = resolveKicadCli();
+
+/**
+ * A missing KiCad is a gap in coverage, not a passing test, so say so loudly
+ * once and set REQUIRE_KICAD_CLI=1 to make it fatal where that gap is not
+ * acceptable. Nothing in CI runs this suite today, which is how the failures
+ * went unnoticed in the first place.
+ */
+if (!kicadCli) {
+    const message =
+        "kicad-cli not found: skipping ERC verification. " +
+        "Install KiCad, put kicad-cli on PATH, or set KICAD_CLI to its full path.";
+    if (process.env["REQUIRE_KICAD_CLI"] === "1") {
+        throw new Error(message);
+    }
+    console.warn(`\n\u26a0\ufe0f  ${message}\n`);
+}
+
+/**
  * Recursively collect every *.kicad_sch path under a directory.
  */
 function findSchematicFiles(dir: string): string[] {
@@ -280,7 +355,9 @@ describe("KiCad Schematic Parser", () => {
             );
         });
 
-        it(`[${relPath}] passes KiCad CLI ERC after serialization`, () => {
+        const ercTest = kicadCli ? it : it.skip;
+
+        ercTest(`[${relPath}] passes KiCad CLI ERC after serialization`, () => {
             const original = fs.readFileSync(filePath, "utf8");
 
             const parsed = parser.parse(original);
@@ -323,8 +400,9 @@ describe("KiCad Schematic Parser", () => {
                 ).toBe(true);
 
                 // --- ERC EXECUTION ---
+                const erc = `"${kicadCli}" sch erc "${serFile}"`;
                 try {
-                    execSync(`kicad-cli sch erc "${serFile}"`, {
+                    execSync(erc, {
                         stdio: "pipe",
                         encoding: "utf8",
                     });
@@ -334,9 +412,7 @@ describe("KiCad Schematic Parser", () => {
                     );
                     console.error(`File: ${relPath}`);
                     console.error(`Temp Dir: ${tempDir}`);
-                    console.error(
-                        `Repro command: kicad-cli sch erc "${serFile}"`,
-                    );
+                    console.error(`Repro command: ${erc}`);
 
                     if (err.stdout) {
                         console.error("\n--- STDOUT ---");
