@@ -41,9 +41,20 @@ const DEFAULT_LAYERS: Partial<B.I_Layer>[] = [
     { canonical_name: LayerNames.b_silks, type: "user" },
     { canonical_name: LayerNames.f_mask, type: "user" },
     { canonical_name: LayerNames.b_mask, type: "user" },
-    { canonical_name: LayerNames.edge_cuts, type: "user" },
+    { canonical_name: LayerNames.f_paste, type: "user" },
+    { canonical_name: LayerNames.b_paste, type: "user" },
+    { canonical_name: LayerNames.f_adhes, type: "user" },
+    { canonical_name: LayerNames.b_adhes, type: "user" },
+    { canonical_name: LayerNames.f_crtyd, type: "user" },
+    { canonical_name: LayerNames.b_crtyd, type: "user" },
     { canonical_name: LayerNames.f_fab, type: "user" },
     { canonical_name: LayerNames.b_fab, type: "user" },
+    { canonical_name: LayerNames.edge_cuts, type: "user" },
+    { canonical_name: LayerNames.margin, type: "user" },
+    { canonical_name: LayerNames.dwgs_user, type: "user" },
+    { canonical_name: LayerNames.cmts_user, type: "user" },
+    { canonical_name: LayerNames.eco1_user, type: "user" },
+    { canonical_name: LayerNames.eco2_user, type: "user" },
 ];
 
 export class KicadPCB implements BoardNode {
