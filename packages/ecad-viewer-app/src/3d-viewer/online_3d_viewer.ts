@@ -40,7 +40,10 @@ export class Online3dViewer extends KCUIElement {
         window.addEventListener(
             Online3dViewerUrlReady.type,
             (evt: Online3dViewerUrlReady) => {
-                console.log("[3DViewer] Online3dViewerUrlReady received, viewer_container ready:", !!this._viewer_container);
+                console.log(
+                    "[3DViewer] Online3dViewerUrlReady received, viewer_container ready:",
+                    !!this._viewer_container,
+                );
                 if (this._viewer_container) {
                     this._load_src(evt.detail);
                 } else {
@@ -61,7 +64,10 @@ export class Online3dViewer extends KCUIElement {
     override initialContentCallback() {
         later(() => {
             const url = this._pending_3d_url || this.project.ov_3d_url;
-            console.log("[3DViewer] initialContentCallback, url:", url ? "found" : "not found");
+            console.log(
+                "[3DViewer] initialContentCallback, url:",
+                url ? "found" : "not found",
+            );
             if (url) this._load_src(url);
         });
     }
@@ -89,7 +95,9 @@ export class Online3dViewer extends KCUIElement {
             return;
         }
         if (!this._viewer_container) {
-            console.log("[3DViewer] _load_src deferred: viewer not ready, storing URL");
+            console.log(
+                "[3DViewer] _load_src deferred: viewer not ready, storing URL",
+            );
             this._pending_3d_url = url;
             return;
         }

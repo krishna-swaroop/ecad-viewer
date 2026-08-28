@@ -8,6 +8,10 @@ import { esbuildPlugin } from "@web/dev-server-esbuild";
 
 export default {
     files: "test/**/*.test.ts",
+    // Serve from the monorepo's packages/ directory, not this package alone.
+    // The renderer tests import ../../ecad-renderer/src, which escapes a
+    // package-rooted server and 404s.
+    rootDir: fileURLToPath(new URL("../..", import.meta.url)),
     nodeResolve: true,
     debugger: false,
     browsers: [chromeLauncher({ concurrency: 1 })],

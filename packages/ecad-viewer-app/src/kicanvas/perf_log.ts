@@ -3,7 +3,10 @@
  * Enable with localStorage.setItem('ecadPerfLog','1') or ?ecadPerfLog=1
  */
 export function isEcadPerfLogEnabled(): boolean {
-    if (typeof globalThis !== "undefined" && (globalThis as any).__ECAD_PERF_LOG__) {
+    if (
+        typeof globalThis !== "undefined" &&
+        (globalThis as any).__ECAD_PERF_LOG__
+    ) {
         return true;
     }
     try {

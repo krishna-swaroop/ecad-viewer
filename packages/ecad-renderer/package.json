@@ -1,0 +1,16 @@
+{
+    "name": "ecad-renderer",
+    "version": "0.1.0",
+    "description": "Render a KiCad library symbol or footprint POD into a canvas, using the ECAD viewer's own painters.",
+    "type": "module",
+    "private": true,
+    "main": "./src/index.ts",
+    "types": "./src/index.ts",
+    "sideEffects": false,
+    "dependencies": {
+        "kicad-parser": "file:../kicad-parser"
+    },
+    "scripts": {
+        "lint": "tsc --noEmit -p tsconfig.json"
+    }
+}

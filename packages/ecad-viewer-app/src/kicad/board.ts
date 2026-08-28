@@ -983,23 +983,15 @@ export class Footprint implements BoardNode {
         if (data.drawings) {
             for (const d of data.drawings) {
                 if ("center" in d) {
-                    this.drawings.push(
-                        new FpCircle(d as B.I_Circle, this),
-                    );
+                    this.drawings.push(new FpCircle(d as B.I_Circle, this));
                 } else if ("mid" in d) {
                     this.drawings.push(new FpArc(d as B.I_Arc, this));
                 } else if ("pts" in d) {
-                    this.drawings.push(
-                        new FpPoly(d as B.I_Poly, this),
-                    );
+                    this.drawings.push(new FpPoly(d as B.I_Poly, this));
                 } else if ("fill" in d) {
-                    this.drawings.push(
-                        new FpRect(d as B.I_Rect, this),
-                    );
+                    this.drawings.push(new FpRect(d as B.I_Rect, this));
                 } else {
-                    this.drawings.push(
-                        new FpLine(d as B.I_Line, this),
-                    );
+                    this.drawings.push(new FpLine(d as B.I_Line, this));
                 }
             }
         }
@@ -1761,8 +1753,7 @@ export class Pad implements CrossHightAble, BoardNode {
         this.thermal_bridge_angle = data.thermal_bridge_angle;
         this.zone_connect = data.zone_connect;
         this.tstamp = data.tstamp ?? "";
-        this.uuid =
-            (data as B.I_Pad & { uuid?: string }).uuid ?? this.tstamp;
+        this.uuid = (data as B.I_Pad & { uuid?: string }).uuid ?? this.tstamp;
         this.drill = data.drill ? new PadDrill(data.drill) : undefined;
         this.net = data.net ? new Net(data.net) : undefined;
         this.options = data.options ? new PadOptions(data.options) : undefined;

@@ -224,11 +224,7 @@ function parse_change(
                     );
                 })()),
         children: record["children"].map((child, index) =>
-            parse_change(
-                child,
-                `${label}.children[${index}]`,
-                bbox_required,
-            ),
+            parse_change(child, `${label}.children[${index}]`, bbox_required),
         ),
     };
 }
@@ -260,9 +256,7 @@ export function parseKiCadDocumentDiff(value: unknown): KiCadDocumentDiff {
 }
 
 /** Parse Prism's identity-only DOCUMENT_DIFF input. */
-export function parsePrismDocumentDiffInput(
-    value: unknown,
-): KiCadDocumentDiff {
+export function parsePrismDocumentDiffInput(value: unknown): KiCadDocumentDiff {
     return parse_document_diff(value, false);
 }
 

@@ -40,7 +40,8 @@ export class SchSelectionPopMenu extends KCUIElement {
                 display: flex;
                 flex-direction: column;
                 gap: 6px;
-                border-bottom: 1px solid color-mix(in srgb, var(--pop-menu-fg) 20%, transparent);
+                border-bottom: 1px solid
+                    color-mix(in srgb, var(--pop-menu-fg) 20%, transparent);
                 padding-bottom: 6px;
             }
 
@@ -61,7 +62,8 @@ export class SchSelectionPopMenu extends KCUIElement {
 
             .nav-controls button {
                 background: transparent;
-                border: 1px solid color-mix(in srgb, var(--pop-menu-fg) 35%, transparent);
+                border: 1px solid
+                    color-mix(in srgb, var(--pop-menu-fg) 35%, transparent);
                 color: var(--pop-menu-fg);
                 border-radius: 3px;
                 cursor: pointer;
@@ -98,7 +100,9 @@ export class SchSelectionPopMenu extends KCUIElement {
                 cursor: pointer;
                 padding: 2px 4px;
                 border-radius: 3px;
-                transition: color 0.3s, background-color 0.2s;
+                transition:
+                    color 0.3s,
+                    background-color 0.2s;
             }
 
             .modal-list li:last-child {
@@ -211,12 +215,17 @@ export class SchSelectionPopMenu extends KCUIElement {
         this.#content = html`<div class="modal-panel"></div>` as HTMLDivElement;
 
         if (show_nav) {
-            const header = html`<div class="nav-header"></div>` as HTMLDivElement;
+            const header = html`<div
+                class="nav-header"></div>` as HTMLDivElement;
             const title_el = html`<div class="nav-title">${title}</div>`;
-            const controls =
-                html`<div class="nav-controls"></div>` as HTMLDivElement;
-            const prev = html`<button type="button" title="Previous">‹</button>`;
-            const counter = html`<span class="nav-counter">${this.#index + 1} / ${this.#net_items.length}</span>`;
+            const controls = html`<div
+                class="nav-controls"></div>` as HTMLDivElement;
+            const prev = html`<button type="button" title="Previous">
+                ‹
+            </button>`;
+            const counter = html`<span class="nav-counter"
+                >${this.#index + 1} / ${this.#net_items.length}</span
+            >`;
             const next = html`<button type="button" title="Next">›</button>`;
 
             prev.addEventListener("click", (e) => {
@@ -237,8 +246,9 @@ export class SchSelectionPopMenu extends KCUIElement {
 
         for (const [i, item] of this.#net_items.entries()) {
             // `html` can yield a fragment; this template is always one <li>.
-            const selection =
-                html`<li>${this.build_item_desc(item)}</li>` as HTMLLIElement;
+            const selection = html`<li>
+                ${this.build_item_desc(item)}
+            </li>` as HTMLLIElement;
             if (i === this.#index) {
                 selection.classList.add("active");
             }

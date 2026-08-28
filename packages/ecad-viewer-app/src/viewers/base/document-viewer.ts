@@ -37,6 +37,15 @@ export abstract class DocumentViewer<
 > extends Viewer {
     public document: DocumentT;
     public drawing_sheet: DrawingSheet;
+    /**
+     * Whether the worksheet frame is painted with the document.
+     *
+     * A viewer showing a project sheet wants it. A viewer showing one library
+     * asset -- a symbol or a footprint on its own -- does not: the frame is a
+     * document concern, and painting it would dominate the view and pull
+     * zoom-to-fit out to the page rather than the asset.
+     */
+    public show_drawing_sheet = true;
     declare public layers: ViewLayerSetT;
     public theme: ThemeT;
 
@@ -385,7 +394,11 @@ export abstract class DocumentViewer<
         );
 
         // Paint the drawing sheet
-        if (!this.document.is_converted_from_ad && !is_showing_design_block())
+        if (
+            this.show_drawing_sheet &&
+            !this.document.is_converted_from_ad &&
+            !is_showing_design_block()
+        )
             new DrawingSheetPainter(
                 this.renderer,
                 this.layers,
