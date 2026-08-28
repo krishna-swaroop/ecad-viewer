@@ -3935,6 +3935,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             );
             // Notify existing viewers of the updated project without re-rendering
             this.#project.on_loaded();
+            if (blobs.some((blob) => blob.filename.endsWith(".kicad_pro"))) {
+                this.#repaint_for_new_project_settings();
+            }
         } catch (error) {
             console.error(
                 "[ECadViewer] Error while adding files to project:",
@@ -3942,6 +3945,48 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             );
         } finally {
             this.loading = false;
+        }
+    }
+
+    /**
+     * Repaint the mounted documents after project settings arrive late.
+     *
+     * A host need not have every file at once: Prism paints the root sheet
+     * first and appends the `.kicad_pro` when it arrives. Text variables are
+     * resolved during painting, so a document painted before its project had
+     * settings drew `${VAR}` verbatim -- and kept drawing it, because adding
+     * files deliberately does not re-render and re-issuing the same document
+     * to a DocumentViewer returns early. Only navigating away and back forced
+     * the repaint that made the values appear.
+     *
+     * Documents hold a reference to the project rather than a copy of its
+     * variables, so repainting is all that is needed. Both viewers are
+     * repainted: a board consults the project before falling back to the
+     * `(property ...)` copy KiCad writes into it, so it is stale in the same
+     * way whenever the two disagree, or shows nothing at all when the board
+     * carries no copy.
+     *
+     * Only a `.kicad_pro` triggers this. Subsheets arrive on the same path and
+     * are far more numerous; repainting for each would rebuild the scene once
+     * per sheet on every load.
+     */
+    #repaint_for_new_project_settings() {
+        for (const viewer of [
+            this.#safe_schematic_viewer(),
+            this.#safe_board_viewer(),
+        ]) {
+            if (!viewer?.document) continue;
+            try {
+                viewer.paint();
+                viewer.draw();
+            } catch (error) {
+                // A repaint is a correction, not the operation the caller
+                // asked for; failing it must not fail the append.
+                console.error(
+                    "[ECadViewer] Could not repaint for settings",
+                    error,
+                );
+            }
         }
     }
 
