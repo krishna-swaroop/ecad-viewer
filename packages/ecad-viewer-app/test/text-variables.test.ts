@@ -2,6 +2,7 @@ import { expect } from "@esm-bundle/chai";
 import { BoardParser, SchematicParser } from "kicad-parser";
 
 import { DrawingSheet, KicadPCB, KicadSch } from "../src/kicad";
+import { Footprint, FpText, GrText } from "../src/kicad/board";
 import { SchematicInstanceContext, Text } from "../src/kicad/schematic";
 import { expand_text_vars } from "../src/kicad/common";
 import { Project } from "../src/kicanvas/project";
@@ -53,6 +54,42 @@ const SCHEMATIC = `
 )
 `;
 
+// Silkscreen is the third place #194 reported, and the only one whose
+// resolution runs through a footprint. Deliberately carries no mirrored
+// `(property ...)` entries: a value found here can only have come from the
+// project, which is what makes the footprint's fallback to its parent board
+// the thing under test rather than an incidental copy on the board.
+const SILKSCREEN_BOARD = `
+(kicad_pcb
+  (version 20240108)
+  (generator "pcbnew")
+  (paper "A4")
+  (gr_text "Rev \${VERSION}"
+    (at 100 100 0)
+    (layer "F.SilkS")
+    (uuid "00000000-0000-0000-0000-0000000000f1")
+    (effects (font (size 1 1) (thickness 0.15))))
+  (footprint "Fixture:Label"
+    (layer "F.Cu")
+    (uuid "00000000-0000-0000-0000-0000000000f2")
+    (at 50 50 0)
+    (property "Reference" "J1" (at 0 -2 0) (layer "F.SilkS")
+      (uuid "00000000-0000-0000-0000-0000000000f3")
+      (effects (font (size 1 1) (thickness 0.15))))
+    (fp_text user "Built \${VERSION}"
+      (at 0 2 0)
+      (layer "F.SilkS")
+      (uuid "00000000-0000-0000-0000-0000000000f4")
+      (effects (font (size 1 1) (thickness 0.15))))
+    (fp_text user "\${REFERENCE}"
+      (at 0 4 0)
+      (layer "F.SilkS")
+      (uuid "00000000-0000-0000-0000-0000000000f5")
+      (effects (font (size 1 1) (thickness 0.15))))
+  )
+)
+`;
+
 function project_with_settings(): Project {
     const project = new Project();
     project.settings = Object.assign(project.settings, PROJECT_SETTINGS);
@@ -66,6 +103,31 @@ function board_in_project(): KicadPCB {
     );
     board.project = project_with_settings();
     return board;
+}
+
+function silkscreen_board_in_project(): KicadPCB {
+    const board = new KicadPCB(
+        "silk.kicad_pcb",
+        new BoardParser().parse(SILKSCREEN_BOARD) as never,
+    );
+    board.project = project_with_settings();
+    return board;
+}
+
+function board_footprint(): Footprint {
+    const footprint = silkscreen_board_in_project().footprints[0];
+    expect(footprint, "footprint on the board").to.exist;
+    return footprint!;
+}
+
+/** The footprint's silkscreen text whose authored value starts with `prefix`. */
+function footprint_text(footprint: Footprint, prefix: string): FpText {
+    // fp_text lives in its own collection; `drawings` carries geometry only.
+    const text = footprint.fp_texts.find((item) =>
+        item.text.startsWith(prefix),
+    );
+    expect(text, `fp_text starting with ${prefix}`).to.exist;
+    return text!;
 }
 
 function schematic_in_project(): KicadSch {
@@ -268,5 +330,47 @@ suite("text variables through a schematic instance context", () => {
         expect(
             context_for(sheet_in_project()).resolve_text_var("NOT_DEFINED"),
         ).to.equal(undefined);
+    });
+});
+
+suite("text variables on silkscreen", () => {
+    // The third of #194's three reports, and the one whose resolution does not
+    // reach the board directly: a footprint answers first and only falls
+    // through to its parent for names it does not own. That fallback is what
+    // puts a project variable on silkscreen, and nothing covered it.
+
+    test("resolves a project variable in board-level silkscreen text", () => {
+        const board = silkscreen_board_in_project();
+        const silk = board.drawings.find(
+            (drawing) => drawing instanceof GrText,
+        ) as GrText;
+        expect(silk, "gr_text on the board").to.exist;
+        expect(silk.shown_text).to.equal("Rev 1.4.0");
+    });
+
+    test("resolves a project variable in footprint silkscreen text", () => {
+        // Footprint -> board -> project. The board carries no copy of this
+        // value, so reaching it proves the whole chain rather than a
+        // coincidental property on the way.
+        const footprint = board_footprint();
+        const label = footprint_text(footprint, "Built");
+        expect(label.shown_text).to.equal("Built 1.4.0");
+    });
+
+    test("a footprint's own fields still win over the project", () => {
+        // The fallback must be a fallback: a name the footprint owns is
+        // answered by the footprint, never handed upwards.
+        const footprint = board_footprint();
+        const designator = footprint_text(footprint, "${REFERENCE}");
+        expect(designator.shown_text).to.equal("J1");
+    });
+
+    test("an unknown variable is left alone rather than blanked", () => {
+        const board = silkscreen_board_in_project();
+        const footprint = board.footprints[0]!;
+        expect(footprint.resolve_text_var("NOT_DEFINED")).to.equal(undefined);
+        expect(expand_text_vars("${NOT_DEFINED}", footprint)).to.equal(
+            "${NOT_DEFINED}",
+        );
     });
 });
