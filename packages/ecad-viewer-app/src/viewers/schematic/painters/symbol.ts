@@ -4,9 +4,10 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import { BBox, Matrix3, Vec2 } from "../../../base/math";
+import { BBox, Matrix3 } from "../../../base/math";
 import type { SchematicTheme } from "../../../kicad";
 import * as schematic_items from "../../../kicad/schematic";
+import { get_symbol_transform } from "../../../kicad/symbol-transform";
 import { dnp_marker_bbox, dnp_marker_color, paint_dnp_cross } from "../dnp";
 import { LayerNames, ViewLayer } from "../layers";
 import { SchematicMeasurer } from "../measure";
@@ -153,85 +154,6 @@ export class SchematicSymbolPainter extends SchematicItemPainter {
     }
 }
 
-export type SymbolTransform = {
-    matrix: Matrix3;
-    position: Vec2;
-    rotations: number;
-    mirror_x: boolean;
-    mirror_y: boolean;
-};
-
-/**
- * Determines the symbol position, orientation, and mirroring
- *
- * This is based on SCH_PAINTER::orientSymbol, where KiCAD does some fun logic
- * to place a symbol instance. This tries to replicate that.
- */
-export function get_symbol_transform(
-    symbol: schematic_items.SchematicSymbol,
-): SymbolTransform {
-    // Note: KiCAD uses a 2x2 transformation matrix for symbol orientation. It's
-    // literally the only place that uses this wacky matrix. We approximate it
-    // with carefully crafted Matrix3s. KiCAD's symbol matrix is defined as
-    //      [x1, x2]
-    //      [y1, y2]
-    // which cooresponds to a Matrix3 of
-    //      [x1, x2, 0]
-    //      [x1, y2, 0]
-    //      [0,   0, 1]
-    const zero_deg_matrix = new Matrix3([1, 0, 0, 0, -1, 0, 0, 0, 1]); // [1, 0, 0, -1]
-    const ninety_deg_matrix = new Matrix3([0, -1, 0, -1, 0, 0, 0, 0, 1]); // [0, -1, -1, 0]
-    const one_eighty_deg_matrix = new Matrix3([-1, 0, 0, 0, 1, 0, 0, 0, 1]); // [-1, 0, 0, 1]
-    const two_seventy_deg_matrix = new Matrix3([0, 1, 0, 1, 0, 0, 0, 0, 1]); // [0, 1, 1, 0]
-    let rotations = 0;
-
-    let matrix = zero_deg_matrix;
-    if (symbol.at.rotation == 0) {
-        // leave matrix as is
-    } else if (symbol.at.rotation == 90) {
-        rotations = 1;
-        matrix = ninety_deg_matrix;
-    } else if (symbol.at.rotation == 180) {
-        rotations = 2;
-        matrix = one_eighty_deg_matrix;
-    } else if (symbol.at.rotation == 270) {
-        rotations = 3;
-        matrix = two_seventy_deg_matrix;
-    } else {
-        throw new Error(`unexpected rotation ${symbol.at.rotation}`);
-    }
-
-    if (symbol.mirror == "y") {
-        // * [-1, 0, 0, 1]
-        const x1 = matrix.elements[0]! * -1;
-        const y1 = matrix.elements[3]! * -1;
-        const x2 = matrix.elements[1]!;
-        const y2 = matrix.elements[4]!;
-        matrix.elements[0] = x1;
-        matrix.elements[1] = x2;
-        matrix.elements[3] = y1;
-        matrix.elements[4] = y2;
-    } else if (symbol.mirror == "x") {
-        // * [1, 0, 0, -1]
-        const x1 = matrix.elements[0]!;
-        const y1 = matrix.elements[3]!;
-        const x2 = matrix.elements[1]! * -1;
-        const y2 = matrix.elements[4]! * -1;
-        matrix.elements[0] = x1;
-        matrix.elements[1] = x2;
-        matrix.elements[3] = y1;
-        matrix.elements[4] = y2;
-    }
-
-    return {
-        matrix: matrix,
-        position: symbol.at.position,
-        rotations: rotations,
-        mirror_x: symbol.mirror == "x",
-        mirror_y: symbol.mirror == "y",
-    };
-}
-
 /**
  * Measures the given symbol by painting it into a throwaway renderer.
  *
@@ -267,15 +189,4 @@ export function measure_symbol_bboxes(
     ]);
 
     return { body, body_and_pins };
-}
-
-/**
- * Determines the bounding box for the given symbol, including only the body
- * and the pins, not any fields or text items.
- */
-export function get_symbol_body_and_pins_bbox(
-    theme: SchematicTheme,
-    si: schematic_items.SchematicSymbol,
-): BBox {
-    return measure_symbol_bboxes(theme, si).body_and_pins;
 }

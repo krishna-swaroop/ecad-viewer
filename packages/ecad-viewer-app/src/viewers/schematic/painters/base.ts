@@ -10,7 +10,7 @@ import * as schematic_items from "../../../kicad/schematic";
 import { DocumentPainter, ItemPainter } from "../../base/painter";
 import { LayerNames, type ViewLayer } from "../layers";
 import type { SchematicPainter } from "../painter";
-import type { SymbolTransform } from "./symbol";
+import type { SymbolTransform } from "../../../kicad/symbol-transform";
 
 export abstract class BaseSchematicPainter extends DocumentPainter {
     override theme: SchematicTheme;

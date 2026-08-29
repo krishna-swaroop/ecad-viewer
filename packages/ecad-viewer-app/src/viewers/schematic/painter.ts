@@ -30,11 +30,8 @@ import {
     NetLabelPainter,
 } from "./painters/label";
 import { PinPainter } from "./painters/pin";
-import {
-    LibSymbolPainter,
-    SchematicSymbolPainter,
-    type SymbolTransform,
-} from "./painters/symbol";
+import { LibSymbolPainter, SchematicSymbolPainter } from "./painters/symbol";
+import type { SymbolTransform } from "../../kicad/symbol-transform";
 
 class RectanglePainter extends SchematicItemPainter {
     classes = [schematic_items.Rectangle];

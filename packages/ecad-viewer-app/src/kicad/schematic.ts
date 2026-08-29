@@ -7,7 +7,7 @@
 import { DrawingSheet } from ".";
 import { Color } from "../base/color";
 import type { CrossHightAble } from "../base/cross_highlight_able";
-import { Arc as MathArc, BBox, Matrix3, Vec2 } from "../base/math";
+import { Angle, Arc as MathArc, BBox, Vec2 } from "../base/math";
 import { html } from "../base/web-components";
 import {
     At,
@@ -20,6 +20,7 @@ import {
     unescape_string,
 } from "./common";
 import { get_image_ppi } from "./get_image_ppi";
+import { try_symbol_transform_matrix } from "./symbol-transform";
 import { schematicProto } from "kicad-parser";
 
 /* Default values for various things found in schematics
@@ -1376,27 +1377,28 @@ export class PinDefinition {
     }
 
     /**
-     * Bounding box of this pin in library (untransformed) coordinates.
-     * Computed from the pin's position, length, and rotation, matching
-     * the LibSymbolPin.bbox logic so callers (e.g. SchematicSymbol.bbox)
-     * can include pin extents without a LibSymbolPin indirection.
+     * Bounding box of this pin's stem, in library (untransformed) coordinates.
+     *
+     * `at` is the connection point and the rotation is the direction the stem
+     * runs from it back toward the body, in the library's own Y-up frame. This
+     * deliberately does not go through `angle_to_orientation`: those names --
+     * "up", "down" -- are the painter's screen-space vocabulary, and reading
+     * library data through them is what had this box mirrored in Y, putting a
+     * pin's bounds where no pin is drawn.
      */
     get bbox(): BBox {
-        const defaultLen = 1;
-        const orientation = angle_to_orientation(this.at.rotation);
-        const x = this.at.position.x;
-        const y = this.at.position.y;
+        const width = 1;
+        const { x, y } = this.at.position;
         const len = this.length;
-        switch (orientation) {
-            case "up":
-                return new BBox(x - defaultLen / 2, y - len, defaultLen, len);
-            case "down":
-                return new BBox(x - defaultLen / 2, y, defaultLen, len);
-            case "left":
-                return new BBox(x - len, y - defaultLen / 2, len, defaultLen);
-            case "right":
-                return new BBox(x, y - defaultLen / 2, len, defaultLen);
-        }
+        const angle = Angle.from_degrees(this.at.rotation);
+        const dx = len * Math.cos(angle.radians);
+        const dy = len * Math.sin(angle.radians);
+        return new BBox(
+            Math.min(x, x + dx) - (dx === 0 ? width / 2 : 0),
+            Math.min(y, y + dy) - (dy === 0 ? width / 2 : 0),
+            Math.abs(dx) || width,
+            Math.abs(dy) || width,
+        );
     }
 }
 
@@ -1495,20 +1497,18 @@ export class SchematicSymbol {
         }
     }
 
+    /**
+     * Library-to-document transform for this placed instance.
+     *
+     * Delegates to the same composite the painter applies, so a bbox derived
+     * from library geometry lands on the geometry that is actually drawn. This
+     * used to be a separate translate/rotate/mirror that omitted KiCad's Y
+     * flip, which left every model-space bbox reflected about the placement
+     * origin -- far enough off on a tall part to read as a stray box beside
+     * the symbol.
+     */
     get_symbol_transform() {
-        const mat = Matrix3.translation(this.at.position.x, this.at.position.y);
-        mat.rotate_self(this.at.rotation);
-        if (this.mirror == "x") {
-            mat.scale_self(-1, 1);
-        } else if (this.mirror == "y") {
-            mat.scale_self(1, -1);
-        }
-        return mat;
-    }
-
-    get_symbol_body_and_pins_bbox() {
-        const bbox = this.lib_symbol.bbox;
-        return bbox.transform(this.get_symbol_transform());
+        return try_symbol_transform_matrix(this);
     }
 
     get lib_symbol(): LibSymbol {
@@ -1761,42 +1761,10 @@ export class LibSymbolPin implements CrossHightAble {
     ) {
         this.orientation = angle_to_orientation(definition.at.rotation);
     }
+    /** The stem's box in library coordinates. See PinDefinition.bbox. */
     public get bbox() {
-        const defaultLen = 1;
-        switch (this.orientation) {
-            case "up":
-                return new BBox(
-                    this.definition.at.position.x - defaultLen / 2,
-                    this.definition.at.position.y - defaultLen,
-                    defaultLen,
-                    this.definition.length,
-                );
-            case "down":
-                return new BBox(
-                    this.definition.at.position.x - defaultLen / 2,
-                    this.definition.at.position.y -
-                        this.definition.length +
-                        defaultLen,
-                    defaultLen,
-                    this.definition.length,
-                );
-            case "left":
-                return new BBox(
-                    this.definition.at.position.x - this.definition.length,
-                    this.definition.at.position.y - defaultLen / 2,
-                    this.definition.length,
-                    defaultLen,
-                );
-            case "right":
-                return new BBox(
-                    this.definition.at.position.x - defaultLen,
-                    this.definition.at.position.y - defaultLen / 2,
-                    this.definition.length,
-                    defaultLen,
-                );
-        }
+        return this.definition.bbox;
     }
-
     public get highlightColor() {
         return LibSymbolPin.MyHighlightColor;
     }

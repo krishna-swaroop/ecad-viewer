@@ -78,13 +78,6 @@ interface MountableViewer {
     clear_probe_highlight(): void;
 }
 
-const enabled_navigation: ViewerNavigationOptions = {
-    wheel: "direct",
-    pinch: true,
-    touchPan: true,
-    drag: true,
-};
-
 const disabled_navigation: ViewerNavigationOptions = {
     wheel: "disabled",
     pinch: false,
@@ -92,14 +85,16 @@ const disabled_navigation: ViewerNavigationOptions = {
     drag: false,
 };
 
+/**
+ * A render is static unless the host asks for otherwise, one gesture at a
+ * time. A preview embedded in a scrolling column and a full-screen inspector
+ * want different subsets, so there is no "interactive" switch that turns all
+ * of them on together.
+ */
 function interaction(options: RenderOptions): ViewerInteractionOptions {
-    const legacy = options.interactive ?? false;
     return {
-        selectable: options.selectable ?? legacy,
-        navigation: {
-            ...(legacy ? enabled_navigation : disabled_navigation),
-            ...options.navigation,
-        },
+        selectable: options.selectable ?? false,
+        navigation: { ...disabled_navigation, ...options.navigation },
     };
 }
 

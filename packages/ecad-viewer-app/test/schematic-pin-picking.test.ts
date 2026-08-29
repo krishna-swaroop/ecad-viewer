@@ -73,7 +73,7 @@ async function render_resistor(cleanup: Array<() => void>) {
     const [resistor] = parseSymbolLibrary(SYMBOL_LIB);
     const result = await renderSymbol(resistor!, {
         canvas: container.firstElementChild as HTMLCanvasElement,
-        interactive: true,
+        selectable: true,
     });
     cleanup.push(() => {
         result.dispose();
@@ -156,9 +156,9 @@ suite("picking a symbol pin", () => {
     });
 
     test("a pin's probe highlight lands on the pin that was picked", async () => {
-        // The model's own pin bbox is reflected about the placement origin
-        // relative to the painted one, which on this part swaps the two pins.
-        // A highlight drawn there marks the wrong pin, or empty space.
+        // A highlight that disagreed with picking would mark a pin the reader
+        // did not point at -- on this part, which is symmetric about Y, a
+        // reflected box lands squarely on the other pin.
         const { viewer, placed } = await render_resistor(cleanup);
         const layer = viewer.layers.by_name(LayerNames.symbol_pin)!;
         for (const pin of placed.unit_pins) {
@@ -175,6 +175,30 @@ suite("picking a symbol pin", () => {
             );
             expect(
                 viewer.find_item(bounds[0]!.center).item,
+                `pin ${pin.number} picks back`,
+            ).to.equal(pin);
+        }
+    });
+
+    test("the pin's own bbox agrees with the painted one", async () => {
+        // The renderer wraps a bare library symbol in a synthetic schematic,
+        // so it reaches the placement transform by a different route than a
+        // parsed document does. The model and the paint pass have to land in
+        // the same place on both.
+        const { viewer, placed } = await render_resistor(cleanup);
+        const layer = viewer.layers.by_name(LayerNames.symbol_pin)!;
+        for (const pin of placed.unit_pins) {
+            const painted = layer.bboxes.get(pin)!;
+            expect(pin.bbox.center.x, `pin ${pin.number} x`).to.be.closeTo(
+                painted.center.x,
+                0.05,
+            );
+            expect(pin.bbox.center.y, `pin ${pin.number} y`).to.be.closeTo(
+                painted.center.y,
+                0.05,
+            );
+            expect(
+                viewer.find_item(pin.bbox.center).item,
                 `pin ${pin.number} picks back`,
             ).to.equal(pin);
         }

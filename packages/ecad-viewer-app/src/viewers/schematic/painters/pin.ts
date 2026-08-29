@@ -16,7 +16,7 @@ import {
 } from "../../../kicad/text";
 import { LayerNames, ViewLayer } from "../layers";
 import { SchematicItemPainter } from "./base";
-import { get_symbol_transform } from "./symbol";
+import { get_symbol_transform } from "../../../kicad/symbol-transform";
 
 /**
  * Implements KiCAD rendering logic for symbol pins.
