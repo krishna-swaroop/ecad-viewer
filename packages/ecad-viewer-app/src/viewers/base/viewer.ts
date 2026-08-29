@@ -52,12 +52,14 @@ const legacy_navigation: ViewerNavigationOptions = {
     wheel: "direct",
     pinch: true,
     touchPan: true,
+    drag: true,
 };
 
 const disabled_navigation: ViewerNavigationOptions = {
     wheel: "disabled",
     pinch: false,
     touchPan: false,
+    drag: false,
 };
 
 export function resolve_viewer_interaction(interaction: ViewerInteraction): {
@@ -79,6 +81,16 @@ export function resolve_viewer_interaction(interaction: ViewerInteraction): {
             ...interaction.navigation,
         },
     };
+}
+
+/** Whether any navigation gesture can move the camera. */
+function navigation_enabled(navigation: ViewerNavigationOptions): boolean {
+    return (
+        navigation.wheel !== "disabled" ||
+        navigation.pinch ||
+        navigation.touchPan ||
+        navigation.drag
+    );
 }
 
 const LIBRARY_CROSS_PROBE_CHANNEL = "library-crossprobe";
@@ -201,17 +213,17 @@ export abstract class Viewer extends EventTarget {
         );
 
         const navigation = this.interaction.navigation;
-        if (
-            navigation.wheel !== "disabled" ||
-            navigation.pinch ||
-            navigation.touchPan
-        ) {
+        if (navigation_enabled(navigation)) {
             this.viewport.enable_pan_and_zoom(
                 Viewer.MinZoom,
                 Viewer.MaxZoom,
                 () => this.#active,
                 navigation,
             );
+            // Comment mode draws its rubber band with the left button, so only
+            // that button is withheld from panning while it is on.
+            this.viewport.drag_filter = (e) =>
+                !(this.#comment_mode && e.button === 0);
         }
 
         if (this.interaction.selectable) {
@@ -300,11 +312,7 @@ export abstract class Viewer extends EventTarget {
         this.#cached_rect = null;
         if (!this.#active) return;
         this.#overlay_scenes?.refresh_screen_sized();
-        if (
-            this.interaction.navigation.wheel !== "disabled" ||
-            this.interaction.navigation.pinch ||
-            this.interaction.navigation.touchPan
-        ) {
+        if (navigation_enabled(this.interaction.navigation)) {
             this.draw();
         }
     }

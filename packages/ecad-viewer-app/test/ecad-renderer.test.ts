@@ -253,6 +253,7 @@ suite("rendering a library asset", () => {
                         wheel: "direct",
                         pinch: true,
                         touchPan: true,
+                        drag: true,
                     },
                 },
             },
@@ -264,6 +265,7 @@ suite("rendering a library asset", () => {
                         wheel: "disabled",
                         pinch: false,
                         touchPan: false,
+                        drag: false,
                     },
                 },
             },
@@ -279,6 +281,7 @@ suite("rendering a library asset", () => {
                         wheel: "modifier",
                         pinch: true,
                         touchPan: false,
+                        drag: true,
                     },
                 },
             },
@@ -301,6 +304,7 @@ suite("rendering a library asset", () => {
                         wheel: string;
                         pinch: boolean;
                         touchPan: boolean;
+                        drag: boolean;
                     };
                 };
             };

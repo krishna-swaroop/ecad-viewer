@@ -82,12 +82,14 @@ const enabled_navigation: ViewerNavigationOptions = {
     wheel: "direct",
     pinch: true,
     touchPan: true,
+    drag: true,
 };
 
 const disabled_navigation: ViewerNavigationOptions = {
     wheel: "disabled",
     pinch: false,
     touchPan: false,
+    drag: false,
 };
 
 function interaction(options: RenderOptions): ViewerInteractionOptions {
