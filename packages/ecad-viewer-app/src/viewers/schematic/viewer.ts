@@ -29,7 +29,7 @@ import {
 import { ViewerType } from "../base/viewer";
 import { LayerNames, LayerSet } from "./layers";
 import { SchematicPainter } from "./painter";
-import { get_symbol_transform } from "./painters/symbol";
+import { get_symbol_transform } from "../../kicad/symbol-transform";
 import { apply_schematic_render_defaults } from "./render-state";
 import { StrokeFont, TextAttributes } from "../../kicad/text";
 import type { PinCheckResult } from "../../proto/component_erc_result";
@@ -323,13 +323,10 @@ export class SchematicViewer extends DocumentViewer<
     /**
      * Where to draw a pin's cross-probe highlight.
      *
-     * The painted bbox, not `PinInstance.bbox`. A library symbol is authored
-     * with Y up and drawn with Y down, and only the painter's transform
-     * applies that flip, so the two disagree by a reflection about the
-     * placement origin -- far enough apart on a tall part to read as a stray
-     * box floating over the symbol. Picking already resolves a pin through
-     * the painted geometry; the highlight has to agree with it, or it marks
-     * a pin the reader did not point at.
+     * Measured from the painted geometry, which is also what picking searches.
+     * A highlight that disagreed with picking would mark a pin the reader did
+     * not point at, so the two read the same boxes by construction rather than
+     * by two computations that have to be kept in step.
      */
     protected override probe_bounds(index: string): BBox[] {
         const matches: BBox[] = [];
@@ -338,10 +335,8 @@ export class SchematicViewer extends DocumentViewer<
                 this.instance_context?.unit_pins(symbol) ?? symbol.unit_pins;
             for (const pin of pins) {
                 if (pin.index !== index) continue;
-                for (const painted of this.layers.query_item_bboxes(pin)) {
-                    matches.push(painted);
-                    break;
-                }
+                const [painted] = this.layers.query_item_bboxes(pin);
+                if (painted) matches.push(painted);
             }
         }
         return matches;

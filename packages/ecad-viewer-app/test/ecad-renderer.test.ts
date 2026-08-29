@@ -242,23 +242,15 @@ suite("rendering a library asset", () => {
         expect(sheet?.bbox.w ?? 0).to.equal(0);
     });
 
-    test("keeps the legacy interaction matrix while explicit options win", async () => {
+    test("a render is static unless each gesture is asked for", async () => {
+        // There is deliberately no single "interactive" switch: an embedded
+        // preview lives in a scrolling column and must leave the wheel alone,
+        // while an expanded one takes it. A host that names one gesture gets
+        // that gesture and nothing else.
         const [resistor] = parseSymbolLibrary(SYMBOL_LIB);
         const cases = [
             {
-                options: { interactive: true },
-                expected: {
-                    selectable: true,
-                    navigation: {
-                        wheel: "direct",
-                        pinch: true,
-                        touchPan: true,
-                        drag: true,
-                    },
-                },
-            },
-            {
-                options: { interactive: false },
+                options: {},
                 expected: {
                     selectable: false,
                     navigation: {
@@ -270,16 +262,27 @@ suite("rendering a library asset", () => {
                 },
             },
             {
+                options: { selectable: true },
+                expected: {
+                    selectable: true,
+                    navigation: {
+                        wheel: "disabled",
+                        pinch: false,
+                        touchPan: false,
+                        drag: false,
+                    },
+                },
+            },
+            {
                 options: {
-                    interactive: true,
-                    selectable: false,
-                    navigation: { wheel: "modifier" as const, touchPan: false },
+                    selectable: true,
+                    navigation: { wheel: "modifier" as const, drag: true },
                 },
                 expected: {
-                    selectable: false,
+                    selectable: true,
                     navigation: {
                         wheel: "modifier",
-                        pinch: true,
+                        pinch: false,
                         touchPan: false,
                         drag: true,
                     },

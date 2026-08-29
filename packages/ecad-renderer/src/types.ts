@@ -26,8 +26,7 @@ export interface RenderOptions {
     canvas?: HTMLCanvasElement;
     /** Attach a generated canvas to this element so it receives layout dimensions. */
     container?: HTMLElement;
-    /** @deprecated Use selectable and navigation. */
-    interactive?: boolean;
+    /** Whether items can be picked and cross-probed. */
     selectable?: boolean;
     navigation?: Partial<RenderNavigationOptions>;
     onProbe?: (event: ProbeEvent) => void;
