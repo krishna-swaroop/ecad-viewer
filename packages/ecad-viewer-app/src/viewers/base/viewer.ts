@@ -7,7 +7,11 @@
 import { Barrier } from "../../base/async";
 import { Disposables, type IDisposable } from "../../base/disposable";
 import { listen } from "../../base/events";
-import { Vec2, type CameraViewportInsets } from "../../base/math";
+import { BBox, Vec2, type CameraViewportInsets } from "../../base/math";
+import type {
+    MoveAndZoomOptions,
+    WheelNavigationMode,
+} from "../../base/dom/move-and-zoom";
 import { Renderer } from "../../graphics";
 import {
     EcadCommentAreaEvent,
@@ -32,6 +36,52 @@ export enum ViewerType {
     SCHEMATIC,
     PCB,
 }
+
+export type ViewerNavigationOptions = MoveAndZoomOptions;
+export type ViewerWheelMode = WheelNavigationMode;
+export type ProbeHighlightState = "hover" | "latched";
+
+export interface ViewerInteractionOptions {
+    selectable?: boolean;
+    navigation?: Partial<ViewerNavigationOptions>;
+}
+
+export type ViewerInteraction = boolean | ViewerInteractionOptions;
+
+const legacy_navigation: ViewerNavigationOptions = {
+    wheel: "direct",
+    pinch: true,
+    touchPan: true,
+};
+
+const disabled_navigation: ViewerNavigationOptions = {
+    wheel: "disabled",
+    pinch: false,
+    touchPan: false,
+};
+
+export function resolve_viewer_interaction(interaction: ViewerInteraction): {
+    selectable: boolean;
+    navigation: ViewerNavigationOptions;
+} {
+    if (typeof interaction === "boolean") {
+        return {
+            selectable: interaction,
+            navigation: interaction
+                ? { ...legacy_navigation }
+                : { ...disabled_navigation },
+        };
+    }
+    return {
+        selectable: interaction.selectable ?? false,
+        navigation: {
+            ...disabled_navigation,
+            ...interaction.navigation,
+        },
+    };
+}
+
+const LIBRARY_CROSS_PROBE_CHANNEL = "library-crossprobe";
 
 const COMMENT_AREA_PREVIEW_CHANNEL = "__comment-area-preview__";
 const MIN_COMMENT_AREA_SIZE = 0.5;
@@ -75,10 +125,16 @@ export abstract class Viewer extends EventTarget {
 
     constructor(
         public canvas: HTMLCanvasElement,
-        protected interactive = true,
+        interaction: ViewerInteraction = true,
     ) {
         super();
+        this.interaction = resolve_viewer_interaction(interaction);
     }
+
+    protected readonly interaction: {
+        selectable: boolean;
+        navigation: ViewerNavigationOptions;
+    };
 
     dispose() {
         this.#active = false;
@@ -144,16 +200,34 @@ export abstract class Viewer extends EventTarget {
             }),
         );
 
-        if (this.interactive) {
+        const navigation = this.interaction.navigation;
+        if (
+            navigation.wheel !== "disabled" ||
+            navigation.pinch ||
+            navigation.touchPan
+        ) {
             this.viewport.enable_pan_and_zoom(
                 Viewer.MinZoom,
                 Viewer.MaxZoom,
                 () => this.#active,
+                navigation,
             );
+        }
 
+        if (this.interaction.selectable) {
             this.disposables.add(
                 listen(this.canvas, "mousemove", (e) => {
                     this.on_mouse_change(e);
+                }),
+            );
+
+            this.disposables.add(
+                listen(this.canvas, "mouseleave", () => {
+                    if (this.#hover_frame !== null) {
+                        cancelAnimationFrame(this.#hover_frame);
+                        this.#hover_frame = null;
+                    }
+                    this.on_pointer_leave();
                 }),
             );
 
@@ -226,9 +300,71 @@ export abstract class Viewer extends EventTarget {
         this.#cached_rect = null;
         if (!this.#active) return;
         this.#overlay_scenes?.refresh_screen_sized();
-        if (this.interactive) {
+        if (
+            this.interaction.navigation.wheel !== "disabled" ||
+            this.interaction.navigation.pinch ||
+            this.interaction.navigation.touchPan
+        ) {
             this.draw();
         }
+    }
+
+    public zoom_by(factor: number): void {
+        if (!Number.isFinite(factor) || factor <= 0 || !this.viewport) return;
+        this.viewport.camera.zoom = Math.min(
+            Viewer.MaxZoom,
+            Math.max(Viewer.MinZoom, this.viewport.camera.zoom * factor),
+        );
+        this.draw();
+    }
+
+    public reset_view(): void {
+        this.zoom_fit_top_item();
+    }
+
+    protected probe_bounds(_index: string): BBox[] {
+        return [];
+    }
+
+    public set_probe_highlight(
+        index: string,
+        state: ProbeHighlightState,
+    ): number {
+        const bounds = this.probe_bounds(index);
+        if (!bounds.length) {
+            this.clear_probe_highlight();
+            return 0;
+        }
+        this.set_overlay_scene({
+            channelId: LIBRARY_CROSS_PROBE_CHANNEL,
+            context: this.type === ViewerType.SCHEMATIC ? "SCH" : "PCB",
+            placement: "foreground",
+            visible: true,
+            primitives: bounds.map((bbox, position) => ({
+                id: `${index}:${position}`,
+                kind: "bbox" as const,
+                anchor: {
+                    kind: "bbox" as const,
+                    bounds: [bbox.x, bbox.y, bbox.w, bbox.h] as [
+                        number,
+                        number,
+                        number,
+                        number,
+                    ],
+                },
+                sizing: "screen" as const,
+                stroke: state === "latched" ? "#0891b2" : "#22d3ee",
+                opacity: state === "latched" ? 1 : 0.82,
+                strokeWidth: state === "latched" ? 3 : 2,
+                dash: state === "hover" ? [5, 3] : undefined,
+                padding: 3,
+            })),
+        });
+        return bounds.length;
+    }
+
+    public clear_probe_highlight(): void {
+        this.clear_overlay_scene(LIBRARY_CROSS_PROBE_CHANNEL);
     }
 
     public notify_viewport_change(): void {
@@ -575,6 +711,7 @@ export abstract class Viewer extends EventTarget {
     abstract move(pos: Vec2): void;
 
     abstract on_hover(pos: Vec2): void;
+    protected on_pointer_leave(): void {}
 
     abstract on_click(pos: Vec2, event?: MouseEvent): void;
 

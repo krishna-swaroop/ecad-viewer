@@ -5,6 +5,11 @@ import { KicadSch } from "../../ecad-viewer-app/src/kicad/schematic";
 import themes from "../../ecad-viewer-app/src/kicanvas/themes";
 import { BoardViewer } from "../../ecad-viewer-app/src/viewers/board/viewer";
 import { SchematicViewer } from "../../ecad-viewer-app/src/viewers/schematic/viewer";
+import { KiCanvasProbeEvent } from "../../ecad-viewer-app/src/viewers/base/events";
+import type {
+    ViewerInteractionOptions,
+    ViewerNavigationOptions,
+} from "../../ecad-viewer-app/src/viewers/base/viewer";
 import type { RenderOptions, RenderResult } from "./types";
 
 /**
@@ -63,12 +68,44 @@ interface MountableViewer {
     dispose(): void;
     loaded: PromiseLike<boolean>;
     show_drawing_sheet: boolean;
+    addEventListener(
+        type: typeof KiCanvasProbeEvent.type,
+        listener: (event: KiCanvasProbeEvent) => void,
+    ): { dispose(): void };
+    zoom_by(factor: number): void;
+    reset_view(): void;
+    set_probe_highlight(index: string, state: "hover" | "latched"): number;
+    clear_probe_highlight(): void;
+}
+
+const enabled_navigation: ViewerNavigationOptions = {
+    wheel: "direct",
+    pinch: true,
+    touchPan: true,
+};
+
+const disabled_navigation: ViewerNavigationOptions = {
+    wheel: "disabled",
+    pinch: false,
+    touchPan: false,
+};
+
+function interaction(options: RenderOptions): ViewerInteractionOptions {
+    const legacy = options.interactive ?? false;
+    return {
+        selectable: options.selectable ?? legacy,
+        navigation: {
+            ...(legacy ? enabled_navigation : disabled_navigation),
+            ...options.navigation,
+        },
+    };
 }
 
 async function mount<T extends MountableViewer>(
     viewer: T,
     document: unknown,
     canvas: HTMLCanvasElement,
+    options: RenderOptions,
 ): Promise<RenderResult<T>> {
     // A render call is for the supplied POD alone. The worksheet is a document
     // concern and would distort how a standalone asset is fitted.
@@ -78,7 +115,28 @@ async function mount<T extends MountableViewer>(
     // DocumentViewer finishes painting and calls zoom_fit_top_item on its next
     // layout turn. Resolving before that fit would hand back an unfitted view.
     await viewer.loaded;
-    return { canvas, viewer, dispose: () => viewer.dispose() };
+    const probe_listener = viewer.addEventListener(
+        KiCanvasProbeEvent.type,
+        (event) => options.onProbe?.(event.detail),
+    );
+    let disposed = false;
+    return {
+        canvas,
+        viewer,
+        controller: {
+            zoomBy: (factor) => viewer.zoom_by(factor),
+            resetView: () => viewer.reset_view(),
+            setProbeHighlight: (index, state) =>
+                viewer.set_probe_highlight(index, state),
+            clearProbeHighlight: () => viewer.clear_probe_highlight(),
+        },
+        dispose: () => {
+            if (disposed) return;
+            disposed = true;
+            probe_listener.dispose();
+            viewer.dispose();
+        },
+    };
 }
 
 export async function renderSchematic(
@@ -89,11 +147,12 @@ export async function renderSchematic(
     return mount(
         new SchematicViewer(
             canvas,
-            options.interactive ?? false,
+            interaction(options),
             themes.default.schematic,
         ),
         new KicadSch("schematic.kicad_sch", schematic),
         canvas,
+        options,
     );
 }
 
@@ -103,12 +162,9 @@ export async function renderPcb(
 ): Promise<RenderResult<BoardViewer>> {
     const canvas = target(options);
     return mount(
-        new BoardViewer(
-            canvas,
-            options.interactive ?? false,
-            themes.default.board,
-        ),
+        new BoardViewer(canvas, interaction(options), themes.default.board),
         new KicadPCB("board.kicad_pcb", pcb),
         canvas,
+        options,
     );
 }

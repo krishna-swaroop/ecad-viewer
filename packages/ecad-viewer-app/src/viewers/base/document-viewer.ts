@@ -13,7 +13,7 @@ import {
 import { Grid } from "./grid";
 import type { DocumentPainter, PaintableDocument } from "./painter";
 import { ViewLayerNames, type ViewLayerSet } from "./view-layers";
-import { Viewer } from "./viewer";
+import { Viewer, type ViewerInteraction } from "./viewer";
 import { DrawingSheetPainter } from "../drawing-sheet/painter";
 import { is_showing_design_block } from "../../ecad-viewer/ecad_viewer_global";
 import { Color } from "../../graphics";
@@ -91,10 +91,10 @@ export abstract class DocumentViewer<
 
     constructor(
         canvas: HTMLCanvasElement,
-        interactive: boolean,
+        interaction: ViewerInteraction,
         theme: ThemeT,
     ) {
-        super(canvas, interactive);
+        super(canvas, interaction);
         this.theme = theme;
     }
 

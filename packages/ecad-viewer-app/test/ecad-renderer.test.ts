@@ -6,6 +6,7 @@ import {
     renderSymbol,
 } from "../../ecad-renderer/src";
 import { LayerNames } from "../src/viewers/schematic/layers";
+import type { ProbeEvent } from "../../ecad-renderer/src/types";
 
 /**
  * The renderer draws a library symbol or footprint POD on its own, reusing the
@@ -239,5 +240,255 @@ suite("rendering a library asset", () => {
         expect(viewer.show_drawing_sheet).to.equal(false);
         const sheet = viewer.layers.by_name(LayerNames.drawing_sheet);
         expect(sheet?.bbox.w ?? 0).to.equal(0);
+    });
+
+    test("keeps the legacy interaction matrix while explicit options win", async () => {
+        const [resistor] = parseSymbolLibrary(SYMBOL_LIB);
+        const cases = [
+            {
+                options: { interactive: true },
+                expected: {
+                    selectable: true,
+                    navigation: {
+                        wheel: "direct",
+                        pinch: true,
+                        touchPan: true,
+                    },
+                },
+            },
+            {
+                options: { interactive: false },
+                expected: {
+                    selectable: false,
+                    navigation: {
+                        wheel: "disabled",
+                        pinch: false,
+                        touchPan: false,
+                    },
+                },
+            },
+            {
+                options: {
+                    interactive: true,
+                    selectable: false,
+                    navigation: { wheel: "modifier" as const, touchPan: false },
+                },
+                expected: {
+                    selectable: false,
+                    navigation: {
+                        wheel: "modifier",
+                        pinch: true,
+                        touchPan: false,
+                    },
+                },
+            },
+        ];
+
+        for (const entry of cases) {
+            const container = sized_container();
+            const result = await renderSymbol(resistor!, {
+                canvas: container.firstElementChild as HTMLCanvasElement,
+                ...entry.options,
+            });
+            cleanup.push(() => {
+                result.dispose();
+                container.remove();
+            });
+            const viewer = result.viewer as unknown as {
+                interaction: {
+                    selectable: boolean;
+                    navigation: {
+                        wheel: string;
+                        pinch: boolean;
+                        touchPan: boolean;
+                    };
+                };
+            };
+            expect(viewer.interaction).to.deep.equal(entry.expected);
+        }
+    });
+
+    test("exposes camera controls and structured pin probe events", async () => {
+        const container = sized_container();
+        const [resistor] = parseSymbolLibrary(SYMBOL_LIB);
+        const probes: ProbeEvent[] = [];
+        const result = await renderSymbol(resistor!, {
+            canvas: container.firstElementChild as HTMLCanvasElement,
+            selectable: true,
+            navigation: {
+                wheel: "modifier",
+                pinch: false,
+                touchPan: false,
+            },
+            onProbe: (probe) => probes.push(probe),
+        });
+        cleanup.push(() => {
+            result.dispose();
+            container.remove();
+        });
+
+        const viewer = result.viewer as {
+            viewport: { camera: { zoom: number } };
+            document: {
+                symbols: Map<
+                    string,
+                    {
+                        unit_pins: Array<{
+                            number: string;
+                            index: string;
+                            cross_index: string;
+                            bbox: { center: unknown };
+                        }>;
+                    }
+                >;
+            };
+            on_hover(position: unknown): void;
+            on_click(position: unknown): void;
+        };
+        const pin = [...viewer.document.symbols.values()][0]!.unit_pins[0]!;
+        const initial_zoom = viewer.viewport.camera.zoom;
+        result.controller.zoomBy(2);
+        expect(viewer.viewport.camera.zoom).to.be.greaterThan(initial_zoom);
+        result.controller.zoomBy(Number.POSITIVE_INFINITY);
+        expect(viewer.viewport.camera.zoom).to.be.lessThanOrEqual(190);
+        result.controller.zoomBy(1e9);
+        expect(viewer.viewport.camera.zoom).to.equal(190);
+        result.controller.zoomBy(1e-9);
+        expect(viewer.viewport.camera.zoom).to.equal(0.5);
+        result.controller.resetView();
+
+        viewer.on_hover(pin.bbox.center);
+        viewer.on_click(pin.bbox.center);
+        result.canvas.dispatchEvent(new MouseEvent("mouseleave"));
+
+        expect(probes.map((probe) => probe.phase)).to.deep.equal([
+            "hover",
+            "activate",
+            "leave",
+        ]);
+        const hovered = probes[0] as Exclude<ProbeEvent, { phase: "clear" }>;
+        expect(hovered.source).to.equal("pin");
+        expect(hovered.index).to.equal(`symbol_pin_${hovered.number}`);
+        expect(hovered.crossIndex).to.equal(`pad_${hovered.number}`);
+        expect(
+            result.controller.setProbeHighlight(hovered.index, "hover"),
+        ).to.equal(1);
+        result.controller.clearProbeHighlight();
+    });
+
+    test("probes standalone pads and highlights every duplicate number", async () => {
+        const container = sized_container();
+        const probes: ProbeEvent[] = [];
+        const duplicate = FOOTPRINT.replace('(pad "2"', '(pad "1"');
+        const result = await renderFootprint(parseFootprint(duplicate), {
+            canvas: container.firstElementChild as HTMLCanvasElement,
+            selectable: true,
+            onProbe: (probe) => probes.push(probe),
+        });
+        cleanup.push(() => {
+            result.dispose();
+            container.remove();
+        });
+
+        const viewer = result.viewer as {
+            board: {
+                footprints: Array<{
+                    pads: Array<{ bbox: { center: unknown } }>;
+                }>;
+            };
+            on_hover(position: unknown): void;
+            on_click(position: unknown): void;
+        };
+        const pad = viewer.board.footprints[0]!.pads[0]!;
+        viewer.on_hover(pad.bbox.center);
+        viewer.on_click(pad.bbox.center);
+
+        expect(probes[0]).to.include({
+            phase: "hover",
+            source: "pad",
+            number: "1",
+            index: "pad_1",
+            crossIndex: "symbol_pin_1",
+        });
+        expect(
+            result.controller.setProbeHighlight("pad_1", "latched"),
+        ).to.equal(2);
+    });
+
+    test("does not replay a queued pin hover after mouseleave", async () => {
+        const container = sized_container();
+        const [resistor] = parseSymbolLibrary(SYMBOL_LIB);
+        const probes: ProbeEvent[] = [];
+        const result = await renderSymbol(resistor!, {
+            canvas: container.firstElementChild as HTMLCanvasElement,
+            selectable: true,
+            onProbe: (probe) => probes.push(probe),
+        });
+        cleanup.push(() => {
+            result.dispose();
+            container.remove();
+        });
+
+        const viewer = result.viewer as {
+            viewport: {
+                camera: {
+                    world_to_screen(position: unknown): {
+                        x: number;
+                        y: number;
+                    };
+                };
+            };
+            document: {
+                symbols: Map<
+                    string,
+                    { unit_pins: Array<{ bbox: { center: unknown } }> }
+                >;
+            };
+        };
+        const pin = [...viewer.document.symbols.values()][0]!.unit_pins[0]!;
+        const screen = viewer.viewport.camera.world_to_screen(pin.bbox.center);
+        const rect = result.canvas.getBoundingClientRect();
+        result.canvas.dispatchEvent(
+            new MouseEvent("mousemove", {
+                clientX: rect.left + screen.x,
+                clientY: rect.top + screen.y,
+            }),
+        );
+        result.canvas.dispatchEvent(new MouseEvent("mouseleave"));
+        await new Promise<void>((resolve) =>
+            requestAnimationFrame(() => resolve()),
+        );
+
+        expect(probes).to.deep.equal([]);
+    });
+
+    test("rejects empty pad numbers as probe sources", async () => {
+        const container = sized_container();
+        const probes: ProbeEvent[] = [];
+        const empty_number = FOOTPRINT.replace('(pad "1"', '(pad ""');
+        const result = await renderFootprint(parseFootprint(empty_number), {
+            canvas: container.firstElementChild as HTMLCanvasElement,
+            selectable: true,
+            onProbe: (probe) => probes.push(probe),
+        });
+        cleanup.push(() => {
+            result.dispose();
+            container.remove();
+        });
+
+        const viewer = result.viewer as {
+            board: {
+                footprints: Array<{
+                    pads: Array<{ bbox: { center: unknown } }>;
+                }>;
+            };
+            on_hover(position: unknown): void;
+            on_click(position: unknown): void;
+        };
+        const pad = viewer.board.footprints[0]!.pads[0]!;
+        viewer.on_hover(pad.bbox.center);
+        viewer.on_click(pad.bbox.center);
+
+        expect(probes).to.deep.equal([{ phase: "clear" }]);
     });
 });

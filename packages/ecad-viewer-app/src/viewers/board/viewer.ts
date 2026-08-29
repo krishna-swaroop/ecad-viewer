@@ -19,7 +19,11 @@ import {
 } from "../../kicad/board_bbox_visitor";
 import type { KCBoardLayersPanelElement } from "../../kicanvas/elements/kc-board/layers-panel";
 import { DocumentViewer } from "../base/document-viewer";
-import { KiCanvasFitterMenuEvent, KiCanvasSelectEvent } from "../base/events";
+import {
+    KiCanvasFitterMenuEvent,
+    KiCanvasProbeEvent,
+    KiCanvasSelectEvent,
+} from "../base/events";
 import type { VisibilityType } from "../base/view-layers";
 import { ViewerType } from "../base/viewer";
 import type {
@@ -275,6 +279,25 @@ export class BoardViewer extends DocumentViewer<
 
     override on_click(pos: Vec2, event?: MouseEvent): void {
         const items = this.find_items_under_pos(pos);
+        const pad = items.find(
+            (entry) =>
+                entry.depth === Depth.PAD &&
+                entry.item instanceof board_items.Pad &&
+                entry.item.number.trim(),
+        )?.item;
+        if (pad instanceof board_items.Pad) {
+            this.dispatchEvent(
+                new KiCanvasProbeEvent({
+                    phase: "activate",
+                    source: "pad",
+                    number: pad.number,
+                    index: pad.index,
+                    crossIndex: pad.cross_index,
+                }),
+            );
+        } else {
+            this.dispatchEvent(new KiCanvasProbeEvent({ phase: "clear" }));
+        }
 
         if (items.length > 0) {
             if (items.length == 1) {
@@ -336,8 +359,6 @@ export class BoardViewer extends DocumentViewer<
     find_items_under_pos(pos: Vec2) {
         const items: BoardInteractiveItem[] = [];
 
-        if (!this.#layer_visibility_ctrl) return items;
-
         // When one or more layers are isolated (highlighted from the layer
         // menu), only items on those layers are selectable. Otherwise a click
         // could still land on a dimmed trace on another layer, e.g. picking an
@@ -347,9 +368,7 @@ export class BoardViewer extends DocumentViewer<
             this.layers.highlighted_layer_names(),
         );
 
-        const visible_layers: Set<string> = new Set();
-        for (const [k, v] of this.layer_visibility)
-            if (v) visible_layers.add(k);
+        const visible_layers = this.#visible_layer_names();
 
         const is_item_visible = (item: BoardInteractiveItem) => {
             // Isolation restricts selection to items that actually live on an
@@ -448,6 +467,7 @@ export class BoardViewer extends DocumentViewer<
     #net_info: Map<number, NetProperty>;
 
     #last_hover: BoardInteractiveItem | null = null;
+    #last_probe: board_items.Pad | null = null;
 
     #highlighted_track = true;
     #overlay_item_bounds = new Map<string, BBox>();
@@ -766,11 +786,7 @@ export class BoardViewer extends DocumentViewer<
     }
 
     findInteractive(pos: Vec2) {
-        if (!this.#layer_visibility_ctrl) return null;
-
-        const visible_layers: Set<string> = new Set();
-        for (const [k, v] of this.layer_visibility)
-            if (v) visible_layers.add(k);
+        const visible_layers = this.#visible_layer_names();
 
         const is_item_visible = (item: BoardInteractiveItem) => {
             for (const layer of visible_layers)
@@ -789,8 +805,31 @@ export class BoardViewer extends DocumentViewer<
         return null;
     }
 
+    #visible_layer_names(): Set<string> {
+        const visible = new Set<string>();
+        const configured = this.layer_visibility;
+        if (configured) {
+            for (const [name, shown] of configured) {
+                if (shown) visible.add(name);
+            }
+            return visible;
+        }
+        for (const layer of this.layers.in_ui_order()) {
+            if (layer.visible) visible.add(layer.name);
+        }
+        return visible;
+    }
+
     override on_hover(_pos: Vec2) {
         const hover_item = this.findInteractive(_pos);
+
+        this.#update_probe_hover(
+            hover_item?.depth === Depth.PAD &&
+                hover_item.item instanceof board_items.Pad &&
+                hover_item.item.number.trim()
+                ? hover_item.item
+                : null,
+        );
 
         if (hover_item === this.#last_hover) return;
 
@@ -804,5 +843,53 @@ export class BoardViewer extends DocumentViewer<
 
         this.painter.highlight(hover_item);
         this.draw();
+    }
+
+    protected override on_pointer_leave(): void {
+        this.#update_probe_hover(null);
+        this.#last_hover = null;
+        this.painter.highlight(null);
+        this.draw();
+    }
+
+    #update_probe_hover(next: board_items.Pad | null) {
+        if (next === this.#last_probe) return;
+        const previous = this.#last_probe;
+        this.#last_probe = next;
+        if (previous) {
+            this.dispatchEvent(
+                new KiCanvasProbeEvent({
+                    phase: "leave",
+                    source: "pad",
+                    number: previous.number,
+                    index: previous.index,
+                    crossIndex: previous.cross_index,
+                }),
+            );
+        }
+        if (next) {
+            this.dispatchEvent(
+                new KiCanvasProbeEvent({
+                    phase: "hover",
+                    source: "pad",
+                    number: next.number,
+                    index: next.index,
+                    crossIndex: next.cross_index,
+                }),
+            );
+        }
+    }
+
+    protected override probe_bounds(index: string): BBox[] {
+        const matches: BBox[] = [];
+        for (const item of this.#interactive.get(Depth.PAD) ?? []) {
+            if (
+                item.item instanceof board_items.Pad &&
+                item.item.index === index
+            ) {
+                matches.push(item.item.bbox);
+            }
+        }
+        return matches;
     }
 }
