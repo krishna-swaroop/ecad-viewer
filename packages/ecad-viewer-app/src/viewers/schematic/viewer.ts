@@ -320,11 +320,28 @@ export class SchematicViewer extends DocumentViewer<
         }
     }
 
+    /**
+     * Where to draw a pin's cross-probe highlight.
+     *
+     * The painted bbox, not `PinInstance.bbox`. A library symbol is authored
+     * with Y up and drawn with Y down, and only the painter's transform
+     * applies that flip, so the two disagree by a reflection about the
+     * placement origin -- far enough apart on a tall part to read as a stray
+     * box floating over the symbol. Picking already resolves a pin through
+     * the painted geometry; the highlight has to agree with it, or it marks
+     * a pin the reader did not point at.
+     */
     protected override probe_bounds(index: string): BBox[] {
         const matches: BBox[] = [];
         for (const symbol of this.schematic.symbols.values()) {
-            for (const pin of symbol.unit_pins) {
-                if (pin.index === index) matches.push(pin.bbox);
+            const pins =
+                this.instance_context?.unit_pins(symbol) ?? symbol.unit_pins;
+            for (const pin of pins) {
+                if (pin.index !== index) continue;
+                for (const painted of this.layers.query_item_bboxes(pin)) {
+                    matches.push(painted);
+                    break;
+                }
             }
         }
         return matches;
