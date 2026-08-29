@@ -19,13 +19,19 @@ export interface MoveAndZoomOptions {
     wheel: WheelNavigationMode;
     pinch: boolean;
     touchPan: boolean;
+    /** Pan by dragging with a mouse or trackpad button held down. */
+    drag: boolean;
 }
 
 const default_options: MoveAndZoomOptions = {
     wheel: "direct",
     pinch: true,
     touchPan: true,
+    drag: true,
 };
+
+/** A host veto on starting a drag; used to reserve a button for another mode. */
+export type DragFilter = (e: MouseEvent) => boolean;
 
 /**
  * Interactive Pan and Zoom helper
@@ -35,13 +41,25 @@ export class MoveAndZoom {
 
     #startDistance: number | null = null;
     #startPosition: TouchList | null = null;
+    #dragPosition: Vec2 | null = null;
 
     #disposed = false;
+
+    /**
+     * Veto for a drag gesture, consulted on mousedown.
+     *
+     * Comment mode reserves left-drag for its rubber band, but must keep
+     * right-drag panning, so the decision is per event rather than a flag.
+     */
+    public drag_filter: DragFilter = () => true;
 
     readonly #wheel_listener = (e: WheelEvent) => this.#on_wheel(e);
     readonly #touch_start_listener = (e: TouchEvent) => this.#on_touch_start(e);
     readonly #touch_move_listener = (e: TouchEvent) => this.#on_touch_move(e);
     readonly #touch_end_listener = () => this.#on_touch_end();
+    readonly #mouse_down_listener = (e: MouseEvent) => this.#on_mouse_down(e);
+    readonly #mouse_move_listener = (e: MouseEvent) => this.#on_mouse_move(e);
+    readonly #mouse_up_listener = () => this.#end_drag();
 
     /**
      * Create an interactive pan and zoom helper
@@ -83,11 +101,19 @@ export class MoveAndZoom {
                 this.#touch_end_listener,
             );
         }
+        if (this.options.drag) {
+            this.target.addEventListener(
+                "mousedown",
+                this.#mouse_down_listener,
+            );
+        }
     }
 
     dispose() {
         if (this.#disposed) return;
         this.#disposed = true;
+        this.#end_drag();
+        this.target.removeEventListener("mousedown", this.#mouse_down_listener);
         this.target.removeEventListener("wheel", this.#wheel_listener);
         this.target.removeEventListener(
             "touchstart",
@@ -145,6 +171,48 @@ export class MoveAndZoom {
     #on_touch_end() {
         this.#startDistance = null;
         this.#startPosition = null;
+    }
+
+    /**
+     * Drag panning.
+     *
+     * The move and release listeners live on the window rather than the
+     * target, so a gesture that leaves the canvas keeps panning and still ends
+     * on release -- a small canvas, which a library preview is, would otherwise
+     * drop nearly every drag part way through.
+     */
+    #on_mouse_down(e: MouseEvent) {
+        if (!this.is_active()) return;
+        if (!this.drag_filter(e)) return;
+        this.#dragPosition = new Vec2(e.clientX, e.clientY);
+        window.addEventListener("mousemove", this.#mouse_move_listener);
+        window.addEventListener("mouseup", this.#mouse_up_listener);
+    }
+
+    #on_mouse_move(e: MouseEvent) {
+        if (this.#dragPosition === null) return;
+        if (!this.is_active()) {
+            this.#end_drag();
+            return;
+        }
+        // A release outside the window is not reported, so a move with no
+        // button held is the first evidence the gesture is over.
+        if (e.buttons === 0) {
+            this.#end_drag();
+            return;
+        }
+        this.#handle_pan(
+            this.#dragPosition.x - e.clientX,
+            this.#dragPosition.y - e.clientY,
+        );
+        this.#dragPosition = new Vec2(e.clientX, e.clientY);
+    }
+
+    #end_drag() {
+        if (this.#dragPosition === null) return;
+        this.#dragPosition = null;
+        window.removeEventListener("mousemove", this.#mouse_move_listener);
+        window.removeEventListener("mouseup", this.#mouse_up_listener);
     }
 
     #getDistanceBetweenTouches(touches: TouchList) {

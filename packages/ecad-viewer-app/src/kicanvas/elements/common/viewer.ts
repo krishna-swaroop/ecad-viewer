@@ -4,7 +4,6 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import { Vec2 } from "../../../base/math";
 import { attribute, html } from "../../../base/web-components";
 import { KCUIElement } from "../../../kc-ui";
 import { KiCanvasLoadEvent } from "../../../viewers/base/events";
@@ -31,8 +30,6 @@ export abstract class KCViewerElement<
 
     @attribute({ type: Boolean })
     disableinteraction: boolean;
-
-    mouse_press_pos: Vec2 | null = null;
 
     override initialContentCallback() {
         (async () => {
@@ -85,46 +82,9 @@ export abstract class KCViewerElement<
     override render() {
         this.canvas = html`<canvas></canvas>` as HTMLCanvasElement;
 
-        this.canvas.addEventListener("mousedown", (e: MouseEvent) => {
-            if (!this.viewer?.active) return;
-            // Left-drag is reserved for rubber-band area comments while
-            // comment mode is enabled; do not start a pan gesture.
-            if (this.viewer?.comment_mode && e.button === 0) {
-                return;
-            }
-            this.mouse_press_pos = new Vec2(e.clientX, e.clientY);
-        });
-
-        this.canvas.addEventListener("mouseup", (e: MouseEvent) => {
-            this.mouse_press_pos = null;
-        });
-
-        this.canvas.addEventListener("mouseleave", (e: MouseEvent) => {
-            this.mouse_press_pos = null;
-        });
-
-        this.canvas.addEventListener("mousemove", (e: MouseEvent) => {
-            if (!this.mouse_press_pos) return;
-            if (!this.viewer.active) {
-                this.mouse_press_pos = null;
-                return;
-            }
-            if (this.viewer?.comment_mode) return;
-
-            const delta = new Vec2(
-                this.mouse_press_pos.x - e.clientX,
-                this.mouse_press_pos.y - e.clientY,
-            ).multiply(1 / this.viewer.viewport.camera.zoom);
-
-            this.mouse_press_pos = new Vec2(e.clientX, e.clientY);
-
-            const center = this.viewer.viewport.camera.center.add(delta);
-
-            this.viewer.viewport.camera.center.set(center);
-
-            this.viewer.notify_viewport_change();
-        });
-
+        // Drag panning is part of viewer navigation (`MoveAndZoom`), not of
+        // this element, so every host that mounts a viewer -- this element and
+        // the standalone renderer alike -- navigates the same way.
         return html`<style>
                 :host {
                     display: block;

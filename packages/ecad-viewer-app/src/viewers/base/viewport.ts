@@ -7,6 +7,7 @@
 import { Barrier } from "../../base/async";
 import {
     MoveAndZoom,
+    type DragFilter,
     type MoveAndZoomOptions,
 } from "../../base/dom/move-and-zoom";
 import { SizeObserver } from "../../base/dom/size-observer";
@@ -122,6 +123,16 @@ export class Viewport {
     set bounds(bb: BBox) {
         if (this.#pan_and_zoom) {
             this.#pan_and_zoom.bounds = bb;
+        }
+    }
+
+    /**
+     * Let the host veto a drag-pan gesture, so a mode that owns a mouse button
+     * can claim it without disabling panning with the others.
+     */
+    set drag_filter(filter: DragFilter) {
+        if (this.#pan_and_zoom) {
+            this.#pan_and_zoom.drag_filter = filter;
         }
     }
 }
