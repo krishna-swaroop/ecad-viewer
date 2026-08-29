@@ -1,7 +1,7 @@
 import { expect } from "@esm-bundle/chai";
 
 import { parseSymbolLibrary, renderSymbol } from "../../ecad-renderer/src";
-import { Vec2 } from "../src/base/math";
+import { BBox, Vec2 } from "../src/base/math";
 import { DefaultValues, PinInstance } from "../src/kicad/schematic";
 import { Pad } from "../src/kicad/board";
 import { LayerNames } from "../src/viewers/schematic/layers";
@@ -65,6 +65,7 @@ interface ProbeViewer {
     };
     document: { symbols: Map<string, { unit_pins: PinInstance[] }> };
     find_item(pos: Vec2): { item: unknown };
+    probe_bounds(index: string): BBox[];
 }
 
 async function render_resistor(cleanup: Array<() => void>) {
@@ -152,6 +153,31 @@ suite("picking a symbol pin", () => {
             ).to.equal(pin);
         }
         expect(placed.unit_pins.map((p) => p.number)).to.deep.equal(["1", "2"]);
+    });
+
+    test("a pin's probe highlight lands on the pin that was picked", async () => {
+        // The model's own pin bbox is reflected about the placement origin
+        // relative to the painted one, which on this part swaps the two pins.
+        // A highlight drawn there marks the wrong pin, or empty space.
+        const { viewer, placed } = await render_resistor(cleanup);
+        const layer = viewer.layers.by_name(LayerNames.symbol_pin)!;
+        for (const pin of placed.unit_pins) {
+            const painted = layer.bboxes.get(pin)!;
+            const bounds = viewer.probe_bounds(pin.index);
+            expect(bounds.length, `pin ${pin.number}`).to.equal(1);
+            expect(bounds[0]!.center.x, `pin ${pin.number} x`).to.be.closeTo(
+                painted.center.x,
+                1e-6,
+            );
+            expect(bounds[0]!.center.y, `pin ${pin.number} y`).to.be.closeTo(
+                painted.center.y,
+                1e-6,
+            );
+            expect(
+                viewer.find_item(bounds[0]!.center).item,
+                `pin ${pin.number} picks back`,
+            ).to.equal(pin);
+        }
     });
 
     test("the symbol body is still selectable", async () => {
