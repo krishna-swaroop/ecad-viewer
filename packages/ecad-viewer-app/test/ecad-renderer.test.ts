@@ -415,6 +415,53 @@ suite("rendering a library asset", () => {
         ).to.equal(2);
     });
 
+    test("does not replay a queued pin hover after mouseleave", async () => {
+        const container = sized_container();
+        const [resistor] = parseSymbolLibrary(SYMBOL_LIB);
+        const probes: ProbeEvent[] = [];
+        const result = await renderSymbol(resistor!, {
+            canvas: container.firstElementChild as HTMLCanvasElement,
+            selectable: true,
+            onProbe: (probe) => probes.push(probe),
+        });
+        cleanup.push(() => {
+            result.dispose();
+            container.remove();
+        });
+
+        const viewer = result.viewer as {
+            viewport: {
+                camera: {
+                    world_to_screen(position: unknown): {
+                        x: number;
+                        y: number;
+                    };
+                };
+            };
+            document: {
+                symbols: Map<
+                    string,
+                    { unit_pins: Array<{ bbox: { center: unknown } }> }
+                >;
+            };
+        };
+        const pin = [...viewer.document.symbols.values()][0]!.unit_pins[0]!;
+        const screen = viewer.viewport.camera.world_to_screen(pin.bbox.center);
+        const rect = result.canvas.getBoundingClientRect();
+        result.canvas.dispatchEvent(
+            new MouseEvent("mousemove", {
+                clientX: rect.left + screen.x,
+                clientY: rect.top + screen.y,
+            }),
+        );
+        result.canvas.dispatchEvent(new MouseEvent("mouseleave"));
+        await new Promise<void>((resolve) =>
+            requestAnimationFrame(() => resolve()),
+        );
+
+        expect(probes).to.deep.equal([]);
+    });
+
     test("rejects empty pad numbers as probe sources", async () => {
         const container = sized_container();
         const probes: ProbeEvent[] = [];

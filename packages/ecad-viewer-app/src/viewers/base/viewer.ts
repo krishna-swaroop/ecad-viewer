@@ -223,6 +223,10 @@ export abstract class Viewer extends EventTarget {
 
             this.disposables.add(
                 listen(this.canvas, "mouseleave", () => {
+                    if (this.#hover_frame !== null) {
+                        cancelAnimationFrame(this.#hover_frame);
+                        this.#hover_frame = null;
+                    }
                     this.on_pointer_leave();
                 }),
             );
