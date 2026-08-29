@@ -53,6 +53,30 @@ export class KiCanvasSelectEvent extends KiCanvasEvent<SelectDetails> {
     }
 }
 
+export type KiCanvasProbePhase = "hover" | "leave" | "activate" | "clear";
+export type KiCanvasProbeSource = "pin" | "pad";
+
+export type KiCanvasProbeDetail =
+    | {
+          phase: Exclude<KiCanvasProbePhase, "clear">;
+          source: KiCanvasProbeSource;
+          number: string;
+          index: string;
+          crossIndex: string;
+      }
+    | {
+          phase: "clear";
+      };
+
+/** Structured pin/pad interaction used by lightweight library render hosts. */
+export class KiCanvasProbeEvent extends KiCanvasEvent<KiCanvasProbeDetail> {
+    static readonly type = "kicanvas:probe";
+
+    constructor(detail: KiCanvasProbeDetail) {
+        super(KiCanvasProbeEvent.type, detail, true);
+    }
+}
+
 export class EcadOverlayClickEvent extends KiCanvasEvent<OverlayHit> {
     static readonly type = "ecad-viewer:overlay-click";
 
@@ -422,6 +446,7 @@ export class LoadZipErrorEvent extends CustomEvent<string> {
 export interface KiCanvasEventMap {
     [KiCanvasLoadEvent.type]: KiCanvasLoadEvent;
     [KiCanvasSelectEvent.type]: KiCanvasSelectEvent;
+    [KiCanvasProbeEvent.type]: KiCanvasProbeEvent;
     [EcadOverlayClickEvent.type]: EcadOverlayClickEvent;
     [EcadOverlayHoverEvent.type]: EcadOverlayHoverEvent;
     [EcadOverlayLeaveEvent.type]: EcadOverlayLeaveEvent;

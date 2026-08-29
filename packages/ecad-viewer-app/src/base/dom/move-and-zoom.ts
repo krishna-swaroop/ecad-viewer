@@ -13,6 +13,20 @@ const pan_speed = 1;
 
 export type MoveAndZoomCallback = () => void;
 
+export type WheelNavigationMode = "disabled" | "modifier" | "direct";
+
+export interface MoveAndZoomOptions {
+    wheel: WheelNavigationMode;
+    pinch: boolean;
+    touchPan: boolean;
+}
+
+const default_options: MoveAndZoomOptions = {
+    wheel: "direct",
+    pinch: true,
+    touchPan: true,
+};
+
 /**
  * Interactive Pan and Zoom helper
  */
@@ -21,6 +35,13 @@ export class MoveAndZoom {
 
     #startDistance: number | null = null;
     #startPosition: TouchList | null = null;
+
+    #disposed = false;
+
+    readonly #wheel_listener = (e: WheelEvent) => this.#on_wheel(e);
+    readonly #touch_start_listener = (e: TouchEvent) => this.#on_touch_start(e);
+    readonly #touch_move_listener = (e: TouchEvent) => this.#on_touch_move(e);
+    readonly #touch_end_listener = () => this.#on_touch_end();
 
     /**
      * Create an interactive pan and zoom helper
@@ -38,57 +59,92 @@ export class MoveAndZoom {
         public max_zoom = 10,
         public bounds?: BBox,
         public is_active: () => boolean = () => true,
+        public options: MoveAndZoomOptions = default_options,
     ) {
-        this.target.addEventListener(
-            "wheel",
-            (e: WheelEvent) => this.#on_wheel(e),
-            { passive: false },
+        this.options = { ...default_options, ...options };
+        if (this.options.wheel !== "disabled") {
+            this.target.addEventListener("wheel", this.#wheel_listener, {
+                passive: false,
+            });
+        }
+        if (this.options.pinch || this.options.touchPan) {
+            this.target.addEventListener(
+                "touchstart",
+                this.#touch_start_listener,
+            );
+            this.target.addEventListener(
+                "touchmove",
+                this.#touch_move_listener,
+                { passive: false },
+            );
+            this.target.addEventListener("touchend", this.#touch_end_listener);
+            this.target.addEventListener(
+                "touchcancel",
+                this.#touch_end_listener,
+            );
+        }
+    }
+
+    dispose() {
+        if (this.#disposed) return;
+        this.#disposed = true;
+        this.target.removeEventListener("wheel", this.#wheel_listener);
+        this.target.removeEventListener(
+            "touchstart",
+            this.#touch_start_listener,
         );
+        this.target.removeEventListener("touchmove", this.#touch_move_listener);
+        this.target.removeEventListener("touchend", this.#touch_end_listener);
+        this.target.removeEventListener(
+            "touchcancel",
+            this.#touch_end_listener,
+        );
+        this.#on_touch_end();
+    }
 
-        this.target.addEventListener("touchstart", (e: TouchEvent) => {
-            if (!this.is_active()) return;
-            if (e.touches.length === 2) {
-                this.#startDistance = this.#getDistanceBetweenTouches(
-                    e.touches,
+    #on_touch_start(e: TouchEvent) {
+        if (!this.is_active()) return;
+        if (e.touches.length === 2 && this.options.pinch) {
+            this.#startDistance = this.#getDistanceBetweenTouches(e.touches);
+        } else if (e.touches.length === 1 && this.options.touchPan) {
+            this.#startPosition = e.touches;
+        }
+    }
+
+    #on_touch_move(e: TouchEvent) {
+        if (!this.is_active()) return;
+        if (
+            e.touches.length === 2 &&
+            this.options.pinch &&
+            this.#startDistance !== null
+        ) {
+            e.preventDefault();
+            const currentDistance = this.#getDistanceBetweenTouches(e.touches);
+            if (Math.abs(this.#startDistance - currentDistance) < 10) {
+                const scale = (currentDistance / this.#startDistance) * 5;
+                this.#handle_zoom(
+                    this.#startDistance < currentDistance ? scale * -1 : scale,
                 );
-            } else if (e.touches.length === 1) {
-                this.#startPosition = e.touches;
             }
-        });
+            this.#startDistance = currentDistance;
+        } else if (
+            e.touches.length === 1 &&
+            this.options.touchPan &&
+            this.#startPosition !== null
+        ) {
+            e.preventDefault();
+            const sx = this.#startPosition[0]?.clientX ?? 0;
+            const sy = this.#startPosition[0]?.clientY ?? 0;
+            const ex = e.touches[0]?.clientX ?? 0;
+            const ey = e.touches[0]?.clientY ?? 0;
+            this.#handle_pan(sx - ex, sy - ey);
+            this.#startPosition = e.touches;
+        }
+    }
 
-        this.target.addEventListener("touchmove", (e: TouchEvent) => {
-            if (!this.is_active()) return;
-            if (e.touches.length === 2) {
-                if (this.#startDistance !== null) {
-                    const currentDistance = this.#getDistanceBetweenTouches(
-                        e.touches,
-                    );
-                    if (Math.abs(this.#startDistance - currentDistance) < 10) {
-                        const scale =
-                            (currentDistance / this.#startDistance) * 5;
-                        if (this.#startDistance < currentDistance) {
-                            this.#handle_zoom(scale * -1);
-                        } else {
-                            this.#handle_zoom(scale);
-                        }
-                    }
-                    this.#startDistance = currentDistance;
-                }
-            } else if (e.touches.length === 1 && this.#startPosition !== null) {
-                const sx = this.#startPosition[0]?.clientX ?? 0;
-                const sy = this.#startPosition[0]?.clientY ?? 0;
-                const ex = e.touches[0]?.clientX ?? 0;
-                const ey = e.touches[0]?.clientY ?? 0;
-                this.#handle_pan(sx - ex, sy - ey);
-
-                this.#startPosition = e.touches;
-            }
-        });
-
-        this.target.addEventListener("touchend", () => {
-            this.#startDistance = null;
-            this.#startPosition = null;
-        });
+    #on_touch_end() {
+        this.#startDistance = null;
+        this.#startPosition = null;
     }
 
     #getDistanceBetweenTouches(touches: TouchList) {
@@ -102,6 +158,9 @@ export class MoveAndZoom {
 
     #on_wheel(e: WheelEvent) {
         if (!this.is_active()) return;
+        if (this.options.wheel === "modifier" && !e.ctrlKey && !e.metaKey) {
+            return;
+        }
         e.preventDefault();
 
         let dx = e.deltaX;

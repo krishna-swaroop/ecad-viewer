@@ -14,11 +14,13 @@ import {
     HierarchicalSheetPin,
     KicadSch,
     Label,
+    PinInstance,
     SchematicInstanceContext,
 } from "../../kicad/schematic";
 import { DocumentViewer } from "../base/document-viewer";
 import {
     HierarchicalSheetPinClickEvent,
+    KiCanvasProbeEvent,
     KiCanvasSelectEvent,
     LabelClickEvent,
     SheetChangeEvent,
@@ -83,6 +85,7 @@ export class SchematicViewer extends DocumentViewer<
 
     #focus_net_item?: string;
     #selected_bbox: BBox | null = null;
+    #last_probe: PinInstance | null = null;
     #instance_context?: SchematicInstanceContext;
 
     get instance_context(): SchematicInstanceContext | undefined {
@@ -157,6 +160,20 @@ export class SchematicViewer extends DocumentViewer<
 
     override on_click(pos: Vec2): void {
         const ct = this.find_item(pos);
+
+        if (ct.item instanceof PinInstance && ct.item.number.trim()) {
+            this.dispatchEvent(
+                new KiCanvasProbeEvent({
+                    phase: "activate",
+                    source: "pin",
+                    number: ct.item.number,
+                    index: ct.item.index,
+                    crossIndex: ct.item.cross_index,
+                }),
+            );
+        } else {
+            this.dispatchEvent(new KiCanvasProbeEvent({ phase: "clear" }));
+        }
 
         if (ct.item) {
             const it = ct.item;
@@ -241,6 +258,12 @@ export class SchematicViewer extends DocumentViewer<
         const it = this.find_item(pos);
         const layer = this.layers.overlay;
 
+        this.#update_probe_hover(
+            it.item instanceof PinInstance && it.item.number.trim()
+                ? it.item
+                : null,
+        );
+
         layer.clear();
 
         if (it.bbox) {
@@ -261,6 +284,50 @@ export class SchematicViewer extends DocumentViewer<
         }
 
         this.draw();
+    }
+
+    protected override on_pointer_leave(): void {
+        this.#update_probe_hover(null);
+        this.layers.overlay.clear();
+        this.draw();
+    }
+
+    #update_probe_hover(next: PinInstance | null) {
+        if (next === this.#last_probe) return;
+        const previous = this.#last_probe;
+        this.#last_probe = next;
+        if (previous) {
+            this.dispatchEvent(
+                new KiCanvasProbeEvent({
+                    phase: "leave",
+                    source: "pin",
+                    number: previous.number,
+                    index: previous.index,
+                    crossIndex: previous.cross_index,
+                }),
+            );
+        }
+        if (next) {
+            this.dispatchEvent(
+                new KiCanvasProbeEvent({
+                    phase: "hover",
+                    source: "pin",
+                    number: next.number,
+                    index: next.index,
+                    crossIndex: next.cross_index,
+                }),
+            );
+        }
+    }
+
+    protected override probe_bounds(index: string): BBox[] {
+        const matches: BBox[] = [];
+        for (const symbol of this.schematic.symbols.values()) {
+            for (const pin of symbol.unit_pins) {
+                if (pin.index === index) matches.push(pin.bbox);
+            }
+        }
+        return matches;
     }
     override type: ViewerType = ViewerType.SCHEMATIC;
 
