@@ -130,6 +130,59 @@ suite("MoveAndZoom activity contract", () => {
         movement.dispose();
     });
 
+    test("a real drag consumes its click but pointer jitter does not", () => {
+        const canvas = document.createElement("canvas");
+        const camera = new Camera2(new Vec2(0, 0), new Vec2(0, 0), 1);
+        const movement = new MoveAndZoom(
+            canvas,
+            camera,
+            () => {},
+            0.5,
+            10,
+            undefined,
+            () => true,
+            { wheel: "disabled", pinch: false, touchPan: false, drag: true },
+        );
+        let clicks = 0;
+        canvas.addEventListener("click", () => {
+            clicks += 1;
+        });
+
+        canvas.dispatchEvent(
+            new MouseEvent("mousedown", { clientX: 20, clientY: 20 }),
+        );
+        window.dispatchEvent(
+            new MouseEvent("mousemove", {
+                clientX: 21,
+                clientY: 21,
+                buttons: 1,
+            }),
+        );
+        window.dispatchEvent(new MouseEvent("mouseup"));
+        canvas.dispatchEvent(new MouseEvent("click", { cancelable: true }));
+        expect(clicks).to.equal(1);
+
+        canvas.dispatchEvent(
+            new MouseEvent("mousedown", { clientX: 20, clientY: 20 }),
+        );
+        window.dispatchEvent(
+            new MouseEvent("mousemove", {
+                clientX: 10,
+                clientY: 10,
+                buttons: 1,
+            }),
+        );
+        window.dispatchEvent(new MouseEvent("mouseup"));
+        const draggedClick = new MouseEvent("click", { cancelable: true });
+        canvas.dispatchEvent(draggedClick);
+        expect(draggedClick.defaultPrevented).to.equal(true);
+        expect(clicks).to.equal(1);
+
+        canvas.dispatchEvent(new MouseEvent("click", { cancelable: true }));
+        expect(clicks).to.equal(2);
+        movement.dispose();
+    });
+
     test("a vetoed button does not start a drag", () => {
         const canvas = document.createElement("canvas");
         const camera = new Camera2(new Vec2(0, 0), new Vec2(0, 0), 1);
