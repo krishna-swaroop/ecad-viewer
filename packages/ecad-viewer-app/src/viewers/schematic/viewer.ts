@@ -5,7 +5,6 @@
 */
 
 import { BBox, Vec2 } from "../../base/math";
-import { is_showing_design_block } from "../../ecad-viewer/ecad_viewer_global";
 import { Color, Polygon, Polyline, Renderer } from "../../graphics";
 import { Canvas2DRenderer } from "../../graphics/canvas2d";
 import { NullRenderer } from "../../graphics/null-renderer";
@@ -389,15 +388,32 @@ export class SchematicViewer extends DocumentViewer<
         return renderer;
     }
     public override zoom_fit_top_item() {
-        if (!this.document.is_converted_from_ad)
+        const layer_names = [
+            LayerNames.symbol_foreground,
+            LayerNames.symbol_background,
+            LayerNames.symbol_pin,
+            LayerNames.wire,
+            LayerNames.label,
+            LayerNames.junction,
+            LayerNames.notes,
+        ];
+
+        const bboxes: BBox[] = [];
+        for (const layer_name of layer_names) {
+            const layer = this.layers.by_name(layer_name);
+            if (layer && layer.bboxes.size > 0) {
+                bboxes.push(layer.bbox);
+            }
+        }
+
+        if (bboxes.length > 0) {
+            this.viewport.camera.bbox = BBox.combine(bboxes).grow(10);
+        } else if (!this.document.is_converted_from_ad) {
             this.viewport.camera.bbox = get_sch_bbox(
                 this.theme,
                 this.document,
                 this.#instance_context,
             ).grow(10);
-        else if (is_showing_design_block()) {
-            this.viewport.camera.bbox =
-                this.schematic_renderer.scene_bbox.grow(10);
         } else {
             this.viewport.camera.bbox =
                 this.schematic_renderer.scene_bbox.grow(10);

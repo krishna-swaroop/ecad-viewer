@@ -261,6 +261,40 @@ export class Canvas2DRenderer extends Renderer {
         );
     }
 
+    override polylines(lines: Vec2[][], width?: number, color?: Color): void {
+        const path = new Path2D();
+        let stroke: string | null = null;
+        let stroke_width = 0;
+
+        for (const points of lines) {
+            const line = super.prep_line(points, width, color);
+            if (!line.color || line.color.is_transparent_black) {
+                continue;
+            }
+
+            stroke = (line.color as Color).to_css();
+            stroke_width = line.width;
+
+            let started = false;
+            for (const point of line.points) {
+                if (!started) {
+                    path.moveTo(point.x, point.y);
+                    started = true;
+                } else {
+                    path.lineTo(point.x, point.y);
+                }
+            }
+        }
+
+        if (!stroke) {
+            return;
+        }
+
+        this.#active_layer!.commands.push(
+            new DrawCommand(path, null, stroke, stroke_width),
+        );
+    }
+
     override get layers() {
         const layers = this.#layers;
         return {
