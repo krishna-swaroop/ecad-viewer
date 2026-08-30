@@ -10,6 +10,7 @@ const line_delta_multiplier = 8;
 const page_delta_multiplier = 24;
 const zoom_speed = 0.005;
 const pan_speed = 1;
+const drag_threshold = 3;
 
 export type MoveAndZoomCallback = () => void;
 
@@ -42,6 +43,9 @@ export class MoveAndZoom {
     #startDistance: number | null = null;
     #startPosition: TouchList | null = null;
     #dragPosition: Vec2 | null = null;
+    #dragOrigin: Vec2 | null = null;
+    #suppressClick = false;
+    #clickResetTimer: number | null = null;
 
     #disposed = false;
 
@@ -60,6 +64,7 @@ export class MoveAndZoom {
     readonly #mouse_down_listener = (e: MouseEvent) => this.#on_mouse_down(e);
     readonly #mouse_move_listener = (e: MouseEvent) => this.#on_mouse_move(e);
     readonly #mouse_up_listener = () => this.#end_drag();
+    readonly #click_listener = (e: MouseEvent) => this.#on_click(e);
 
     /**
      * Create an interactive pan and zoom helper
@@ -106,6 +111,7 @@ export class MoveAndZoom {
                 "mousedown",
                 this.#mouse_down_listener,
             );
+            this.target.addEventListener("click", this.#click_listener, true);
         }
     }
 
@@ -114,6 +120,7 @@ export class MoveAndZoom {
         this.#disposed = true;
         this.#end_drag();
         this.target.removeEventListener("mousedown", this.#mouse_down_listener);
+        this.target.removeEventListener("click", this.#click_listener, true);
         this.target.removeEventListener("wheel", this.#wheel_listener);
         this.target.removeEventListener(
             "touchstart",
@@ -126,6 +133,10 @@ export class MoveAndZoom {
             this.#touch_end_listener,
         );
         this.#on_touch_end();
+        if (this.#clickResetTimer !== null) {
+            window.clearTimeout(this.#clickResetTimer);
+            this.#clickResetTimer = null;
+        }
     }
 
     #on_touch_start(e: TouchEvent) {
@@ -184,7 +195,13 @@ export class MoveAndZoom {
     #on_mouse_down(e: MouseEvent) {
         if (!this.is_active()) return;
         if (!this.drag_filter(e)) return;
+        if (this.#clickResetTimer !== null) {
+            window.clearTimeout(this.#clickResetTimer);
+            this.#clickResetTimer = null;
+        }
+        this.#suppressClick = false;
         this.#dragPosition = new Vec2(e.clientX, e.clientY);
+        this.#dragOrigin = this.#dragPosition.copy();
         window.addEventListener("mousemove", this.#mouse_move_listener);
         window.addEventListener("mouseup", this.#mouse_up_listener);
     }
@@ -201,18 +218,49 @@ export class MoveAndZoom {
             this.#end_drag();
             return;
         }
+        if (
+            !this.#suppressClick &&
+            this.#dragOrigin !== null &&
+            Math.hypot(
+                this.#dragOrigin.x - e.clientX,
+                this.#dragOrigin.y - e.clientY,
+            ) < drag_threshold
+        ) {
+            return;
+        }
+        this.#suppressClick = true;
+        e.preventDefault();
         this.#handle_pan(
             this.#dragPosition.x - e.clientX,
             this.#dragPosition.y - e.clientY,
         );
         this.#dragPosition = new Vec2(e.clientX, e.clientY);
+        this.#dispatch_panzoom(e);
     }
 
     #end_drag() {
         if (this.#dragPosition === null) return;
         this.#dragPosition = null;
+        this.#dragOrigin = null;
         window.removeEventListener("mousemove", this.#mouse_move_listener);
         window.removeEventListener("mouseup", this.#mouse_up_listener);
+        if (this.#suppressClick) {
+            this.#clickResetTimer = window.setTimeout(() => {
+                this.#suppressClick = false;
+                this.#clickResetTimer = null;
+            }, 0);
+        }
+    }
+
+    #on_click(e: MouseEvent) {
+        if (!this.#suppressClick) return;
+        this.#suppressClick = false;
+        if (this.#clickResetTimer !== null) {
+            window.clearTimeout(this.#clickResetTimer);
+            this.#clickResetTimer = null;
+        }
+        e.preventDefault();
+        e.stopImmediatePropagation();
     }
 
     #getDistanceBetweenTouches(touches: TouchList) {
@@ -255,10 +303,15 @@ export class MoveAndZoom {
         this.#rect = this.target.getBoundingClientRect();
         this.#handle_zoom(dy, this.#relative_mouse_pos(e));
 
+        this.#dispatch_panzoom(e);
+    }
+
+    #dispatch_panzoom(e: MouseEvent) {
         this.target.dispatchEvent(
             new MouseEvent("panzoom", {
                 clientX: e.clientX,
                 clientY: e.clientY,
+                buttons: e.buttons,
             }),
         );
     }

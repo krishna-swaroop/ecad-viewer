@@ -8,6 +8,11 @@ Interactive online electronic designs viewer based on [kicanvas](https://github.
 
 Live demo: https://www.eda.cn/ecadViewer/
 
+Standalone symbol and footprint rendering is documented in the
+[`ecad-renderer` package](packages/ecad-renderer/README.md). Its bundle requires
+selection and navigation gestures to be configured explicitly; the former
+experimental `interactive` option is not supported.
+
 ## Why another repository instead of contributing back to the original project?
 
 We are open to introducing ready-made frameworks, unlike the original, which insists on being a dependency-free library.
