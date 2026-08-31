@@ -2,6 +2,7 @@ import { expect } from "@esm-bundle/chai";
 
 import { Vec2 } from "../src/base/math";
 import {
+    __impl,
     triangulate,
     triangulation_backend,
     triangulation_ready,
@@ -131,6 +132,39 @@ suite("polygon triangulation", function () {
         const verts = triangulate(points);
 
         expect(verts.length).to.equal((points.length - 2) * 3 * 2);
+    });
+
+    test("the JS fallback tiles the same rings", function () {
+        // Every other test here, and every board test in the suite, now runs
+        // through wasm -- so without this the fallback the viewer relies on
+        // when instantiation fails would have no coverage at all.
+        for (const points of [circle(64), circle(2000), comb(40)]) {
+            const area = ring_area(points);
+            const dev = Math.abs(soup_area(__impl.js(points)) - area) / area;
+            expect(dev).to.be.lessThan(F32_AREA_TOLERANCE);
+        }
+    });
+
+    test("both backends agree on area", function () {
+        // They emit different triangles by design, so the areas are the only
+        // thing that may be compared.
+        for (const points of [circle(64), comb(40)]) {
+            const js = soup_area(__impl.js(points));
+            const wa = soup_area(__impl.wasm(points)!);
+            expect(Math.abs(js - wa) / js).to.be.lessThan(F32_AREA_TOLERANCE);
+        }
+    });
+
+    test("the two backends really do emit different triangles", function () {
+        // Guards the claim the rest of this file is written around. If a
+        // future change made them agree, the "do not compare indices"
+        // reasoning above would be stale and worth revisiting.
+        const points = circle(64);
+        const js = __impl.js(points);
+        const wa = __impl.wasm(points)!;
+
+        expect(js.length).to.equal(wa.length);
+        expect(Array.from(js)).to.not.deep.equal(Array.from(wa));
     });
 
     test("survives a repeat call after growing the arena", function () {

@@ -88,6 +88,17 @@ export function triangulate(points: Vec2[]): Float32Array {
     return wasm ? triangulate_wasm(wasm, points, n) : triangulate_js(points, n);
 }
 
+/**
+ * The two implementations, exposed so the fallback can be tested. Production
+ * code calls `triangulate`, which picks between them; nothing else should
+ * reach for these directly.
+ */
+export const __impl = {
+    js: (points: Vec2[]) => triangulate_js(points, points.length),
+    wasm: (points: Vec2[]) =>
+        wasm ? triangulate_wasm(wasm, points, points.length) : null,
+};
+
 function triangulate_wasm(
     m: EarcutWasm,
     points: Vec2[],
