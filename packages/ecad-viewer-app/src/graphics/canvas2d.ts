@@ -86,10 +86,23 @@ export class Canvas2DRenderer extends Renderer {
         }
 
         this.ctx2d = ctx2d;
+
+        // Only marks the cached box stale. Deliberately does NOT call
+        // `on_resize`: the WebGL renderer fires that, the 2d one never has, and
+        // starting to would newly put DocumentViewer.on_canvas_resize's
+        // sync_from_canvas() + draw() on every resize tick for schematics --
+        // a behaviour change that does not belong in a perf fix.
+        this.#size_observer = new ResizeObserver(() => {
+            this.#rect_dirty = true;
+        });
+        this.#size_observer.observe(this.canvas);
+
         this.update_canvas_size();
     }
 
     override dispose() {
+        this.#size_observer?.disconnect();
+        this.#size_observer = undefined;
         this.ctx2d = undefined;
         for (const layer of this.#layers) {
             layer.dispose();
@@ -105,7 +118,20 @@ export class Canvas2DRenderer extends Renderer {
         return bb;
     }
 
+    #size_observer?: ResizeObserver;
+    #rect_dirty = true;
+
+    /**
+     * Re-measure and re-size the backing store. Always measures: every caller
+     * outside the frame loop -- DocumentViewer's resize and paint paths, and
+     * the host's pane-resize and tab-settle hooks -- calls in precisely because
+     * it believes the layout box just changed, and may well run before the
+     * ResizeObserver has ticked. The per-frame path does not come through here;
+     * see clear_canvas.
+     */
     override update_canvas_size() {
+        this.#rect_dirty = false;
+
         // Size the backing store to physical pixels. The camera and every draw
         // command work in CSS-pixel space; the devicePixelRatio scale that
         // bridges the two is applied to the context in clear_canvas. Without it
@@ -126,7 +152,15 @@ export class Canvas2DRenderer extends Renderer {
     override clear_canvas() {
         const ctx2d = this.ctx2d;
         if (!ctx2d) return;
-        this.update_canvas_size();
+
+        // getBoundingClientRect() forces layout, and this runs on every single
+        // frame. Once the box has settled the observer is the only thing that
+        // can invalidate it, so a steady-state frame does no layout work at
+        // all. A zero-width backing store is always wrong regardless of the
+        // flag, and canvas.width is a property read, not a layout read.
+        if (this.#rect_dirty || this.canvas.width === 0) {
+            this.update_canvas_size();
+        }
 
         // Reset to the identity, then scale by devicePixelRatio so drawing in
         // CSS-pixel coordinates fills the physical-pixel backing store. Layer
