@@ -5,7 +5,7 @@
 */
 
 import { Angle, BBox, Matrix3, Vec2 } from "../../base/math";
-import { Color, Polyline, Renderer } from "../../graphics";
+import { Color, Renderer } from "../../graphics";
 import { Glyph, StrokeGlyph } from "./glyph";
 import { Markup, MarkupNode } from "./markup";
 
@@ -222,18 +222,18 @@ export abstract class Font {
 
         const transform = Matrix3.scaling(0.0001, 0.0001);
 
+        const strokes: Vec2[][] = [];
         for (const glyph of glyphs as StrokeGlyph[]) {
             for (const stroke of glyph.strokes) {
-                const stroke_pts = Array.from(transform.transform_all(stroke));
-                gfx.line(
-                    new Polyline(
-                        stroke_pts,
-                        attributes.stroke_width / 10000,
-                        attributes.color,
-                    ),
-                );
+                strokes.push(Array.from(transform.transform_all(stroke)));
             }
         }
+
+        gfx.polylines(
+            strokes,
+            attributes.stroke_width / 10000,
+            attributes.color,
+        );
 
         return bbox;
     }

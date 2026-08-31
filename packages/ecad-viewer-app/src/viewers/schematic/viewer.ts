@@ -5,7 +5,6 @@
 */
 
 import { BBox, Vec2 } from "../../base/math";
-import { is_showing_design_block } from "../../ecad-viewer/ecad_viewer_global";
 import { Color, Polygon, Polyline, Renderer } from "../../graphics";
 import { Canvas2DRenderer } from "../../graphics/canvas2d";
 import { NullRenderer } from "../../graphics/null-renderer";
@@ -86,6 +85,12 @@ export class SchematicViewer extends DocumentViewer<
     #focus_net_item?: string;
     #selected_bbox: BBox | null = null;
     #last_probe: PinInstance | null = null;
+    // The bbox the overlay highlight was last built for. `find_item` hands back
+    // the recorded BBox instance straight out of `layer.bboxes`, and
+    // DocumentPainter.paint_layer assigns a fresh Map of fresh BBoxes on every
+    // paint, so identity is stable between repaints and a repaint invalidates
+    // this for free.
+    #last_hover_bbox: BBox | null = null;
     #instance_context?: SchematicInstanceContext;
 
     get instance_context(): SchematicInstanceContext | undefined {
@@ -264,6 +269,14 @@ export class SchematicViewer extends DocumentViewer<
                 : null,
         );
 
+        // Moving the pointer within the same item -- or across empty sheet --
+        // leaves the overlay exactly as it already is. Rebuilding it anyway
+        // costs a full display-list replay per mousemove frame, which on a
+        // large sheet is the whole schematic. The board viewer already guards
+        // its hover this way; this is the same guard.
+        if (it.bbox === this.#last_hover_bbox) return;
+        this.#last_hover_bbox = it.bbox;
+
         layer.clear();
 
         if (it.bbox) {
@@ -288,6 +301,7 @@ export class SchematicViewer extends DocumentViewer<
 
     protected override on_pointer_leave(): void {
         this.#update_probe_hover(null);
+        this.#last_hover_bbox = null;
         this.layers.overlay.clear();
         this.draw();
     }
@@ -389,15 +403,32 @@ export class SchematicViewer extends DocumentViewer<
         return renderer;
     }
     public override zoom_fit_top_item() {
-        if (!this.document.is_converted_from_ad)
+        const layer_names = [
+            LayerNames.symbol_foreground,
+            LayerNames.symbol_background,
+            LayerNames.symbol_pin,
+            LayerNames.wire,
+            LayerNames.label,
+            LayerNames.junction,
+            LayerNames.notes,
+        ];
+
+        const bboxes: BBox[] = [];
+        for (const layer_name of layer_names) {
+            const layer = this.layers.by_name(layer_name);
+            if (layer && layer.bboxes.size > 0) {
+                bboxes.push(layer.bbox);
+            }
+        }
+
+        if (bboxes.length > 0) {
+            this.viewport.camera.bbox = BBox.combine(bboxes).grow(10);
+        } else if (!this.document.is_converted_from_ad) {
             this.viewport.camera.bbox = get_sch_bbox(
                 this.theme,
                 this.document,
                 this.#instance_context,
             ).grow(10);
-        else if (is_showing_design_block()) {
-            this.viewport.camera.bbox =
-                this.schematic_renderer.scene_bbox.grow(10);
         } else {
             this.viewport.camera.bbox =
                 this.schematic_renderer.scene_bbox.grow(10);

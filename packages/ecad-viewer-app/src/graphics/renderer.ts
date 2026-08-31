@@ -385,6 +385,18 @@ export abstract class Renderer implements IDisposable {
     glyphs(glyphs: any[]) {
         // TODO
     }
+
+    /**
+     * Draw several polylines that share a stroke style as a batch.
+     *
+     * The base implementation defers to line(); backends may override this to
+     * group the polylines into fewer draw commands.
+     */
+    polylines(lines: Vec2[][], width?: number, color?: Color): void {
+        for (const points of lines) {
+            this.line(points, width, color);
+        }
+    }
 }
 
 export abstract class RenderLayer implements IDisposable {

@@ -68,6 +68,9 @@ export class Canvas2DRenderer extends Renderer {
 
     ctx2d?: CanvasRenderingContext2D;
 
+    /** Base (devicePixelRatio) transform, refreshed by clear_canvas. */
+    base_transform: Matrix3 = Matrix3.identity();
+
     /**
      * Create a new Canvas2DRenderer
      */
@@ -86,10 +89,23 @@ export class Canvas2DRenderer extends Renderer {
         }
 
         this.ctx2d = ctx2d;
+
+        // Only marks the cached rect stale. Deliberately does NOT call
+        // `on_resize`: the WebGL renderer fires that, the 2d one never has, and
+        // starting to would newly put DocumentViewer.on_canvas_resize's
+        // sync_from_canvas() + draw() on every resize tick for schematics --
+        // a behaviour change that does not belong in a perf fix.
+        this.#size_observer = new ResizeObserver(() => {
+            this.#rect_dirty = true;
+        });
+        this.#size_observer.observe(this.canvas);
+
         this.update_canvas_size();
     }
 
     override dispose() {
+        this.#size_observer?.disconnect();
+        this.#size_observer = undefined;
         this.ctx2d = undefined;
         for (const layer of this.#layers) {
             layer.dispose();
@@ -105,6 +121,17 @@ export class Canvas2DRenderer extends Renderer {
         return bb;
     }
 
+    #size_observer?: ResizeObserver;
+    #rect_dirty = true;
+
+    /**
+     * Re-measure and re-size the backing store. Always measures: every caller
+     * outside the frame loop -- DocumentViewer's resize and paint paths, and
+     * the host's pane-resize and tab-settle hooks -- calls in precisely because
+     * it believes the layout box just changed, and may well run before the
+     * ResizeObserver has ticked. The per-frame path does not come through here;
+     * see clear_canvas.
+     */
     override update_canvas_size() {
         // Size the backing store to physical pixels. The camera and every draw
         // command work in CSS-pixel space; the devicePixelRatio scale that
@@ -113,6 +140,7 @@ export class Canvas2DRenderer extends Renderer {
         // upscaled it, blurring the whole schematic on any HiDPI display.
         const dpr = window.devicePixelRatio || 1;
 
+        this.#rect_dirty = false;
         const rect = this.canvas.getBoundingClientRect();
         const pixel_w = Math.round(rect.width * dpr);
         const pixel_h = Math.round(rect.height * dpr);
@@ -126,7 +154,15 @@ export class Canvas2DRenderer extends Renderer {
     override clear_canvas() {
         const ctx2d = this.ctx2d;
         if (!ctx2d) return;
-        this.update_canvas_size();
+
+        // getBoundingClientRect() forces layout, and this runs on every single
+        // frame. Once the box has settled the observer is the only thing that
+        // can invalidate it, so a steady-state frame does no layout work at
+        // all. A zero-width backing store is always wrong regardless of the
+        // flag, and canvas.width is a property read, not a layout read.
+        if (this.#rect_dirty || this.canvas.width === 0) {
+            this.update_canvas_size();
+        }
 
         // Reset to the identity, then scale by devicePixelRatio so drawing in
         // CSS-pixel coordinates fills the physical-pixel backing store. Layer
@@ -135,6 +171,11 @@ export class Canvas2DRenderer extends Renderer {
         const dpr = window.devicePixelRatio || 1;
         ctx2d.setTransform();
         ctx2d.scale(dpr, dpr);
+
+        // Every layer brackets its own work in save()/restore(), so the
+        // transform each one starts from is always exactly this. Publishing it
+        // here saves a getTransform() round trip per layer per frame.
+        this.base_transform = Matrix3.scaling(dpr, dpr);
 
         const css_w = this.canvas.width / dpr;
         const css_h = this.canvas.height / dpr;
@@ -261,6 +302,40 @@ export class Canvas2DRenderer extends Renderer {
         );
     }
 
+    override polylines(lines: Vec2[][], width?: number, color?: Color): void {
+        const path = new Path2D();
+        let stroke: string | null = null;
+        let stroke_width = 0;
+
+        for (const points of lines) {
+            const line = super.prep_line(points, width, color);
+            if (!line.color || line.color.is_transparent_black) {
+                continue;
+            }
+
+            stroke = (line.color as Color).to_css();
+            stroke_width = line.width;
+
+            let started = false;
+            for (const point of line.points) {
+                if (!started) {
+                    path.moveTo(point.x, point.y);
+                    started = true;
+                } else {
+                    path.lineTo(point.x, point.y);
+                }
+            }
+        }
+
+        if (!stroke) {
+            return;
+        }
+
+        this.#active_layer!.commands.push(
+            new DrawCommand(path, null, stroke, stroke_width),
+        );
+    }
+
     override get layers() {
         const layers = this.#layers;
         return {
@@ -281,6 +356,19 @@ export class Canvas2DRenderer extends Renderer {
     }
 }
 
+/**
+ * Canvas style last written within one layer's render pass.
+ *
+ * Scoped to the layer, not the frame: Canvas2dRenderLayer.render brackets each
+ * layer in save()/restore(), which resets the context, so frame-wide tracking
+ * would go stale at every layer boundary.
+ */
+type CanvasStyleState = {
+    fill: string | null;
+    stroke: string | null;
+    line_width: number | null;
+};
+
 class DrawCommand {
     public path_count = 1;
 
@@ -291,14 +379,26 @@ class DrawCommand {
         public stroke_width: number,
     ) {}
 
-    render(ctx: CanvasRenderingContext2D) {
-        ctx.fillStyle = this.fill ?? "black";
-        ctx.strokeStyle = this.stroke ?? "black";
-        ctx.lineWidth = this.stroke_width;
+    render(ctx: CanvasRenderingContext2D, state?: CanvasStyleState) {
+        // Only touch the context state that this command actually uses, and
+        // only when it differs from what the layer last set. Runs of same-
+        // coloured geometry are the common case in both schematics and boards.
         if (this.fill) {
+            if (!state || state.fill !== this.fill) {
+                ctx.fillStyle = this.fill;
+                if (state) state.fill = this.fill;
+            }
             ctx.fill(this.path);
         }
         if (this.stroke) {
+            if (!state || state.stroke !== this.stroke) {
+                ctx.strokeStyle = this.stroke;
+                if (state) state.stroke = this.stroke;
+            }
+            if (!state || state.line_width !== this.stroke_width) {
+                ctx.lineWidth = this.stroke_width;
+                if (state) state.line_width = this.stroke_width;
+            }
             ctx.stroke(this.path);
         }
     }
@@ -310,7 +410,7 @@ class ImageCommand {
         public src_bbox: BBox,
         public dest_bbox: BBox,
     ) {}
-    render(ctx: CanvasRenderingContext2D) {
+    render(ctx: CanvasRenderingContext2D, _state?: CanvasStyleState) {
         ctx.drawImage(
             this.img,
             this.src_bbox.x,
@@ -330,7 +430,10 @@ class Canvas2dRenderLayer extends RenderLayer {
         public override readonly renderer: Renderer,
         public override readonly name: string,
         public commands: {
-            render: (ctx: CanvasRenderingContext2D) => void;
+            render: (
+                ctx: CanvasRenderingContext2D,
+                state?: CanvasStyleState,
+            ) => void;
         }[] = [],
     ) {
         super(renderer, name);
@@ -356,14 +459,19 @@ class Canvas2dRenderLayer extends RenderLayer {
         ctx.globalCompositeOperation = this.composite_operation;
         ctx.globalAlpha = global_alpha;
 
-        const accumulated_transform = Matrix3.from_DOMMatrix(
-            ctx.getTransform(),
-        );
+        const accumulated_transform = (
+            this.renderer as Canvas2DRenderer
+        ).base_transform.copy();
         accumulated_transform.multiply_self(transform);
         ctx.setTransform(accumulated_transform.to_DOMMatrix());
 
+        const style: CanvasStyleState = {
+            fill: null,
+            stroke: null,
+            line_width: null,
+        };
         for (const command of this.commands) {
-            command.render(ctx);
+            command.render(ctx, style);
         }
 
         ctx.globalCompositeOperation = "source-over";

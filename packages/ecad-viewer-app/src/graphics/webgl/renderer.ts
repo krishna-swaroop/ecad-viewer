@@ -158,8 +158,13 @@ export class WebGL2Renderer extends Renderer {
     override clear_canvas() {
         if (this.gl == null) throw new Error("Uninitialized");
 
-        // Upate canvas size and projection matrix if needed
-        this.update_canvas_size();
+        // Update canvas size and projection matrix if needed. The measurement
+        // inside forces layout, so a settled frame must not reach it: the
+        // observer is what marks the box stale, and a zero-width backing store
+        // is wrong whatever the flag says (a property read, not a layout read).
+        if (this.#size_dirty || this.canvas.width === 0) {
+            this.update_canvas_size();
+        }
 
         this.gl.clear(this.gl.COLOR_BUFFER_BIT | this.gl.DEPTH_BUFFER_BIT);
     }
