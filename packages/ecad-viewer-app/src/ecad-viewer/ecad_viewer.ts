@@ -3925,6 +3925,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             "files",
         );
         this.loading = true;
+        // Snapshot before the load: `Project.load` replaces `settings`
+        // wholesale, so afterwards there is nothing left to compare against.
+        const text_vars_before = this.#text_vars_snapshot();
         try {
             await this.#project.load({ urls: [], blobs });
             console.log(
@@ -3935,7 +3938,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             );
             // Notify existing viewers of the updated project without re-rendering
             this.#project.on_loaded();
-            if (blobs.some((blob) => blob.filename.endsWith(".kicad_pro"))) {
+            if (
+                blobs.some((blob) => blob.filename.endsWith(".kicad_pro")) &&
+                this.#text_vars_changed(text_vars_before)
+            ) {
                 this.#repaint_for_new_project_settings();
             }
         } catch (error) {
@@ -3966,10 +3972,34 @@ export class ECadViewer extends KCUIElement implements InputContainer {
      * way whenever the two disagree, or shows nothing at all when the board
      * carries no copy.
      *
-     * Only a `.kicad_pro` triggers this. Subsheets arrive on the same path and
-     * are far more numerous; repainting for each would rebuild the scene once
-     * per sheet on every load.
+     * Only a `.kicad_pro` triggers this, and only when it actually changed the
+     * project's text variables. Subsheets arrive on the same path and are far
+     * more numerous; repainting for each would rebuild the scene once per
+     * sheet on every load. The variables check matters just as much: most
+     * designs define none, and repainting for a project file that could not
+     * have changed anything cost about two seconds on a large board.
      */
+    /**
+     * The project's text variables, flattened to a comparable string.
+     *
+     * Sorted so key order cannot make an unchanged map look changed --
+     * `ProjectSettings.load` rebuilds the object from JSON on every append, so
+     * the map is a different object each time even when its contents are
+     * identical.
+     */
+    #text_vars_snapshot(): string {
+        const vars = this.#project.settings.text_variables ?? {};
+        return JSON.stringify(
+            Object.keys(vars)
+                .sort()
+                .map((k) => [k, vars[k]]),
+        );
+    }
+
+    #text_vars_changed(before: string): boolean {
+        return this.#text_vars_snapshot() !== before;
+    }
+
     #repaint_for_new_project_settings() {
         for (const viewer of [
             this.#safe_schematic_viewer(),

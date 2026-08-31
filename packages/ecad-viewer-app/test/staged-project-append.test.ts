@@ -32,6 +32,13 @@ const PROJECT = JSON.stringify({
     text_variables: { VERSION: "3.7.1" },
 });
 
+// The common case by far: a project file that defines no text variables at
+// all. Appending it cannot change anything a document painted, so the repaint
+// it used to trigger was pure cost -- about two seconds on a large board.
+const PROJECT_NO_VARS = JSON.stringify({
+    meta: { filename: "board.kicad_pro", version: 1 },
+});
+
 type SourceUpdate = {
     revisionKey: string;
     sources: Array<{ filename: string; content: string }>;
@@ -108,6 +115,31 @@ suite("appending project settings after the sheet", () => {
         });
 
         expect(viewer.paint_count).to.equal(painted_before);
+    });
+
+    test("a project file with no text variables does not force a repaint", async () => {
+        // The repaint exists to make late-arriving variable values appear. A
+        // project that defines none cannot change what was painted, and most
+        // designs define none, so this is the path that used to pay ~2 s on a
+        // large board for nothing.
+        await host.replaceSources({
+            revisionKey: "r4",
+            sources: [{ filename: "board.kicad_sch", content: SHEET }],
+        });
+        const viewer = schematic_viewer(host);
+        const painted_before = viewer.paint_count;
+
+        await host.appendSources({
+            revisionKey: "r4",
+            sources: [
+                { filename: "board.kicad_pro", content: PROJECT_NO_VARS },
+            ],
+        });
+
+        expect(
+            viewer.paint_count,
+            "nothing the sheet painted could have changed",
+        ).to.equal(painted_before);
     });
 
     test("re-appending the same project file does no extra work", async () => {
