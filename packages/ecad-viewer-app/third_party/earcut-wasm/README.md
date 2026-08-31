@@ -22,6 +22,15 @@ Apple silicon, median of 5):
 
 1.47x, or ~336 ms off a full zone repaint of that board.
 
+Loading the same board cold in the viewer -- parse, paint, upload, everything
+-- the isolated saving shows up almost exactly, 5 runs each, medians:
+
+| | document load | time to interactive |
+| --- | --- | --- |
+| JS | 2944 ms | 2977 ms |
+| wasm | 2587 ms | 2622 ms |
+| | **-357 ms (12.1%)** | **-355 ms (11.9%)** |
+
 Two things that did _not_ pay, and so are not here:
 
 - **Swapping the vendored JS earcut for the npm package.** Same code; measured
@@ -44,6 +53,14 @@ counts prove nothing. The property the renderer actually depends on is that
 the triangles tile the ring, which is what `test/wasm-triangulation.test.ts`
 asserts: total triangle area equals the ring's shoelace area. Measured max
 relative deviation across all 789 polygons is 2.7e-13 for both.
+
+## Memory
+
+`INITIAL_MEMORY` is 16 MB with growth enabled. The largest single zone fill on
+the board benchmarked above is 65,173 points, which needs about 4.4 MB across
+the coordinate arena, the ring, the index list and the expanded vertices -- so
+a board of that size triangulates without ever triggering a growth event, and
+wasm memory is demand-paged, so the headroom is reserved rather than resident.
 
 ## Rebuilding
 
