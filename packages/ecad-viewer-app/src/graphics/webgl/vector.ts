@@ -21,11 +21,11 @@
  *
  */
 
-import earcut from "../../../third_party/earcut/earcut";
 import { Color } from "../../base/color";
 import type { IDisposable } from "../../base/disposable";
 import { Matrix3, Vec2 } from "../../base/math";
 import { Circle, Polygon, Polyline } from "../shapes";
+import { triangulate } from "./triangulate";
 import { Buffer, ShaderProgram, VertexArray } from "./helpers";
 import polygon_frag_shader_src from "./polygon.frag.glsl";
 import polygon_vert_shader_src from "./polygon.vert.glsl";
@@ -219,34 +219,8 @@ class Tesselator {
             return polygon;
         }
 
-        const points = polygon.points;
-
-        const points_flattened = new Array(points.length * 2);
-        for (let i = 0; i < points.length; i++) {
-            const pt = points[i]!;
-            points_flattened[i * 2] = pt.x;
-            points_flattened[i * 2 + 1] = pt.y;
-        }
-
-        // shortcut if the polygon is a single triangle.
-        if (points.length == 3) {
-            polygon.points = [];
-            polygon.vertices = new Float32Array(points_flattened);
-            return polygon;
-        }
-
-        const triangle_indexes = earcut(points_flattened);
-
-        const vertices = new Float32Array(triangle_indexes.length * 2);
-
-        for (let i = 0; i < triangle_indexes.length; i++) {
-            const index = triangle_indexes[i];
-            vertices[i * 2] = points_flattened[index * 2];
-            vertices[i * 2 + 1] = points_flattened[index * 2 + 1];
-        }
-
+        polygon.vertices = triangulate(polygon.points);
         polygon.points = [];
-        polygon.vertices = vertices;
 
         return polygon;
     }
