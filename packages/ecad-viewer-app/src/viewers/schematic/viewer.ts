@@ -85,6 +85,12 @@ export class SchematicViewer extends DocumentViewer<
     #focus_net_item?: string;
     #selected_bbox: BBox | null = null;
     #last_probe: PinInstance | null = null;
+    // The bbox the overlay highlight was last built for. `find_item` hands back
+    // the recorded BBox instance straight out of `layer.bboxes`, and
+    // DocumentPainter.paint_layer assigns a fresh Map of fresh BBoxes on every
+    // paint, so identity is stable between repaints and a repaint invalidates
+    // this for free.
+    #last_hover_bbox: BBox | null = null;
     #instance_context?: SchematicInstanceContext;
 
     get instance_context(): SchematicInstanceContext | undefined {
@@ -263,6 +269,14 @@ export class SchematicViewer extends DocumentViewer<
                 : null,
         );
 
+        // Moving the pointer within the same item -- or across empty sheet --
+        // leaves the overlay exactly as it already is. Rebuilding it anyway
+        // costs a full display-list replay per mousemove frame, which on a
+        // large sheet is the whole schematic. The board viewer already guards
+        // its hover this way; this is the same guard.
+        if (it.bbox === this.#last_hover_bbox) return;
+        this.#last_hover_bbox = it.bbox;
+
         layer.clear();
 
         if (it.bbox) {
@@ -287,6 +301,7 @@ export class SchematicViewer extends DocumentViewer<
 
     protected override on_pointer_leave(): void {
         this.#update_probe_hover(null);
+        this.#last_hover_bbox = null;
         this.layers.overlay.clear();
         this.draw();
     }
