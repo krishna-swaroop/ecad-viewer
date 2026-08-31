@@ -14,3 +14,4 @@ package-lock.json
 # bury every real change in a few hundred thousand lines of noise.
 **/static/three/
 **/dist/
+**/third_party/earcut-wasm/earcut_wasm.mjs
