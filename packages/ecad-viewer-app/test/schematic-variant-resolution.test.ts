@@ -468,9 +468,11 @@ suite("schematic variant resolution — oracle fixture", () => {
         root.variant = "Lite";
         expect(root.resolve_text_var("VARIANT")).to.equal("Lite");
         expect(root.resolve_text_var("VARIANTNAME")).to.equal("Lite");
-        // The project's variant catalogue arrives with VAR-05; until then the
-        // description is empty rather than invented.
-        expect(root.resolve_text_var("VARIANT_DESC")).to.equal("");
+        // VAR-05 provides the description from the project registry; VAR-04
+        // only resolved the empty string until the catalog existed.
+        expect(root.resolve_text_var("VARIANT_DESC")).to.equal(
+            "Cost-reduced build",
+        );
     });
 
     test("a context without a project resolves the default design", () => {

@@ -15,6 +15,8 @@ import {
     Project,
     type ProjectPage,
     getParserPerfSnapshot,
+    normalize_variant_name,
+    resolve_variant_request,
 } from "../kicanvas/project";
 import type { NetRef } from "../kicad/net_ref";
 import { type EcadBlob, type EcadSources } from "../kicanvas/services/vfs";
@@ -605,6 +607,92 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         top: 0,
         bottom: 0,
     };
+
+    /**
+     * The requested design variant; `null` is the default design. The
+     * attribute is the durable copy, so a reconnect or source replacement
+     * replays it.
+     */
+    #requested_variant: string | null = null;
+    /** Guards `setAttribute` from re-entering the attribute callback. */
+    #reflecting_variant = false;
+
+    static get observedAttributes(): string[] {
+        return ["variant"];
+    }
+
+    attributeChangedCallback(
+        name: string,
+        _old: string | null,
+        value: string | null,
+    ): void {
+        if (name !== "variant" || this.#reflecting_variant) return;
+        this.#requested_variant = normalize_variant_name(value);
+        this.#apply_variant_request();
+    }
+
+    /**
+     * Select the design variant rendered by the schematic and board viewers.
+     * `null`/the empty string selects the default design. Returns `false` and
+     * selects the default when `name` is not in `getVariants()`; a selection
+     * made before the catalog is loaded is applied when the sources settle.
+     */
+    public setVariant(name: string | null): boolean {
+        const resolution = resolve_variant_request(
+            this.#project,
+            name,
+            this.loaded,
+        );
+        this.#requested_variant = resolution.requested;
+        this.#reflect_variant(resolution.requested);
+        this.#apply_variant_request();
+        return resolution.known;
+    }
+
+    /** The variant currently applied to the loaded revision. */
+    public getVariant(): string | null {
+        return this.#project.active_variant;
+    }
+
+    /**
+     * The catalog of the loaded revision, in discovery order (packet 2.1).
+     * Empty until sources are loaded.
+     */
+    public getVariants(): Array<{ name: string; description: string | null }> {
+        return this.#project.variant_catalog();
+    }
+
+    #reflect_variant(name: string | null): void {
+        this.#reflecting_variant = true;
+        try {
+            if (name === null) this.removeAttribute("variant");
+            else this.setAttribute("variant", name);
+        } finally {
+            this.#reflecting_variant = false;
+        }
+    }
+
+    /**
+     * Re-validate the requested variant against the loaded catalog and apply
+     * it to the project and both viewers. Called after sources settle, page
+     * switches and appends so the selection survives all of them; a name the
+     * revision no longer has falls back to the default design.
+     */
+    #apply_variant_request(): void {
+        const resolution = resolve_variant_request(
+            this.#project,
+            this.#requested_variant,
+            this.loaded,
+        );
+        if (resolution.requested !== this.#requested_variant) {
+            this.#requested_variant = resolution.requested;
+            this.#reflect_variant(resolution.requested);
+        }
+        if (!this.loaded) return;
+        this.#project.set_active_variant(resolution.effective);
+        this.#safe_schematic_viewer()?.set_variant(resolution.effective);
+        this.#safe_board_viewer()?.set_variant(resolution.effective);
+    }
 
     #apply_viewport_insets(): void {
         this.#safe_board_viewer()?.set_viewport_insets(this.#viewport_insets);
@@ -3862,6 +3950,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             }
         }
         await Promise.all(loads);
+        // Apply the requested variant before the ready notification so the
+        // first visible scene of a new revision is already the right one.
+        this.#apply_variant_request();
         // Notify panels and any secondary consumers after the authoritative
         // awaited loads. Same-document app loads are a fast reveal-only path.
         this.#project.on_loaded();
@@ -3944,6 +4035,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             ) {
                 this.#repaint_for_new_project_settings();
             }
+            // A late board or schematic can change the catalog; replay the
+            // selection so a requested name is validated against it.
+            this.#apply_variant_request();
         } catch (error) {
             console.error(
                 "[ECadViewer] Error while adding files to project:",
