@@ -25,6 +25,11 @@ export abstract class BoardItemPainter extends ItemPainter {
         return (this.view_painter as any).filter_net;
     }
 
+    /** Alias for BoardPainter.active_variant (null = default design). */
+    get active_variant(): string | null {
+        return (this.view_painter as any).active_variant ?? null;
+    }
+
     static is_interactive_layer(layer_name: string): boolean {
         return BoardItemPainter.interactive_layers.has(layer_name);
     }
