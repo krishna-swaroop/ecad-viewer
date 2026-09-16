@@ -20,6 +20,14 @@ import {
 import { boardProto as B } from "kicad-parser";
 
 import type { BoardNodeType } from "./board_node_type";
+import {
+    type EffectiveFootprintFlags,
+    type FootprintBaseFlags,
+    FootprintVariantRecord,
+    find_footprint_variant,
+    resolve_footprint_field_text,
+    resolve_footprint_flags,
+} from "./board-variant-resolution";
 export interface BoardNode {
     typeId: BoardNodeType;
     getChildren?: () => BoardNode[];
@@ -57,6 +65,17 @@ const DEFAULT_LAYERS: Partial<B.I_Layer>[] = [
     { canonical_name: LayerNames.eco2_user, type: "user" },
 ];
 
+/** Board-level variant registry entry from the `(variants …)` header. */
+export class BoardVariant {
+    name: string;
+    description?: string;
+
+    constructor(data: B.I_BoardVariant) {
+        this.name = data.name;
+        this.description = data.description;
+    }
+}
+
 export class KicadPCB implements BoardNode {
     typeId: BoardNodeType = "KicadPCB";
     version: number;
@@ -82,6 +101,8 @@ export class KicadPCB implements BoardNode {
     vias: Via[] = [];
     drawings: Drawing[] = [];
     groups: Group[] = [];
+    /** `(variants …)` header registry, in file order (KiCad 10). */
+    variants: BoardVariant[] = [];
     #net_names: Map<number, string> = new Map();
 
     public getNetName(idx: number) {
@@ -139,6 +160,7 @@ export class KicadPCB implements BoardNode {
         this.footprints =
             data.footprints?.map((f) => new Footprint(f, this)) ?? [];
         this.zones = data.zones?.map((z) => new Zone(z)) ?? [];
+        this.variants = data.variants?.map((v) => new BoardVariant(v)) ?? [];
 
         this.segments = [];
         if (data.segments) {
@@ -918,6 +940,7 @@ export class Footprint implements BoardNode {
         board_only: boolean;
         exclude_from_pos_files: boolean;
         exclude_from_bom: boolean;
+        dnp: boolean;
         allow_solder_mask_bridges: boolean;
         allow_missing_courtyard: boolean;
     } = {
@@ -927,6 +950,7 @@ export class Footprint implements BoardNode {
         board_only: false,
         exclude_from_pos_files: false,
         exclude_from_bom: false,
+        dnp: false,
         allow_solder_mask_bridges: false,
         allow_missing_courtyard: false,
     };
@@ -942,6 +966,8 @@ export class Footprint implements BoardNode {
     fp_texts: FpText[] = [];
     _uuid?: string;
     properties_kicad_8: Property_Kicad_8[] = [];
+    /** Design-variant records, in file order (KiCad 10). */
+    variants: FootprintVariantRecord[] = [];
 
     // Graphics items
     public getChildren() {
@@ -978,6 +1004,7 @@ export class Footprint implements BoardNode {
         this.thermal_gap = data.thermal_gap;
         this.attr = data.attr || this.attr;
         this.properties = data.properties || {};
+        this.variants = FootprintVariantRecord.from_list(data.variants);
 
         this.drawings = [];
         if (data.drawings) {
@@ -1078,6 +1105,112 @@ export class Footprint implements BoardNode {
 
     get Description() {
         return this.descr ?? this.properties["Description"] ?? "";
+    }
+
+    /** The footprint's record for `name`, matched case-insensitively. */
+    variant_record(name: string | null): FootprintVariantRecord | undefined {
+        return find_footprint_variant(this.variants, name);
+    }
+
+    /** Base `attr` flags as the design-variant resolver consumes them. */
+    get base_flags(): FootprintBaseFlags {
+        // The parser emits only the attr atoms present on the footprint, so an
+        // absent flag is `undefined` at runtime even though the proto types it
+        // as a boolean; the base is the "no attribute" state.
+        return {
+            dnp: this.attr.dnp === true,
+            exclude_from_bom: this.attr.exclude_from_bom === true,
+            exclude_from_pos_files: this.attr.exclude_from_pos_files === true,
+        };
+    }
+
+    /** Effective flags under `name`; unknown/default names resolve the base. */
+    effective_flags(name: string | null): EffectiveFootprintFlags {
+        return resolve_footprint_flags(
+            this.base_flags,
+            this.variant_record(name),
+        );
+    }
+
+    effective_dnp(name: string | null): boolean {
+        return this.effective_flags(name).dnp;
+    }
+
+    effective_excluded_from_bom(name: string | null): boolean {
+        return this.effective_flags(name).exclude_from_bom;
+    }
+
+    effective_excluded_from_pos_files(name: string | null): boolean {
+        return this.effective_flags(name).exclude_from_pos_files;
+    }
+
+    /**
+     * Property text under the variant: base text with the record's field
+     * override applied by exact name. `Reference` and `Value` read the
+     * footprint's top-level fields; everything else reads the footprint's
+     * fields, which a KiCad 10 board carries in `properties_kicad_8`.
+     */
+    property_text(name: string, variant: string | null): string | undefined {
+        const record = this.variant_record(variant);
+        switch (name) {
+            case "Reference":
+                return resolve_footprint_field_text(
+                    record,
+                    "Reference",
+                    this.reference,
+                );
+            case "Value":
+                return resolve_footprint_field_text(
+                    record,
+                    "Value",
+                    this.value,
+                );
+            default:
+                return resolve_footprint_field_text(
+                    record,
+                    name,
+                    this.base_property_text(name),
+                );
+        }
+    }
+
+    /** Base property text from either field representation the parser uses. */
+    base_property_text(name: string): string | undefined {
+        if (this.properties[name] !== undefined) return this.properties[name];
+        for (const property of this.properties_kicad_8) {
+            if (property.name === name) return property.value;
+        }
+        return undefined;
+    }
+
+    effective_value(variant: string | null): string {
+        return this.property_text("Value", variant) ?? "";
+    }
+
+    effective_reference(variant: string | null): string {
+        return this.property_text("Reference", variant) ?? "";
+    }
+
+    /**
+     * Base properties plus the variant's field overrides and additions.
+     * `Reference` and `Value` stay out: they are top-level footprint fields.
+     */
+    effective_properties(variant: string | null): Record<string, string> {
+        const merged: Record<string, string> = {};
+        for (const property of this.properties_kicad_8) {
+            merged[property.name] = property.value;
+        }
+        Object.assign(merged, this.properties);
+        delete merged["Reference"];
+        delete merged["Value"];
+        const record = this.variant_record(variant);
+        if (record) {
+            for (const [name, value] of record.fields) {
+                if (name === "Reference" || name === "Value") continue;
+                merged[name] = value;
+            }
+        }
+        return merged;
     }
 
     resolve_text_var(name: string): string | undefined {

@@ -714,6 +714,12 @@ export class BoardPainter extends DocumentPainter {
         this.#filter_net = net;
     }
 
+    /**
+     * The board variant the footprint painters resolve against; `null` is the
+     * default design. The board viewer sets it before repainting.
+     */
+    active_variant: string | null = null;
+
     #net_bbox: BBox | null = null;
 
     get net_bbox() {
