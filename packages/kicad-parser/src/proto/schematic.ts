@@ -253,6 +253,38 @@ export interface I_PinInstance {
     alternate: string;
 }
 
+/** One `(field (name …) (value …))` override inside a variant record. */
+export interface I_SchematicVariantField {
+    name: string;
+    value: string;
+}
+
+/**
+ * A KiCad 10 design-variant record attached to one symbol or sheet instance
+ * path: `(variant (name …) [(dnp yes|no)] [(exclude_from_sim …)] [(in_bom …)]
+ * [(on_board …)] [(in_pos_files …)] (field …)*)`.
+ *
+ * Booleans are the raw file tokens: KiCad writes a token only when the
+ * variant differs from the symbol's own attribute, so `undefined` means
+ * "same as base" and must be preserved as such (never collapsed to
+ * `false`). `in_bom`, `on_board` and `in_pos_files` keep the file's positive
+ * logic; `in_bom` in files older than 20260306 is inverted, which the
+ * resolver — not the parser — accounts for. Sheets only ever carry `dnp`,
+ * `exclude_from_sim`, `in_bom` and fields, but the parser accepts the same
+ * shape for both (as KiCad's does). Unknown tokens (KiCad 11
+ * `symbol_override`, `pin_map_override`) are dropped silently, like every
+ * other unknown token.
+ */
+export interface I_SchematicVariant {
+    name: string;
+    dnp?: boolean;
+    exclude_from_sim?: boolean;
+    in_bom?: boolean;
+    on_board?: boolean;
+    in_pos_files?: boolean;
+    fields: I_SchematicVariantField[];
+}
+
 export interface I_SchematicSymbolInstance {
     path: string;
     project?: string;
@@ -260,6 +292,7 @@ export interface I_SchematicSymbolInstance {
     value?: string;
     unit?: number;
     footprint?: string;
+    variants?: I_SchematicVariant[];
 }
 
 export interface I_SchematicSymbol {
@@ -275,6 +308,8 @@ export interface I_SchematicSymbol {
     body_style?: number;
     in_bom: boolean;
     on_board: boolean;
+    /** Positive-logic position-file flag written by KiCad 10; absent in older files. */
+    in_pos_files?: boolean;
     dnp: boolean;
     fields_autoplaced: boolean;
     properties: I_Property[];
@@ -302,6 +337,7 @@ export interface I_SchematicSheetPin {
 export interface I_SchematicSheetInstance {
     path: string;
     page?: string;
+    variants?: I_SchematicVariant[];
 }
 
 export interface I_SchematicSheet {
