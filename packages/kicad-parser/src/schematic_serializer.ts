@@ -706,6 +706,10 @@ export function serializeSchematicSymbol(
         result += `${indentString(level + 1)}(on_board ${symbol.on_board ? "yes" : "no"})
 `;
     }
+    if (symbol.in_pos_files !== undefined) {
+        result += `${indentString(level + 1)}(in_pos_files ${symbol.in_pos_files ? "yes" : "no"})
+`;
+    }
     if (symbol.dnp !== undefined)
         result += `${indentString(level + 1)}(dnp ${symbol.dnp ? "yes" : "no"})
 `;
@@ -815,6 +819,7 @@ export function serializeSchematicSymbol(
                         if (path.footprint)
                             result += `${indentString(level + 4)}(footprint "${escapeString(path.footprint)}")
 `;
+                        result += serializeVariants(path.variants, level + 4);
                         result += `${indentString(level + 3)})
 `;
                     }
@@ -829,6 +834,38 @@ export function serializeSchematicSymbol(
 
     result += `${indent})
 `;
+    return result;
+}
+
+/**
+ * Variant records in KiCad's own order (dnp, exclude_from_sim, in_bom,
+ * on_board, in_pos_files, fields). Only defined booleans are written, so an
+ * absent-in-the-file token stays absent after a round trip.
+ */
+function serializeVariants(variants: S.I_SchematicVariant[] | undefined, level: number): string {
+    if (!variants || variants.length === 0) return "";
+    const indent = indentString(level);
+    const inner = indentString(level + 1);
+    let result = "";
+    for (const variant of variants) {
+        result += `${indent}(variant
+${inner}(name "${escapeString(variant.name)}")
+`;
+        for (const token of ["dnp", "exclude_from_sim", "in_bom", "on_board", "in_pos_files"] as const) {
+            const value = variant[token];
+            if (value !== undefined) result += `${inner}(${token} ${value ? "yes" : "no"})
+`;
+        }
+        for (const field of variant.fields ?? []) {
+            result += `${inner}(field
+${indentString(level + 2)}(name "${escapeString(field.name)}")
+${indentString(level + 2)}(value "${escapeString(field.value)}")
+${inner})
+`;
+        }
+        result += `${indent})
+`;
+    }
     return result;
 }
 
@@ -913,6 +950,7 @@ function serializeSchematicSheet(
                         if (path.page)
                             result += `${indentString(level + 4)}(page "${escapeString(path.page)}")
 `;
+                        result += serializeVariants(path.variants, level + 4);
                         result += `${indentString(level + 3)})
 `;
                     }
