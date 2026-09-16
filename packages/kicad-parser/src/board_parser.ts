@@ -598,6 +598,58 @@ function parseZone(expr: Parseable): B.I_Zone {
     ) as unknown as B.I_Zone;
 }
 
+/**
+ * KiCad reads the booleans of a footprint variant record with
+ * `parseMaybeAbsentBool(true)`: a bare `(dnp)` means true. Its writer always
+ * spells `yes`/`no`, so this only matters for hand-edited files.
+ */
+function maybeAbsentBool(obj: Record<string, any>, name: string, e: unknown): boolean {
+    const value = (e as any[])[1];
+    return value === undefined ? true : T.boolean(obj, name, value);
+}
+
+function parseFootprintVariantField(expr: Parseable): B.I_FootprintVariantField {
+    const parsed = parse_expr(
+        expr,
+        P.start("field"),
+        P.pair("name", T.string),
+        P.pair("value", T.string),
+    );
+    return { name: parsed["name"] ?? "", value: parsed["value"] ?? "" };
+}
+
+function parseFootprintVariant(expr: Parseable): B.I_FootprintVariant {
+    const parsed = parse_expr(
+        expr,
+        P.start("variant"),
+        P.pair("name", T.string),
+        P.expr("dnp", maybeAbsentBool),
+        P.expr("exclude_from_bom", maybeAbsentBool),
+        P.expr("exclude_from_pos_files", maybeAbsentBool),
+        P.collection("fields", "field", T.item(parseFootprintVariantField)),
+    );
+    const variant: B.I_FootprintVariant = {
+        name: parsed["name"] ?? "",
+        fields: parsed["fields"] ?? [],
+    };
+    for (const token of ["dnp", "exclude_from_bom", "exclude_from_pos_files"] as const) {
+        if (parsed[token] !== undefined) variant[token] = parsed[token];
+    }
+    return variant;
+}
+
+function parseBoardVariant(expr: Parseable): B.I_BoardVariant {
+    const parsed = parse_expr(
+        expr,
+        P.start("variant"),
+        P.pair("name", T.string),
+        P.pair("description", T.string),
+    );
+    const variant: B.I_BoardVariant = { name: parsed["name"] ?? "" };
+    if (parsed["description"] !== undefined) variant.description = parsed["description"];
+    return variant;
+}
+
 function parseFootprint(expr: Parseable): B.I_Footprint {
     return parse_expr(
         expr,
@@ -637,9 +689,11 @@ function parseFootprint(expr: Parseable): B.I_Footprint {
             P.atom("board_only"),
             P.atom("exclude_from_pos_files"),
             P.atom("exclude_from_bom"),
+            P.atom("dnp"),
             P.atom("allow_solder_mask_bridges"),
             P.atom("allow_missing_courtyard"),
         ),
+        P.collection("variants", "variant", T.item(parseFootprintVariant)),
         P.dict("properties", "property", T.string),
         P.collection(
             "properties_kicad_8",
@@ -770,6 +824,9 @@ export class BoardParser {
             P.dict("properties", "property", T.string),
             P.list("layers", T.item(parseLayer)),
             P.collection("nets", "net", T.item(parseNet)),
+            P.expr("variants", (obj: Record<string, any>, name: string, e: unknown) =>
+                (e as any[]).slice(1).map((entry) => parseBoardVariant(entry)),
+            ),
             P.collection("footprints", "footprint", T.item(parseFootprint)),
             P.collection("footprints", "module", T.item(parseFootprint)), // Support legacy module
             P.collection("zones", "zone", T.item(parseZone)),
