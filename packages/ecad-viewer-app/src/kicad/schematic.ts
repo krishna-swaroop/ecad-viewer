@@ -22,6 +22,16 @@ import {
 import { get_image_ppi } from "./get_image_ppi";
 import { try_symbol_transform_matrix } from "./symbol-transform";
 import { schematicProto } from "kicad-parser";
+import {
+    type EffectiveSymbolFlags,
+    type SheetFlags,
+    VariantRecord,
+    fold_ancestor_sheet_flags,
+    fold_sheet_flags,
+    resolve_field_text,
+    resolve_sheet_flags,
+    resolve_symbol_flags,
+} from "./variant-resolution";
 
 /* Default values for various things found in schematics
  * From EESchema's default_values.h, converted from mils to mm. */
@@ -296,29 +306,179 @@ export class KicadSch {
  * selected sheet path here avoids rewriting the shared parsed document when a
  * reused child sheet is opened on another page.
  */
+/**
+ * What a schematic context needs from the project to resolve variants: the
+ * selected variant, its description, and the page tree for the sheet fold.
+ * `Project` satisfies this structurally; a document without a project
+ * resolves the default design.
+ */
+export interface VariantAwareProject {
+    active_variant?: string | null;
+    variant_description?: (name: string) => string | undefined;
+    _pages_by_path?: Map<
+        string,
+        {
+            sheet_path: string;
+            parent_project_path?: string;
+            sheet_uuid?: string;
+            document: unknown;
+        }
+    >;
+}
+
 export class SchematicInstanceContext {
+    /**
+     * Pin this context to one variant regardless of the project's selection.
+     * `undefined` follows the project; `null` is the default design.
+     */
+    variant?: string | null;
+
+    #ancestor_flags: Map<string, SheetFlags[]> = new Map();
+
     constructor(
         public readonly document: KicadSch,
         public readonly sheet_path: string,
         public readonly project_path = `${document.filename}:${sheet_path}`,
     ) {}
 
+    /** The variant this context resolves against; `null` is the default design. */
+    get active_variant(): string | null {
+        if (this.variant !== undefined) return this.variant;
+        const project = this.document.project as
+            | VariantAwareProject
+            | undefined;
+        const name = project?.active_variant;
+        return name ? name : null;
+    }
+
     instance(symbol: SchematicSymbol): SchematicSymbolInstance | undefined {
         return symbol.instances.get(this.sheet_path);
     }
 
+    /** The symbol's record for the active variant on this instance path, if any. */
+    variant_record(symbol: SchematicSymbol): VariantRecord | undefined {
+        const name = this.active_variant;
+        if (name === null) return undefined;
+        return this.instance(symbol)?.variants.get(name);
+    }
+
+    /**
+     * Effective assembly flags of `symbol` on this page under the active
+     * variant: the instance record over the base attributes, then every
+     * ancestor sheet occurrence OR-ed on (contract packet 2.2). The parsed
+     * symbol is never mutated.
+     */
+    effective_flags(symbol: SchematicSymbol): EffectiveSymbolFlags {
+        const own = resolve_symbol_flags(
+            symbol,
+            this.variant_record(symbol),
+            this.document.version,
+        );
+        return fold_sheet_flags(own, this.ancestor_sheet_flags());
+    }
+
+    dnp(symbol: SchematicSymbol): boolean {
+        return this.effective_flags(symbol).dnp;
+    }
+
+    excluded_from_bom(symbol: SchematicSymbol): boolean {
+        return this.effective_flags(symbol).exclude_from_bom;
+    }
+
+    excluded_from_board(symbol: SchematicSymbol): boolean {
+        return this.effective_flags(symbol).exclude_from_board;
+    }
+
+    excluded_from_sim(symbol: SchematicSymbol): boolean {
+        return this.effective_flags(symbol).exclude_from_sim;
+    }
+
+    excluded_from_pos_files(symbol: SchematicSymbol): boolean {
+        return this.effective_flags(symbol).exclude_from_pos_files;
+    }
+
+    /**
+     * Effective flags of a sheet symbol placed on this page: its own record
+     * (looked up by this page's path, which is the path of the sheet's
+     * container) over its base, folded with this page's ancestors.
+     */
+    sheet_flags(sheet: SchematicSheet): SheetFlags {
+        const name = this.active_variant;
+        const record =
+            name === null
+                ? undefined
+                : sheet.instances.get(this.sheet_path)?.variants.get(name);
+        const own = resolve_sheet_flags(sheet, record, this.document.version);
+        return fold_ancestor_sheet_flags(own, this.ancestor_sheet_flags());
+    }
+
+    sheet_dnp(sheet: SchematicSheet): boolean {
+        return this.sheet_flags(sheet).dnp;
+    }
+
+    /**
+     * Flags of every sheet occurrence above this page, nearest first. They
+     * come from the project's page tree: each page knows the page it was
+     * instantiated from and the uuid of the sheet symbol that did it. Cached
+     * per variant name; a context is rebuilt when the page tree changes.
+     */
+    ancestor_sheet_flags(): SheetFlags[] {
+        const key = this.active_variant ?? "";
+        const cached = this.#ancestor_flags.get(key);
+        if (cached) return cached;
+        const flags: SheetFlags[] = [];
+        const pages = (this.document.project as VariantAwareProject | undefined)
+            ?._pages_by_path;
+        let page = pages?.get(this.project_path);
+        while (page?.parent_project_path && page.sheet_uuid) {
+            const parent = pages!.get(page.parent_project_path);
+            const parent_document = parent?.document;
+            if (!parent || !(parent_document instanceof KicadSch)) break;
+            const sheet = parent_document.sheets.find(
+                (candidate) => candidate.uuid === page!.sheet_uuid,
+            );
+            if (sheet) {
+                const record =
+                    this.active_variant === null
+                        ? undefined
+                        : sheet.instances
+                              .get(parent.sheet_path)
+                              ?.variants.get(this.active_variant);
+                flags.push(
+                    resolve_sheet_flags(sheet, record, parent_document.version),
+                );
+            }
+            page = parent;
+        }
+        this.#ancestor_flags.set(key, flags);
+        return flags;
+    }
+
     property_text(symbol: SchematicSymbol, name: string): string | undefined {
         const instance = this.instance(symbol);
+        const record = this.variant_record(symbol);
         switch (name) {
             case "Reference":
                 return instance?.reference ?? symbol.get_property_text(name);
             case "Value":
             case "ALTIUM_VALUE":
-                return instance?.value ?? symbol.get_property_text(name);
+                return resolve_field_text(
+                    record,
+                    "Value",
+                    instance?.value ?? symbol.get_property_text(name),
+                );
             case "Footprint":
-                return instance?.footprint ?? symbol.get_property_text(name);
+                return resolve_field_text(
+                    record,
+                    "Footprint",
+                    instance?.footprint ?? symbol.get_property_text(name),
+                );
             default:
-                return symbol.get_property_text(name);
+                return resolve_field_text(
+                    record,
+                    name,
+                    symbol.get_property_text(name),
+                );
         }
     }
 
@@ -327,11 +487,23 @@ export class SchematicInstanceContext {
     }
 
     value(symbol: SchematicSymbol): string {
-        return this.instance(symbol)?.value ?? symbol.value;
+        return (
+            resolve_field_text(
+                this.variant_record(symbol),
+                "Value",
+                this.instance(symbol)?.value,
+            ) ?? symbol.value
+        );
     }
 
     footprint(symbol: SchematicSymbol): string {
-        return this.instance(symbol)?.footprint ?? symbol.footprint;
+        return (
+            resolve_field_text(
+                this.variant_record(symbol),
+                "Footprint",
+                this.instance(symbol)?.footprint,
+            ) ?? symbol.footprint
+        );
     }
 
     unit(symbol: SchematicSymbol): number | undefined {
@@ -419,17 +591,36 @@ export class SchematicInstanceContext {
             case "SYMBOL_KEYWORDS":
                 return symbol.lib_symbol.keywords;
             case "EXCLUDE_FROM_BOM":
-                return symbol.in_bom ? "" : "Excluded from BOM";
+                return this.excluded_from_bom(symbol)
+                    ? "Excluded from BOM"
+                    : "";
             case "EXCLUDE_FROM_BOARD":
-                return symbol.on_board ? "" : "Excluded from board";
+                return this.excluded_from_board(symbol)
+                    ? "Excluded from board"
+                    : "";
+            case "EXCLUDE_FROM_SIM":
+                return this.excluded_from_sim(symbol)
+                    ? "Excluded from simulation"
+                    : "";
             case "DNP":
-                return symbol.dnp ? "DNP" : "";
+                return this.dnp(symbol) ? "DNP" : "";
         }
         return this.resolve_text_var(name);
     }
 
     resolve_text_var(name: string): string | undefined {
         if (name === "FILENAME") return this.document.filename;
+        if (name === "VARIANT" || name === "VARIANTNAME") {
+            return this.active_variant ?? "";
+        }
+        if (name === "VARIANT_DESC") {
+            const active = this.active_variant;
+            if (active === null) return "";
+            const project = this.document.project as
+                | VariantAwareProject
+                | undefined;
+            return project?.variant_description?.(active) ?? "";
+        }
         if (name.includes(":")) {
             const [uuid, field_name] = name.split(":") as [string, string];
             const symbol = this.document.symbols.get(uuid);
@@ -1424,6 +1615,8 @@ export class SchematicSymbol {
     convert: number;
     in_bom = false;
     on_board = false;
+    /** Positive "include in position files" attribute (KiCad 10); absent means included. */
+    in_pos_files = true;
     dnp = false;
     fields_autoplaced = false;
     properties: Map<string, Property> = new Map();
@@ -1455,6 +1648,7 @@ export class SchematicSymbol {
         this.convert = data.body_style ?? data.convert ?? 1;
         this.in_bom = data.in_bom ?? false;
         this.on_board = data.on_board ?? false;
+        this.in_pos_files = data.in_pos_files ?? true;
         this.dnp = data.dnp ?? false;
         this.fields_autoplaced = data.fields_autoplaced ?? false;
         this.uuid = data.uuid;
@@ -1473,6 +1667,7 @@ export class SchematicSymbol {
                 inst.value = path.value;
                 inst.unit = path.unit;
                 inst.footprint = path.footprint;
+                inst.variants = VariantRecord.from_list(path.variants);
                 this.instances.set(inst.path, inst);
             }
         }
@@ -1660,6 +1855,8 @@ export class SchematicSymbolInstance {
     value?: string;
     unit?: number;
     footprint?: string;
+    /** Design-variant records on this instance path, keyed by variant name. */
+    variants: Map<string, VariantRecord> = new Map();
 
     constructor() {}
 }
@@ -1851,6 +2048,10 @@ export class SchematicSheet {
     fill: Fill;
     /** KiCad 9 lets a hierarchical sheet be marked "do not populate". */
     dnp = false;
+    /** Sheet-level attributes every symbol underneath inherits (KiCad 9/10). */
+    in_bom = true;
+    on_board = true;
+    exclude_from_sim = false;
     properties: Map<string, Property> = new Map();
     pins: SchematicSheetPin[] = [];
     uuid: string;
@@ -1915,6 +2116,9 @@ export class SchematicSheet {
         this.fill = data.fill ? new Fill(data.fill) : (undefined as any);
         this.fields_autoplaced = data.fields_autoplaced ?? false;
         this.dnp = data.dnp ?? false;
+        this.in_bom = data.in_bom ?? true;
+        this.on_board = data.on_board ?? true;
+        this.exclude_from_sim = data.exclude_from_sim ?? false;
         this.uuid = data.uuid;
         this.properties = new Map(
             data.properties?.map((p) => [p.name, new Property(p, this)]),
@@ -1927,6 +2131,7 @@ export class SchematicSheet {
                 const inst = new SchematicSheetInstance();
                 inst.path = path.path;
                 inst.page = path.page;
+                inst.variants = VariantRecord.from_list(path.variants);
                 this.instances.set(inst.path, inst);
             }
         }
@@ -1977,6 +2182,8 @@ export class SchematicSheetPin {
 export class SchematicSheetInstance {
     path: string;
     page?: string;
+    /** Design-variant records on this sheet instance path, keyed by name. */
+    variants: Map<string, VariantRecord> = new Map();
 }
 
 export type SchematicNode =
