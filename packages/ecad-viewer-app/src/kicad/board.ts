@@ -471,7 +471,9 @@ export class Via implements BoardNode {
     }
 
     constructor(data: B.I_Via) {
-        this.type = data.type;
+        // A plain `(via ...)` carries no type atom; the field default was
+        // being overwritten with undefined.
+        this.type = data.type ?? "through-hole";
         this.at = new At(data.at);
         this.size = data.size;
         this.drill = data.drill;

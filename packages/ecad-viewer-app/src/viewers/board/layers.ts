@@ -31,6 +31,17 @@ export enum LayerNames {
      * user-managed board layer.
      */
     dnp = ":DNP",
+    /**
+     * Net-name / pad-number labels for pads flashed on more than one copper
+     * layer (through-hole pads) and for vias. Like KiCad's
+     * `LAYER_PAD_NETNAMES` / `LAYER_VIA_NETNAMES`, they sit above the hole
+     * layers so a drill never covers the text. Labels for SMD pads, tracks
+     * and arcs live on the per-copper `:X.Cu:NetNames` virtual layers instead.
+     * Both kinds are non-interactive and rebuilt on zoom by
+     * `NetLabelLayers`, not by the document painter.
+     */
+    pad_netnames = ":Pad:NetNames",
+    via_netnames = ":Via:NetNames",
     dwgs_user = "Dwgs.User",
     cmts_user = "Cmts.User",
     eco1_user = "Eco1.User",
@@ -150,6 +161,8 @@ export enum CopperVirtualLayerNames {
     bb_via_hole_walls = "BBViaHoleWalls",
     zones = "Zones",
     pads = "Pads",
+    /** Track, arc and single-layer pad labels for this copper layer. */
+    netnames = "NetNames",
 }
 
 export const ObjLayerNames = [
@@ -166,6 +179,18 @@ const ObjLayerNamesSet = new Set(ObjLayerNames);
  * silkscreen below stay readable; the hatch is a marker, not a mask.
  */
 export const DNP_HATCH_OPACITY = 0.18;
+
+/**
+ * KiCad's default net-label colours: `board.track_net_names` is white at 0.7,
+ * its inverse is used over bright copper, and via labels are never themed and
+ * fall back to opaque white. Pad labels on through-hole pads use the light
+ * colour too (`LAYER_PAD_NETNAMES` is loaded from the track colour).
+ */
+export const NetLabelColors = {
+    light: new Color(1, 1, 1, 0.7),
+    dark: new Color(0, 0, 0, 0.7),
+    via: new Color(1, 1, 1, 1),
+} as const;
 
 export enum FabVirtualLayerNames {
     hidden_text = "hidden_text",
@@ -262,6 +287,27 @@ export class LayerSet extends BaseLayerSet {
                 interactive = true;
             }
 
+            // Multi-layer pad and via labels follow the copper stack as a
+            // whole; they are never a click target.
+            if (
+                layer_name === LayerNames.pad_netnames ||
+                layer_name === LayerNames.via_netnames
+            ) {
+                this.add(
+                    new ViewLayer(
+                        this,
+                        layer_name,
+                        () => this.is_any_copper_layer_visible(),
+                        false,
+                        (layer_name === LayerNames.via_netnames
+                            ? NetLabelColors.via
+                            : NetLabelColors.light
+                        ).copy(),
+                    ),
+                );
+                continue;
+            }
+
             // Pad layers require that the front or back layer is visible.
             // if (layer_name == LayerNames.pads_front) {
             //     visible = () => true;
@@ -279,6 +325,20 @@ export class LayerSet extends BaseLayerSet {
             if (is_copper(layer_name)) {
                 interactive = true;
 
+                // Added first so it draws above this copper's pads, zones and
+                // blind/buried via layers (KiCad's `NETNAMES_LAYER_INDEX`).
+                this.add(
+                    new ViewLayer(
+                        this,
+                        virtual_layer_for(
+                            layer_name,
+                            CopperVirtualLayerNames.netnames,
+                        ),
+                        () => this.by_name(layer_name)!.visible,
+                        false,
+                        this.netname_color_for(layer_name),
+                    ),
+                );
                 this.add(
                     new ViewLayer(
                         this,
@@ -374,6 +434,20 @@ export class LayerSet extends BaseLayerSet {
      */
     dnp_hatch_color(): Color {
         return this.theme.drc_error.with_alpha(1);
+    }
+
+    /**
+     * Label colour for tracks and single-layer pads on a copper layer: light
+     * on dark copper, inverted on bright copper, as
+     * `PCB_RENDER_SETTINGS::LoadColors` picks it from the copper's brightness.
+     */
+    netname_color_for(copper_layer_name: string): Color {
+        const copper = this.color_for_impl(copper_layer_name);
+        const brightness =
+            copper.r * 0.299 + copper.g * 0.587 + copper.b * 0.117;
+        return (
+            brightness > 0.5 ? NetLabelColors.dark : NetLabelColors.light
+        ).copy();
     }
 
     /**
@@ -594,6 +668,27 @@ export class LayerSet extends BaseLayerSet {
     *pad_hole_layers() {
         yield this.by_name(LayerNames.pad_holes)!;
         yield this.by_name(LayerNames.pad_holewalls)!;
+    }
+
+    /**
+     * Every layer that can carry a net-name or pad-number label. Track and
+     * single-layer pad labels share the per-copper layer, so which *kinds* of
+     * label are drawn is decided by `NetLabelLayers`, not by these layers.
+     */
+    *netname_layers() {
+        yield this.by_name(LayerNames.pad_netnames)!;
+        yield this.by_name(LayerNames.via_netnames)!;
+        for (const copper_name of CopperLayerNames) {
+            const layer = this.by_name(
+                virtual_layer_for(
+                    copper_name,
+                    CopperVirtualLayerNames.netnames,
+                ),
+            );
+            if (layer) {
+                yield layer;
+            }
+        }
     }
 
     /**
