@@ -113,7 +113,17 @@ export class SchematicViewer extends DocumentViewer<
      */
     set_variant(name: string | null): boolean {
         const normalized = normalize_variant_name(name);
-        if (normalized === this.get_variant()) return false;
+        // Compare against the selection this viewer applied itself, never
+        // `get_variant()`: the element stores the new variant on the project
+        // before calling here, so the getter -- which falls back to
+        // `project.active_variant` -- already reports the new name and an
+        // early return would leave the previously painted scene on screen.
+        // BoardViewer compares its own field for the same reason.
+        const applied =
+            this.#variant !== undefined
+                ? this.#variant
+                : this.#instance_context?.variant;
+        if (applied !== undefined && normalized === applied) return false;
         this.#variant = normalized;
         if (this.#instance_context) {
             this.#instance_context.variant = normalized;

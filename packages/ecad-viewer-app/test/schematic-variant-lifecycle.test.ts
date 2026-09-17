@@ -379,6 +379,27 @@ suite("schematic viewer variant rendering", () => {
             "U2 is DNP via the Wireless sheet fold under Lite",
         ).to.equal(true);
     });
+
+    test("a project selection stored before the viewer call still repaints", async () => {
+        // The element sets project.active_variant first and only then calls
+        // set_variant, so get_variant() already reads the new name from the
+        // project. The change check must not treat that as "already applied"
+        // and skip the repaint.
+        viewer.set_instance_context(root_context()!);
+        await viewer.load(project.root_schematic_page!.document);
+        viewer.set_variant(null);
+        const before = marked_uuids();
+        project.set_active_variant("Lite");
+        expect(viewer.set_variant("Lite")).to.equal(true);
+        const after = marked_uuids();
+        expect(
+            after.has("caa639b3-c965-5f5f-8579-1b1030520a32"),
+            "R1 gains DNP under Lite after the project was switched first",
+        ).to.equal(true);
+        expect(after).to.not.deep.equal(before);
+        project.set_active_variant(null);
+        viewer.set_variant(null);
+    });
 });
 
 suite("variant request resolution — public API contract", () => {
