@@ -630,7 +630,6 @@ export class BoardViewer extends DocumentViewer<
                 padNumbers: this.#net_label_options.padNumbers,
                 padNetNames: this.#net_label_options.padNetNames,
                 trackNetNames: this.#net_label_options.trackNetNames,
-                zoneNetNames: this.#net_label_options.zoneNetNames,
             },
             highlightTracks: this.#highlighted_track,
         };
@@ -765,7 +764,6 @@ export class BoardViewer extends DocumentViewer<
             case "padNumbers":
             case "padNetNames":
             case "trackNetNames":
-            case "zoneNetNames":
                 this.set_net_label_option(kind, visible);
                 return;
         }

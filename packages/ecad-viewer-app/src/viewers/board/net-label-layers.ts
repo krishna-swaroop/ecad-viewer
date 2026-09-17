@@ -10,7 +10,7 @@
     between thresholds cost nothing.
 */
 
-import { Angle, BBox, Camera2, Matrix3 } from "../../base/math";
+import { BBox, Camera2 } from "../../base/math";
 import { Renderer } from "../../graphics";
 import { KicadPCB } from "../../kicad";
 import * as board_items from "../../kicad/board";
@@ -29,13 +29,8 @@ import {
     track_label_min_zoom,
     via_label_layout,
     via_label_min_zoom,
-    polygon_pole,
-    zone_label_layout,
-    zone_label_min_zoom,
-    ZONE_LABEL_MIN_INSCRIBED_MM,
     type LabelLayout,
     type NetLabelOptions,
-    type PolygonPole,
 } from "./net-label-painter";
 
 type Candidate =
@@ -68,14 +63,6 @@ type Candidate =
           min_zoom: number;
           bbox: BBox;
           via: board_items.Via;
-          name: string;
-      }
-    | {
-          kind: "zone";
-          layer: string;
-          min_zoom: number;
-          bbox: BBox;
-          pole: PolygonPole;
           name: string;
       };
 
@@ -163,8 +150,7 @@ export class NetLabelLayers {
             this.#last_options &&
             this.#last_options.padNumbers === options.padNumbers &&
             this.#last_options.padNetNames === options.padNetNames &&
-            this.#last_options.trackNetNames === options.trackNetNames &&
-            this.#last_options.zoneNetNames === options.zoneNetNames
+            this.#last_options.trackNetNames === options.trackNetNames
         ) {
             return;
         }
@@ -305,54 +291,6 @@ export class NetLabelLayers {
             }
         }
 
-        const add_zone = (
-            zone: board_items.Zone,
-            transform: Matrix3 | null,
-        ) => {
-            const name =
-                this.#net_name(zone.net) || display_net_name(zone.net_name);
-            if (!name || !zone.filled_polygons) return;
-            for (const polygon of zone.filled_polygons) {
-                const layer = copper_label_layer(polygon.layer);
-                if (!layer_names.has(layer)) continue;
-                let ring = polygon.points;
-                if (transform) ring = Matrix3.transform_all(transform, ring);
-                const bbox = BBox.from_points(ring);
-                // Cheap pre-filter before the pole search: a polygon
-                // narrower than the label floor cannot inscribe it.
-                if (Math.min(bbox.w, bbox.h) < ZONE_LABEL_MIN_INSCRIBED_MM) {
-                    continue;
-                }
-                const pole = polygon_pole(ring);
-                if (!pole) continue;
-                const layout = zone_label_layout(pole, name);
-                if (!layout) continue;
-                candidates.push({
-                    kind: "zone",
-                    layer,
-                    min_zoom: Math.max(
-                        zone_label_min_zoom(pole),
-                        MIN_GLYPH_PX / min_glyph_height(layout),
-                    ),
-                    bbox,
-                    pole,
-                    name,
-                });
-            }
-        };
-
-        for (const zone of this.board.zones) add_zone(zone, null);
-        for (const fp of this.board.footprints) {
-            if (!fp.zones.length) continue;
-            // Footprint zones are stored in footprint space, like the
-            // painter draws them.
-            const matrix = Matrix3.translation(
-                fp.at.position.x,
-                fp.at.position.y,
-            ).rotate_self(Angle.deg_to_rad(fp.at.rotation));
-            for (const zone of fp.zones) add_zone(zone, matrix);
-        }
-
         candidates.sort((a, b) => a.min_zoom - b.min_zoom);
         this.#candidates = candidates;
     }
@@ -405,14 +343,6 @@ export class NetLabelLayers {
             case "arc":
                 if (!options.trackNetNames) return [];
                 return arc_label_layout(candidate.arc, candidate.name, region);
-            case "zone": {
-                if (!options.zoneNetNames) return [];
-                const layout = zone_label_layout(
-                    candidate.pole,
-                    candidate.name,
-                );
-                return layout ? [layout] : [];
-            }
             case "via": {
                 const show_layers = candidate.via.type !== "through-hole";
                 if (!options.trackNetNames && !show_layers) return [];
