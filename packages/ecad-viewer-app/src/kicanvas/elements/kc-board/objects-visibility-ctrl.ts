@@ -17,6 +17,7 @@ enum ObjVisibilities {
     Pad_Numbers = "Pad Numbers",
     Pad_Net_Names = "Net Names on Pads",
     Track_Net_Names = "Net Names on Tracks",
+    Zone_Net_Names = "Net Names in Zones",
 }
 
 /** Label toggles are viewer options, not layer opacities. */
@@ -24,6 +25,7 @@ const NetLabelKinds = {
     [ObjVisibilities.Pad_Numbers]: "padNumbers",
     [ObjVisibilities.Pad_Net_Names]: "padNetNames",
     [ObjVisibilities.Track_Net_Names]: "trackNetNames",
+    [ObjVisibilities.Zone_Net_Names]: "zoneNetNames",
 } as const;
 
 export class ObjVisibilityCtrlList extends KCUIElement {
@@ -114,6 +116,7 @@ export class ObjVisibilityCtrlList extends KCUIElement {
                     case ObjVisibilities.Pad_Numbers:
                     case ObjVisibilities.Pad_Net_Names:
                     case ObjVisibilities.Track_Net_Names:
+                    case ObjVisibilities.Zone_Net_Names:
                         this.viewer.set_net_label_option(
                             NetLabelKinds[item.obj_name],
                             p,
@@ -140,6 +143,7 @@ export class ObjVisibilityCtrlList extends KCUIElement {
             ObjVisibilities.Pad_Numbers,
             ObjVisibilities.Pad_Net_Names,
             ObjVisibilities.Track_Net_Names,
+            ObjVisibilities.Zone_Net_Names,
         ]) {
             let visible: "" | undefined =
                 obj !== ObjVisibilities.Hidden_Txt ? "" : undefined;

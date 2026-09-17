@@ -39,6 +39,13 @@ import {
     track_label_min_zoom,
     via_label_layout,
     via_label_min_zoom,
+    polygon_pole,
+    signed_distance_to_ring,
+    zone_label_layout,
+    zone_label_min_zoom,
+    ZONE_LABEL_MAX_MM,
+    ZONE_LABEL_MIN_INSCRIBED_MM,
+    ZONE_LABEL_MIN_PX,
 } from "../src/viewers/board/net-label-painter";
 import { BoardViewer } from "../src/viewers/board/viewer";
 
@@ -340,6 +347,105 @@ suite("net labels: tracks and vias", () => {
     });
 });
 
+suite("net labels: zones", () => {
+    const rect = (x: number, y: number, w: number, h: number) => [
+        new Vec2(x, y),
+        new Vec2(x + w, y),
+        new Vec2(x + w, y + h),
+        new Vec2(x, y + h),
+    ];
+
+    test("signed distance is positive inside, negative outside", () => {
+        const ring = rect(0, 0, 10, 4);
+        expect(signed_distance_to_ring(new Vec2(5, 2), ring)).to.be.closeTo(
+            2,
+            1e-9,
+        );
+        expect(signed_distance_to_ring(new Vec2(1, 2), ring)).to.be.closeTo(
+            1,
+            1e-9,
+        );
+        expect(signed_distance_to_ring(new Vec2(-3, 2), ring)).to.be.closeTo(
+            -3,
+            1e-9,
+        );
+    });
+
+    test("the pole of a rectangle is its centre", () => {
+        const pole = polygon_pole(rect(10, 10, 20, 6))!;
+        expect(pole.center.x).to.be.closeTo(20, 0.15);
+        expect(pole.center.y).to.be.closeTo(13, 0.15);
+        expect(pole.radius).to.be.closeTo(3, 0.15);
+    });
+
+    test("the pole of a fractured ring stays in copper, not in the cut-out", async () => {
+        const board = await fixture_board();
+        const zone = board.zones.find((z) => z.name === "GNDPOUR")!;
+        const ring = zone.filled_polygons!.find((p) => !p.island)!.points;
+        const pole = polygon_pole(ring)!;
+        const hole = new BBox(8, 26, 4, 4);
+        expect(hole.contains_point(pole.center)).to.equal(
+            false,
+            "the centroid (10, 28) is in the cut-out; the pole must not be",
+        );
+        expect(signed_distance_to_ring(pole.center, ring)).to.be.greaterThan(
+            2.5,
+        );
+        // The bands around the cut-out are 6 mm wide (radius 3); the corner
+        // regions beside it fit a larger circle: (14.5, 23.5) is 3.5 from the
+        // outline and 3.54 from the cut-out's corner.
+        expect(pole.radius).to.be.closeTo(3.54, 0.2);
+    });
+
+    test("degenerate rings have no pole", () => {
+        expect(polygon_pole([new Vec2(0, 0), new Vec2(1, 1)])).to.equal(null);
+        expect(
+            polygon_pole([new Vec2(0, 0), new Vec2(5, 0), new Vec2(10, 0)]),
+        ).to.equal(null);
+    });
+
+    test("zone label: sized to the inscribed circle, lighter stroke, horizontal", () => {
+        const pole = { center: new Vec2(5, 5), radius: 3 };
+        const layout = zone_label_layout(pole, "GND")!;
+        expect(layout.angle.degrees).to.equal(0);
+        expect(layout.position).to.deep.equal(pole.center);
+        // room 6: min(1.5*6/5, 6) * 0.85 * 0.9
+        const t = Math.min((1.5 * 6) / 5, 6) * 0.85 * 0.9;
+        expect(layout.lines[0]!.size.y).to.be.closeTo(t, 1e-9);
+        expect(layout.lines[0]!.size.x).to.be.closeTo(t * 0.9, 1e-9);
+        expect(layout.lines[0]!.stroke).to.be.closeTo((t * 0.9) / 8, 1e-9);
+        // A long name fits the same room by shrinking.
+        const long = zone_label_layout(pole, "VCC_USB_PD_OUT")!;
+        expect(long.lines[0]!.size.y).to.be.lessThan(t);
+        expect(long.lines[0]!.size.x * "VCC_USB_PD_OUT".length).to.be.lessThan(
+            2 * pole.radius,
+        );
+        // A wide pour does not inscribe a 10 mm glyph: zone labels cap lower.
+        const wide = zone_label_layout(
+            { center: new Vec2(0, 0), radius: 20 },
+            "GND",
+        )!;
+        expect(wide.lines[0]!.size.y).to.be.closeTo(
+            ZONE_LABEL_MAX_MM * 0.85 * 0.9,
+            1e-9,
+        );
+    });
+
+    test("slivers and unnamed zones carry no label", () => {
+        const sliver = {
+            center: new Vec2(0, 0),
+            radius: ZONE_LABEL_MIN_INSCRIBED_MM / 2 - 0.01,
+        };
+        expect(zone_label_layout(sliver, "GND")).to.equal(null);
+        expect(
+            zone_label_layout({ center: new Vec2(0, 0), radius: 3 }, ""),
+        ).to.equal(null);
+        expect(
+            zone_label_min_zoom({ center: new Vec2(0, 0), radius: 3 }),
+        ).to.be.closeTo(ZONE_LABEL_MIN_PX / 6, 1e-9);
+    });
+});
+
 suite("net labels: drawing", () => {
     test("draw_label strokes in board millimetres, not font units", () => {
         const gfx = new NullRenderer();
@@ -573,6 +679,7 @@ suite("net labels: viewer integration", () => {
             expect(state.padNumbers).to.equal(true);
             expect(state.padNetNames).to.equal(true);
             expect(state.trackNetNames).to.equal(true);
+            expect(state.zoneNetNames).to.equal(false);
             expect(drawn(viewer)).to.include(LayerNames.via_netnames);
 
             viewer.set_host_object_visibility("trackNetNames", false);
@@ -606,6 +713,45 @@ suite("net labels: viewer integration", () => {
                 false,
                 "already on",
             );
+        } finally {
+            viewer.dispose();
+            canvas.remove();
+        }
+    });
+
+    test("zone labels are off by default and appear on the copper layer when enabled", async () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 800;
+        canvas.height = 600;
+        document.body.append(canvas);
+        const viewer = await viewer_on(canvas);
+        try {
+            viewer.viewport.camera.zoom = 20;
+            viewer.viewport.camera.center = new Vec2(10, 28);
+            // Isolate the zone: no pad/track labels on F.Cu in this view.
+            viewer.set_host_object_visibility("padNumbers", false);
+            viewer.set_host_object_visibility("padNetNames", false);
+            viewer.set_host_object_visibility("trackNetNames", false);
+            viewer.draw();
+            expect(
+                viewer.get_host_view_state().objectVisibility.zoneNetNames,
+            ).to.equal(false);
+            expect(viewer.net_label_layouts().get(F_CU_LABELS)).to.equal(
+                undefined,
+            );
+
+            viewer.set_host_object_visibility("zoneNetNames", true);
+            viewer.draw();
+            const layouts = viewer.net_label_layouts().get(F_CU_LABELS)!;
+            expect(layouts.length).to.equal(
+                1,
+                "one label per filled polygon above the floor",
+            );
+            expect(layouts[0]!.lines[0]!.text).to.equal("GND");
+            expect(
+                new BBox(8, 26, 4, 4).contains_point(layouts[0]!.position),
+            ).to.equal(false);
+            expect(drawn(viewer)).to.include(F_CU_LABELS);
         } finally {
             viewer.dispose();
             canvas.remove();

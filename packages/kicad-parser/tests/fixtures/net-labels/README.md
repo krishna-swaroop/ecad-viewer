@@ -23,3 +23,5 @@ It covers every branch the renderer takes:
 | arc (20,30)-(25,35)-(30,30) w 0.5 `GND` on `B.Cu` | arc label at the midpoint along the tangent |
 | via (25,10) ⌀0.8 through `DATA` | via net name only |
 | via (28,14) ⌀0.6 blind F.Cu→In1.Cu `VCC` | layer-pair line `1-2` above the net name |
+| zone `GNDPOUR` on `F.Cu`, filled ring (2,20)–(18,36) fractured around a (8,26)–(12,30) cut-out | zone label at the pole of inaccessibility (the centroid (10,28) lies in the cut-out) |
+| the same zone's 0.3 mm `(island)` filled polygon at (30,30) | below `ZONE_LABEL_MIN_INSCRIBED_MM` → no label |

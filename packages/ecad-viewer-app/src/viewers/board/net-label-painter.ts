@@ -30,12 +30,20 @@ export interface NetLabelOptions {
     padNetNames: boolean;
     /** Net names along tracks, arcs and on vias. KiCad: "tracks" modes. */
     trackNetNames: boolean;
+    /**
+     * Net names inside filled zones. Not a KiCad feature (pcbnew shows a
+     * zone's net only in the tooltip); Altium labels its pours, and reviewers
+     * asked for the same context. Off by default so the default view still
+     * matches pcbnew.
+     */
+    zoneNetNames: boolean;
 }
 
 export const DEFAULT_NET_LABEL_OPTIONS: Readonly<NetLabelOptions> = {
     padNumbers: true,
     padNetNames: true,
     trackNetNames: true,
+    zoneNetNames: false,
 };
 
 /**
@@ -49,6 +57,23 @@ export const DEFAULT_NET_LABEL_OPTIONS: Readonly<NetLabelOptions> = {
 export const PAD_LABEL_MIN_PX = 1.8; // 0.5 mm: min(bbox.w, bbox.h)
 export const TRACK_LABEL_MIN_PX = 14.3; // 4 mm: track width
 export const VIA_LABEL_MIN_PX = 35.8; // 10 mm: via diameter
+/** Zones have no KiCad gate; reuse the pad one on the inscribed diameter. */
+export const ZONE_LABEL_MIN_PX = PAD_LABEL_MIN_PX;
+
+/**
+ * Filled polygons whose inscribed circle is narrower than this carry no
+ * label: thermal spokes, slivers between tracks and tiny islands are not
+ * worth a label even when zoomed in, and skipping them keeps the pole
+ * search off the long tail of fragments a fill produces.
+ */
+export const ZONE_LABEL_MIN_INSCRIBED_MM = 0.6;
+
+/**
+ * Glyph-height cap for zone labels. Pads and vias use KiCad's 10 mm
+ * `MAX_FONT_SIZE`; a wide pour would inscribe that and dominate the view,
+ * where its name is context rather than the thing being looked at.
+ */
+export const ZONE_LABEL_MAX_MM = 5;
 
 /**
  * Below this many screen pixels of glyph height a label is a smudge. KiCad
@@ -421,6 +446,160 @@ export function via_label_layout(
     }
 
     return { position: via.at.position, angle: Angle.from_degrees(0), lines };
+}
+
+/* ---------------------------------------------------------------- zones */
+
+/** Where a zone label goes: the pole of inaccessibility and its radius. */
+export interface PolygonPole {
+    center: Vec2;
+    /** Distance from `center` to the nearest edge, in mm. */
+    radius: number;
+}
+
+function point_to_segment_distance_sq(p: Vec2, a: Vec2, b: Vec2): number {
+    let x = a.x;
+    let y = a.y;
+    let dx = b.x - x;
+    let dy = b.y - y;
+    if (dx !== 0 || dy !== 0) {
+        const t = ((p.x - x) * dx + (p.y - y) * dy) / (dx * dx + dy * dy);
+        if (t > 1) {
+            x = b.x;
+            y = b.y;
+        } else if (t > 0) {
+            x += dx * t;
+            y += dy * t;
+        }
+    }
+    dx = p.x - x;
+    dy = p.y - y;
+    return dx * dx + dy * dy;
+}
+
+/**
+ * Signed distance from a point to a polygon ring: positive inside, negative
+ * outside. Even-odd containment, so a ring that KiCad fractured around a
+ * hole (the hole joined to the outline by a slit) is handled as drawn.
+ */
+export function signed_distance_to_ring(p: Vec2, ring: Vec2[]): number {
+    let inside = false;
+    let min_sq = Infinity;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const a = ring[i]!;
+        const b = ring[j]!;
+        if (a.y > p.y !== b.y > p.y) {
+            const x = ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x;
+            if (p.x < x) inside = !inside;
+        }
+        min_sq = Math.min(min_sq, point_to_segment_distance_sq(p, a, b));
+    }
+    return (inside ? 1 : -1) * Math.sqrt(min_sq);
+}
+
+/**
+ * Pole of inaccessibility of a ring: the interior point farthest from any
+ * edge, found with Mapbox's polylabel quadtree search. The centroid of a
+ * ground pour with a cut-out in the middle lies in the cut-out; this point
+ * never does, which is what makes it a usable label anchor.
+ */
+export function polygon_pole(
+    ring: Vec2[],
+    precision?: number,
+): PolygonPole | null {
+    if (ring.length < 3) return null;
+
+    let min_x = Infinity;
+    let min_y = Infinity;
+    let max_x = -Infinity;
+    let max_y = -Infinity;
+    for (const p of ring) {
+        if (p.x < min_x) min_x = p.x;
+        if (p.y < min_y) min_y = p.y;
+        if (p.x > max_x) max_x = p.x;
+        if (p.y > max_y) max_y = p.y;
+    }
+    const width = max_x - min_x;
+    const height = max_y - min_y;
+    const cell_size = Math.min(width, height);
+    if (!(cell_size > 0)) return null;
+    // A percent of the short side is plenty for a label anchor, and keeps
+    // the search bounded on the thousands of fragments a fill can produce.
+    precision ??= Math.max(cell_size / 50, 0.01);
+
+    type Cell = { x: number; y: number; h: number; d: number; max: number };
+    const make_cell = (x: number, y: number, h: number): Cell => {
+        const d = signed_distance_to_ring(new Vec2(x, y), ring);
+        return { x, y, h, d, max: d + h * Math.SQRT2 };
+    };
+
+    const queue: Cell[] = [];
+    let h = cell_size / 2;
+    for (let x = min_x; x < max_x; x += cell_size) {
+        for (let y = min_y; y < max_y; y += cell_size) {
+            queue.push(make_cell(x + h, y + h, h));
+        }
+    }
+
+    // Seed with the bbox centre, which is the pole of every rectangle.
+    let best = make_cell(min_x + width / 2, min_y + height / 2, 0);
+
+    while (queue.length) {
+        // Take the cell with the highest potential.
+        let index = 0;
+        for (let i = 1; i < queue.length; i++) {
+            if (queue[i]!.max > queue[index]!.max) index = i;
+        }
+        const cell = queue[index]!;
+        queue[index] = queue[queue.length - 1]!;
+        queue.pop();
+
+        if (cell.d > best.d) best = cell;
+        if (cell.max - best.d <= precision) continue;
+
+        h = cell.h / 2;
+        queue.push(make_cell(cell.x - h, cell.y - h, h));
+        queue.push(make_cell(cell.x + h, cell.y - h, h));
+        queue.push(make_cell(cell.x - h, cell.y + h, h));
+        queue.push(make_cell(cell.x + h, cell.y + h, h));
+    }
+
+    if (!(best.d > 0)) return null;
+    return { center: new Vec2(best.x, best.y), radius: best.d };
+}
+
+/** Minimum zoom (px/mm) at which a zone label at `pole` is drawn. */
+export function zone_label_min_zoom(pole: PolygonPole): number {
+    if (!(pole.radius > 0)) return Infinity;
+    return ZONE_LABEL_MIN_PX / (2 * pole.radius);
+}
+
+/**
+ * One net-name label centred on a filled polygon's pole. Sized like a pad
+ * net name whose "pad" is the inscribed circle, so the text always sits
+ * inside copper, and stroked a little lighter than a pad label so a pour's
+ * name reads as context rather than as a pad.
+ */
+export function zone_label_layout(
+    pole: PolygonPole,
+    name: string,
+): LabelLayout | null {
+    if (!name) return null;
+    if (pole.radius < ZONE_LABEL_MIN_INSCRIBED_MM / 2) return null;
+
+    const room = 2 * pole.radius;
+    const size = Math.min(room, ZONE_LABEL_MAX_MM);
+    let tsize = (1.5 * room) / Math.max(char_count(name) + 1, 5);
+    tsize = Math.min(tsize, size);
+    // The inscribed circle is round: shrink like a circular pad.
+    tsize *= 0.85 * 0.9;
+
+    const glyph = new Vec2(tsize * 0.9, tsize);
+    return {
+        position: pole.center,
+        angle: Angle.from_degrees(0),
+        lines: [{ text: name, size: glyph, stroke: glyph.x / 8, y: 0 }],
+    };
 }
 
 /* ------------------------------------------------------------- drawing */
