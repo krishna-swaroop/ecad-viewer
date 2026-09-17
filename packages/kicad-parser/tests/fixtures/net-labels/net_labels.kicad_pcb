@@ -116,6 +116,5 @@
 (arc (start 20 30) (mid 25 35) (end 30 30) (width 0.5) (layer "B.Cu") (net 1) (uuid "209db2a5-49ce-565d-9cdc-2f52cf2944c4"))
 (via (at 25 10) (size 0.8) (drill 0.4) (layers "F.Cu" "B.Cu") (net 2) (uuid "61fee184-bd34-5a4d-a6fb-52a4362a7ee6"))
 (via blind (at 28 14) (size 0.6) (drill 0.3) (layers "F.Cu" "In1.Cu") (net 4) (uuid "636e21f7-31ce-5a9c-8a81-b15bbffb0f65"))
-(zone (net 1) (net_name "GND") (layer "F.Cu") (uuid "92c94d0c-3e30-5c7c-852d-f62c1d716bca") (name "GNDPOUR") (hatch edge 0.5) (connect_pads (clearance 0.5)) (min_thickness 0.25) (filled_areas_thickness no) (fill yes (thermal_gap 0.5) (thermal_bridge_width 0.5)) (polygon (pts (xy 2 20) (xy 18 20) (xy 18 36) (xy 2 36))) (filled_polygon (layer "F.Cu") (pts (xy 2 20) (xy 18 20) (xy 18 36) (xy 2 36) (xy 2 28) (xy 8 28) (xy 8 30) (xy 12 30) (xy 12 26) (xy 8 26) (xy 8 28) (xy 2 28))) (filled_polygon (layer "F.Cu") (island) (pts (xy 30 30) (xy 30.3 30) (xy 30.3 30.3) (xy 30 30.3))))
 (embedded_fonts no)
 )

@@ -208,8 +208,7 @@ export type EcadPcbObjectVisibilityKind =
     | "hiddenText"
     | "padNumbers"
     | "padNetNames"
-    | "trackNetNames"
-    | "zoneNetNames";
+    | "trackNetNames";
 
 export interface EcadPcbViewState {
     layers: EcadPcbLayerState[];
