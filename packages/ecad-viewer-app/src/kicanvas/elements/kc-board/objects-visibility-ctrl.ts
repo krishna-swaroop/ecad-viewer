@@ -14,7 +14,19 @@ enum ObjVisibilities {
     FP_Reference = "Reference",
     FP_Txt = "Footprint Text",
     Hidden_Txt = "Hidden Text",
+    Pad_Numbers = "Pad Numbers",
+    Pad_Net_Names = "Net Names on Pads",
+    Track_Net_Names = "Net Names on Tracks",
+    Zone_Net_Names = "Net Names in Zones",
 }
+
+/** Label toggles are viewer options, not layer opacities. */
+const NetLabelKinds = {
+    [ObjVisibilities.Pad_Numbers]: "padNumbers",
+    [ObjVisibilities.Pad_Net_Names]: "padNetNames",
+    [ObjVisibilities.Track_Net_Names]: "trackNetNames",
+    [ObjVisibilities.Zone_Net_Names]: "zoneNetNames",
+} as const;
 
 export class ObjVisibilityCtrlList extends KCUIElement {
     static override styles = [
@@ -101,6 +113,15 @@ export class ObjVisibilityCtrlList extends KCUIElement {
                             }
                         }
                         break;
+                    case ObjVisibilities.Pad_Numbers:
+                    case ObjVisibilities.Pad_Net_Names:
+                    case ObjVisibilities.Track_Net_Names:
+                    case ObjVisibilities.Zone_Net_Names:
+                        this.viewer.set_net_label_option(
+                            NetLabelKinds[item.obj_name],
+                            p,
+                        );
+                        break;
                 }
 
                 this.viewer.draw();
@@ -111,14 +132,28 @@ export class ObjVisibilityCtrlList extends KCUIElement {
     override render() {
         const items: ReturnType<typeof html>[] = [];
 
+        const label_options = this.viewer.net_label_options;
+
         for (const obj of [
             ObjVisibilities.FP_Reference,
             ObjVisibilities.FP_Values,
 
             ObjVisibilities.FP_Txt,
             ObjVisibilities.Hidden_Txt,
+            ObjVisibilities.Pad_Numbers,
+            ObjVisibilities.Pad_Net_Names,
+            ObjVisibilities.Track_Net_Names,
+            ObjVisibilities.Zone_Net_Names,
         ]) {
-            const visible = obj !== ObjVisibilities.Hidden_Txt ? "" : undefined;
+            let visible: "" | undefined =
+                obj !== ObjVisibilities.Hidden_Txt ? "" : undefined;
+            if (obj in NetLabelKinds) {
+                visible = label_options[
+                    NetLabelKinds[obj as keyof typeof NetLabelKinds]
+                ]
+                    ? ""
+                    : undefined;
+            }
             items.push(
                 html`<ecad-visibility-ctrl
                     obj-name="${obj}"

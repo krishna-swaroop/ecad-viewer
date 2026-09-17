@@ -32,6 +32,12 @@ import type {
     ResolvedOverlayAnchor,
 } from "../base/overlay-scene";
 import { LayerNames, LayerSet, ViewLayer } from "./layers";
+import { NetLabelLayers } from "./net-label-layers";
+import {
+    DEFAULT_NET_LABEL_OPTIONS,
+    type LabelLayout,
+    type NetLabelOptions,
+} from "./net-label-painter";
 import { BoardPainter } from "./painter";
 import {
     diff_selection_copper_layers,
@@ -59,6 +65,78 @@ export class BoardViewer extends DocumentViewer<
      * painters resolve their effective flags against it (VAR-06).
      */
     #variant: string | null = null;
+
+    /**
+     * Net-name / pad-number label toggles. They outlive scenes: a repaint
+     * for a variant or a cached-scene swap keeps the user's choice.
+     */
+    #net_label_options: NetLabelOptions = { ...DEFAULT_NET_LABEL_OPTIONS };
+
+    /**
+     * One label manager per layer set. The presentation-scene cache swaps
+     * whole layer sets in and out without repainting, so the manager (and
+     * its cached region) has to travel with the layers it painted into.
+     */
+    #net_labels_by_scene = new WeakMap<LayerSet, NetLabelLayers>();
+
+    #net_labels_for_current_scene(): NetLabelLayers | null {
+        if (!this.document || !this.layers || !this.painter) return null;
+        // Comparison presentations recolour the board; labels would be noise.
+        if (this.diff_presentation) return null;
+        const layers = this.layers as LayerSet;
+        let labels = this.#net_labels_by_scene.get(layers);
+        if (!labels) {
+            labels = new NetLabelLayers(
+                this.renderer,
+                this.viewport.camera,
+                this.board,
+                layers,
+            );
+            this.#net_labels_by_scene.set(layers, labels);
+        }
+        return labels;
+    }
+
+    public override draw(): void {
+        if (!this.viewport) {
+            return;
+        }
+        const labels = this.#net_labels_for_current_scene();
+        if (labels) {
+            labels.options = this.#net_label_options;
+            labels.update();
+        }
+        super.draw();
+    }
+
+    public get net_label_options(): Readonly<NetLabelOptions> {
+        return this.#net_label_options;
+    }
+
+    /**
+     * The labels the current camera and toggles would draw, keyed by label
+     * layer name. Diagnostic: hosts and tests can check what is shown without
+     * reading GPU buffers.
+     */
+    public net_label_layouts(): Map<string, LabelLayout[]> {
+        const labels = this.#net_labels_for_current_scene();
+        if (!labels) return new Map();
+        labels.options = this.#net_label_options;
+        return labels.layouts();
+    }
+
+    public set_net_label_option(
+        kind: keyof NetLabelOptions,
+        enabled: boolean,
+    ): boolean {
+        if (this.#net_label_options[kind] === enabled) return false;
+        this.#net_label_options = {
+            ...this.#net_label_options,
+            [kind]: enabled,
+        };
+        this.draw();
+        return true;
+    }
 
     /**
      * Select the board variant. `null`, the empty string and the
@@ -549,6 +627,10 @@ export class BoardViewer extends DocumentViewer<
                 values: any_visible(layers.fp_value_txt_layers()),
                 footprintText: any_visible(layers.fp_txt_layers()),
                 hiddenText: any_visible(layers.hidden_txt_layers()),
+                padNumbers: this.#net_label_options.padNumbers,
+                padNetNames: this.#net_label_options.padNetNames,
+                trackNetNames: this.#net_label_options.trackNetNames,
+                zoneNetNames: this.#net_label_options.zoneNetNames,
             },
             highlightTracks: this.#highlighted_track,
         };
@@ -671,9 +753,22 @@ export class BoardViewer extends DocumentViewer<
     }
 
     public set_host_object_visibility(
-        kind: "references" | "values" | "footprintText" | "hiddenText",
+        kind:
+            | "references"
+            | "values"
+            | "footprintText"
+            | "hiddenText"
+            | keyof NetLabelOptions,
         visible: boolean,
     ) {
+        switch (kind) {
+            case "padNumbers":
+            case "padNetNames":
+            case "trackNetNames":
+            case "zoneNetNames":
+                this.set_net_label_option(kind, visible);
+                return;
+        }
         const layers = this.layers as LayerSet;
         const opacity = visible ? 1 : 0;
         const set = (items: Generator<ViewLayer>) => {

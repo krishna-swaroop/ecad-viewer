@@ -196,13 +196,25 @@ const DIFF_STATUS_COLORS = {
     conflict: "#D76BFF",
 } as const;
 
+/**
+ * Object kinds a host can show or hide on the board. The first four are
+ * footprint text layers; the label kinds drive the zoom-gated pad-number and
+ * net-name overlays (KiCad's "Show pad numbers" / "Show net names").
+ */
+export type EcadPcbObjectVisibilityKind =
+    | "references"
+    | "values"
+    | "footprintText"
+    | "hiddenText"
+    | "padNumbers"
+    | "padNetNames"
+    | "trackNetNames"
+    | "zoneNetNames";
+
 export interface EcadPcbViewState {
     layers: EcadPcbLayerState[];
     objectOpacity: Record<"tracks" | "vias" | "pads" | "zones", number>;
-    objectVisibility: Record<
-        "references" | "values" | "footprintText" | "hiddenText",
-        boolean
-    >;
+    objectVisibility: Record<EcadPcbObjectVisibilityKind, boolean>;
     highlightTracks: boolean;
 }
 
@@ -3243,7 +3255,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     public setPcbObjectVisibility(
-        kind: "references" | "values" | "footprintText" | "hiddenText",
+        kind: EcadPcbObjectVisibilityKind,
         visible: boolean,
     ): void {
         this.#safe_board_viewer()?.set_host_object_visibility(kind, visible);

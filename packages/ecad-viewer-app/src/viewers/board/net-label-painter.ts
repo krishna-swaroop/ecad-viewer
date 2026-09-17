@@ -1,0 +1,649 @@
+/*
+    Net-name and pad-number labels.
+
+    A port of the label branches of KiCad's `PCB_PAINTER` (`draw( const PAD* )`,
+    `renderNetNameForSegment`, `draw( const PCB_ARC* )`, `draw( const PCB_VIA* )`)
+    and of the zoom gates in `PAD::ViewGetLOD`, `PCB_TRACK::ViewGetLOD` and
+    `PCB_VIA::ViewGetLOD`. Everything here is a pure function of the item and
+    the camera, so `NetLabelLayers` can rebuild the label layers on zoom
+    without touching the retained board scene.
+
+    Units: board millimetres throughout; the stroke font takes KiCad internal
+    units (mm × 10000), which `draw_label` applies at the very end.
+*/
+
+import { Angle, Arc, BBox, Vec2 } from "../../base/math";
+import { Color } from "../../base/color";
+import { Renderer } from "../../graphics";
+import * as board_items from "../../kicad/board";
+import { StrokeFont, TextAttributes } from "../../kicad/text";
+import {
+    CopperVirtualLayerNames,
+    LayerNames,
+    virtual_layer_for,
+} from "./layers";
+
+export interface NetLabelOptions {
+    /** Pad numbers on pads. KiCad: "Show pad numbers". */
+    padNumbers: boolean;
+    /** Net names on pads. KiCad: net names mode "pads" / "pads & tracks". */
+    padNetNames: boolean;
+    /** Net names along tracks, arcs and on vias. KiCad: "tracks" modes. */
+    trackNetNames: boolean;
+    /**
+     * Net names inside filled zones. Not a KiCad feature (pcbnew shows a
+     * zone's net only in the tooltip); Altium labels its pours, and reviewers
+     * asked for the same context. Off by default so the default view still
+     * matches pcbnew.
+     */
+    zoneNetNames: boolean;
+}
+
+export const DEFAULT_NET_LABEL_OPTIONS: Readonly<NetLabelOptions> = {
+    padNumbers: true,
+    padNetNames: true,
+    trackNetNames: true,
+    zoneNetNames: false,
+};
+
+/**
+ * Zoom gates, in screen pixels of the governing dimension.
+ *
+ * KiCad hides an item's labels while `size_iu * view_scale < threshold_iu`;
+ * at its default 91 DPI one unit of view scale is 3.583 px/mm, so a
+ * threshold of T mm is T × 3.583 px on screen. `Camera2.zoom` is CSS px per
+ * mm, so the same test here is `size_mm * zoom < threshold_px`.
+ */
+export const PAD_LABEL_MIN_PX = 1.8; // 0.5 mm: min(bbox.w, bbox.h)
+export const TRACK_LABEL_MIN_PX = 14.3; // 4 mm: track width
+export const VIA_LABEL_MIN_PX = 35.8; // 10 mm: via diameter
+/** Zones have no KiCad gate; reuse the pad one on the inscribed diameter. */
+export const ZONE_LABEL_MIN_PX = PAD_LABEL_MIN_PX;
+
+/**
+ * Filled polygons whose inscribed circle is narrower than this carry no
+ * label: thermal spokes, slivers between tracks and tiny islands are not
+ * worth a label even when zoomed in, and skipping them keeps the pole
+ * search off the long tail of fragments a fill produces.
+ */
+export const ZONE_LABEL_MIN_INSCRIBED_MM = 0.6;
+
+/**
+ * Glyph-height cap for zone labels. Pads and vias use KiCad's 10 mm
+ * `MAX_FONT_SIZE`; a wide pour would inscribe that and dominate the view,
+ * where its name is context rather than the thing being looked at.
+ */
+export const ZONE_LABEL_MAX_MM = 5;
+
+/**
+ * Below this many screen pixels of glyph height a label is a smudge. KiCad
+ * still draws it; we skip it so a fit-to-board view of a dense board does not
+ * tessellate thousands of unreadable labels.
+ */
+export const MIN_GLYPH_PX = 3;
+
+/** `PCB_RENDER_SETTINGS::MAX_FONT_SIZE`. */
+export const MAX_FONT_SIZE_MM = 10;
+
+/** One line of label text, positioned relative to the label origin. */
+export interface LabelLine {
+    text: string;
+    /** Glyph size (x, y) in mm. */
+    size: Vec2;
+    /** Stroke width in mm. */
+    stroke: number;
+    /**
+     * Offset along the label's own y axis in mm, before rotation. Positive is
+     * "below" in reading orientation, as in KiCad's y-down text frame.
+     */
+    y: number;
+}
+
+export interface LabelLayout {
+    position: Vec2;
+    angle: Angle;
+    lines: LabelLine[];
+}
+
+/**
+ * KiCad's `GetDisplayNetname`: the short name of a hierarchical net. The
+ * ambiguity disambiguation it applies is not ported.
+ */
+export function display_net_name(name: string | undefined | null): string {
+    if (!name) return "";
+    const slash = name.lastIndexOf("/");
+    return slash >= 0 ? name.slice(slash + 1) : name;
+}
+
+function char_count(text: string): number {
+    return Math.max(1, text.length);
+}
+
+/* ---------------------------------------------------------------- pads */
+
+export type PadNetLabelLayer =
+    | LayerNames.pad_netnames
+    | `:${string}:${CopperVirtualLayerNames.netnames}`;
+
+/**
+ * Which label layer a pad reports to, after `PAD::ViewGetLayers`: pads
+ * flashed on more than one copper layer (and every through-hole pad) go to
+ * the shared pad layer above the holes; a pad on a single copper layer is
+ * labelled on that layer so it hides and dims with it.
+ */
+export function pad_label_layer(pad: board_items.Pad): PadNetLabelLayer | null {
+    const copper = pad.layers.filter(
+        (layer) => layer.endsWith(".Cu") || layer === "*.Cu",
+    );
+    if (copper.length === 0) return null;
+    if (pad.type === "thru_hole" || pad.type === "np_thru_hole") {
+        return LayerNames.pad_netnames;
+    }
+    if (copper.length > 1 || copper[0] === "*.Cu" || copper[0] === "F&B.Cu") {
+        return LayerNames.pad_netnames;
+    }
+    return virtual_layer_for(
+        copper[0]!,
+        CopperVirtualLayerNames.netnames,
+    ) as PadNetLabelLayer;
+}
+
+/** The text KiCad shows as a pad's net: `x` for no-connect, `*` for free pads. */
+export function pad_net_text(pad: board_items.Pad): string {
+    if (pad.pintype?.includes("no_connect")) return "x";
+    if (pad.pintype === "free" && pad.net?.name.startsWith("unconnected-")) {
+        return "*";
+    }
+    return display_net_name(pad.net?.name);
+}
+
+/** Minimum zoom (px/mm) at which a pad's labels are drawn. */
+export function pad_label_min_zoom(pad: board_items.Pad): number {
+    const bbox = pad.bbox;
+    if (!bbox.valid) return Infinity;
+    const min_side = Math.min(Math.abs(bbox.w), Math.abs(bbox.h));
+    if (min_side <= 0) return Infinity;
+    return PAD_LABEL_MIN_PX / min_side;
+}
+
+/**
+ * Port of the `IsNetnameLayer` branch of `PCB_PAINTER::draw( const PAD* )`.
+ * Returns null when nothing would be drawn.
+ */
+export function pad_label_layout(
+    pad: board_items.Pad,
+    show_number: boolean,
+    show_net: boolean,
+): LabelLayout | null {
+    const number = show_number ? (pad.number ?? "") : "";
+    const net = show_net ? pad_net_text(pad) : "";
+    if (!number && !net) return null;
+
+    const bbox = pad.bbox;
+    if (!bbox.valid) return null;
+
+    const position = bbox.center;
+    let w = Math.abs(bbox.w);
+    let h = Math.abs(bbox.h);
+
+    // Don't allow a 45° rotation to bloat a pad's bounding box unnecessarily.
+    const limit = Math.min(pad.size.x, pad.size.y) * 1.1;
+    if (w > limit && h > limit) {
+        w = limit;
+        h = limit;
+    }
+
+    let size = h;
+    let angle = Angle.from_degrees(0);
+
+    // Keep the size ratio for the font, but make it smaller: tall pads read
+    // bottom-to-top with the long side as the text's x axis.
+    if (w < h * 0.95) {
+        angle = Angle.from_degrees(90);
+        size = w;
+        [w, h] = [h, w];
+    }
+
+    size = Math.min(size, MAX_FONT_SIZE_MM);
+
+    let y_offset_number = 0;
+    let y_offset_net = 0;
+    if (number && net) {
+        // The magic numbers are defined experimentally for a better look.
+        size = size / 2.5;
+        y_offset_net = size / 1.4;
+        y_offset_number = size / 1.7;
+    }
+
+    const x_scale_for_stroked_font = 0.9;
+    const lines: LabelLine[] = [];
+
+    if (net) {
+        // We use a size for at least 5 chars, to give a good look even for
+        // short names.
+        let tsize = (1.5 * w) / Math.max(char_count(net) + 1, 5);
+        tsize = Math.min(tsize, size);
+        // Use a smaller text size to handle interline, pen size...
+        tsize *= 0.85;
+        // Round and oval pads have less room to display the net name.
+        if (pad.shape === "circle" || pad.shape === "oval") {
+            tsize *= 0.9;
+        }
+        const glyph = new Vec2(tsize * x_scale_for_stroked_font, tsize);
+        lines.push({
+            text: net,
+            size: glyph,
+            stroke: glyph.x / 6,
+            y: Math.min(tsize * 1.4, y_offset_net),
+        });
+    }
+
+    if (number) {
+        // We use a size for at least 3 chars, to give a good look even for
+        // short numbers.
+        let tsize = (1.5 * w) / Math.max(char_count(number), 3);
+        tsize = Math.min(tsize, size);
+        tsize *= 0.85;
+        const glyph = new Vec2(tsize * x_scale_for_stroked_font, tsize);
+        lines.push({
+            text: number,
+            size: glyph,
+            stroke: glyph.x / 6,
+            y: -y_offset_number,
+        });
+    }
+
+    return { position, angle, lines };
+}
+
+/* -------------------------------------------------------------- tracks */
+
+/**
+ * Fold an angle into (-90°, 90°] so text along a segment is never upside
+ * down (`EDA_ANGLE::Normalize90`).
+ */
+export function fold_upright(angle: Angle): Angle {
+    let deg = angle.normalize180().degrees;
+    while (deg > 90) deg -= 180;
+    while (deg <= -90) deg += 180;
+    return Angle.from_degrees(deg);
+}
+
+/** Minimum zoom (px/mm) at which a track's net name is drawn. */
+export function track_label_min_zoom(width: number): number {
+    if (width <= 0) return Infinity;
+    return TRACK_LABEL_MIN_PX / width;
+}
+
+function track_line(name: string, width: number): LabelLine {
+    const text_size = width;
+    return {
+        text: name,
+        size: new Vec2(text_size * 0.55, text_size * 0.55),
+        stroke: text_size / 12,
+        y: 0,
+    };
+}
+
+/**
+ * Port of `PCB_PAINTER::renderNetNameForSegment`. Long segments get one
+ * label per `region` extent so a track crossing the view is labelled
+ * wherever the user looks; only positions inside `region` are returned.
+ */
+export function segment_label_layouts(
+    start: Vec2,
+    end: Vec2,
+    width: number,
+    name: string,
+    region: BBox,
+): LabelLayout[] {
+    if (!name || width <= 0) return [];
+
+    const seg = end.sub(start);
+    const length = seg.magnitude;
+
+    // Check if the track is long enough to have a netname displayed.
+    const min_length = width * char_count(name);
+    if (length < min_length) return [];
+
+    let angle: Angle;
+    let num_names = 1;
+
+    if (end.y === start.y) {
+        angle = Angle.from_degrees(0);
+        num_names = Math.max(num_names, Math.round(length / region.w));
+    } else if (end.x === start.x) {
+        angle = Angle.from_degrees(90);
+        num_names = Math.max(num_names, Math.round(length / region.h));
+    } else {
+        angle = fold_upright(new Angle(-seg.angle.radians));
+        const min_size = Math.min(region.w, region.h);
+        num_names = Math.max(
+            num_names,
+            Math.round(length / (Math.SQRT2 * min_size)),
+        );
+    }
+
+    const line = track_line(name, width);
+    const layouts: LabelLayout[] = [];
+    const divisions = num_names + 1;
+    for (let ii = 1; ii < divisions; ii++) {
+        const position = start.add(seg.multiply(ii / divisions));
+        if (region.contains_point(position)) {
+            layouts.push({ position, angle, lines: [line] });
+        }
+    }
+    return layouts;
+}
+
+/**
+ * Port of the netname branch of `PCB_PAINTER::draw( const PCB_ARC* )`: one
+ * label at the arc's midpoint, along the tangent.
+ */
+export function arc_label_layout(
+    arc: board_items.ArcSegment,
+    name: string,
+    region: BBox,
+): LabelLayout[] {
+    if (!name || arc.width <= 0) return [];
+
+    const geometry = Arc.from_three_points(
+        arc.start,
+        arc.mid,
+        arc.end,
+        arc.width,
+    );
+    const radius = geometry.radius;
+    const arc_length = Math.abs(radius * geometry.arc_angle.radians);
+
+    if (!(arc_length > 0) || !Number.isFinite(arc_length)) {
+        // Degenerate: treat the chord as a segment.
+        return segment_label_layouts(
+            arc.start,
+            arc.end,
+            arc.width,
+            name,
+            region,
+        );
+    }
+
+    if (arc_length < arc.width * char_count(name)) return [];
+
+    const mid = arc.mid;
+    if (!region.contains_point(mid)) return [];
+
+    const radial = mid.sub(geometry.center);
+    const tangent = new Vec2(-radial.y, radial.x);
+    const angle = fold_upright(new Angle(-tangent.angle.radians));
+
+    return [{ position: mid, angle, lines: [track_line(name, arc.width)] }];
+}
+
+/* ---------------------------------------------------------------- vias */
+
+/** Minimum zoom (px/mm) at which a via's labels are drawn. */
+export function via_label_min_zoom(via: board_items.Via): number {
+    if (!(via.size > 0)) return Infinity;
+    return VIA_LABEL_MIN_PX / via.size;
+}
+
+/**
+ * 1-based copper index as KiCad prints it in a via's layer-pair line: F.Cu
+ * is 1, B.Cu is the copper count, In<n>.Cu is n + 1.
+ */
+export function copper_layer_index(name: string, copper_count: number): number {
+    if (name === "F.Cu") return 1;
+    if (name === "B.Cu") return copper_count;
+    const inner = /^In(\d+)\.Cu$/.exec(name);
+    if (inner) return Number(inner[1]) + 1;
+    return 0;
+}
+
+/**
+ * Port of the netname branch of `PCB_PAINTER::draw( const PCB_VIA* )`. A
+ * through via shows its net name; a blind/buried/micro via also shows the
+ * layer pair above it.
+ */
+export function via_label_layout(
+    via: board_items.Via,
+    name: string,
+    copper_count: number,
+    show_net: boolean,
+): LabelLayout | null {
+    const net = show_net ? name : "";
+    const show_layers = via.type !== "through-hole";
+    if (!net && !show_layers) return null;
+
+    const size = Math.min(via.size, MAX_FONT_SIZE_MM);
+
+    // A good size is set room for at least 6 chars, to be able to print 2
+    // lines of text, or at least 3 chars for only the netname.
+    const min_char_count = show_layers ? 6 : 3;
+    let tsize = (1.5 * size) / Math.max(char_count(net), min_char_count);
+    tsize = Math.min(tsize, size);
+    // Use a smaller text size to handle interline, pen size...
+    tsize *= 0.75;
+
+    const glyph = new Vec2(tsize, tsize);
+    const stroke = glyph.x / 10;
+    const lines: LabelLine[] = [];
+
+    let y = 0;
+    if (show_layers && net) {
+        y += (tsize * 1.3) / 2;
+    }
+    if (net) {
+        lines.push({ text: net, size: glyph, stroke, y });
+    }
+    if (show_layers) {
+        if (net) y -= tsize * 1.3;
+        const top = copper_layer_index(via.layers[0] ?? "", copper_count);
+        const bottom = copper_layer_index(
+            via.layers[via.layers.length - 1] ?? "",
+            copper_count,
+        );
+        lines.push({ text: `${top}-${bottom}`, size: glyph, stroke, y });
+    }
+
+    return { position: via.at.position, angle: Angle.from_degrees(0), lines };
+}
+
+/* ---------------------------------------------------------------- zones */
+
+/** Where a zone label goes: the pole of inaccessibility and its radius. */
+export interface PolygonPole {
+    center: Vec2;
+    /** Distance from `center` to the nearest edge, in mm. */
+    radius: number;
+}
+
+function point_to_segment_distance_sq(p: Vec2, a: Vec2, b: Vec2): number {
+    let x = a.x;
+    let y = a.y;
+    let dx = b.x - x;
+    let dy = b.y - y;
+    if (dx !== 0 || dy !== 0) {
+        const t = ((p.x - x) * dx + (p.y - y) * dy) / (dx * dx + dy * dy);
+        if (t > 1) {
+            x = b.x;
+            y = b.y;
+        } else if (t > 0) {
+            x += dx * t;
+            y += dy * t;
+        }
+    }
+    dx = p.x - x;
+    dy = p.y - y;
+    return dx * dx + dy * dy;
+}
+
+/**
+ * Signed distance from a point to a polygon ring: positive inside, negative
+ * outside. Even-odd containment, so a ring that KiCad fractured around a
+ * hole (the hole joined to the outline by a slit) is handled as drawn.
+ */
+export function signed_distance_to_ring(p: Vec2, ring: Vec2[]): number {
+    let inside = false;
+    let min_sq = Infinity;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const a = ring[i]!;
+        const b = ring[j]!;
+        if (a.y > p.y !== b.y > p.y) {
+            const x = ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x;
+            if (p.x < x) inside = !inside;
+        }
+        min_sq = Math.min(min_sq, point_to_segment_distance_sq(p, a, b));
+    }
+    return (inside ? 1 : -1) * Math.sqrt(min_sq);
+}
+
+/**
+ * Pole of inaccessibility of a ring: the interior point farthest from any
+ * edge, found with Mapbox's polylabel quadtree search. The centroid of a
+ * ground pour with a cut-out in the middle lies in the cut-out; this point
+ * never does, which is what makes it a usable label anchor.
+ */
+export function polygon_pole(
+    ring: Vec2[],
+    precision?: number,
+): PolygonPole | null {
+    if (ring.length < 3) return null;
+
+    let min_x = Infinity;
+    let min_y = Infinity;
+    let max_x = -Infinity;
+    let max_y = -Infinity;
+    for (const p of ring) {
+        if (p.x < min_x) min_x = p.x;
+        if (p.y < min_y) min_y = p.y;
+        if (p.x > max_x) max_x = p.x;
+        if (p.y > max_y) max_y = p.y;
+    }
+    const width = max_x - min_x;
+    const height = max_y - min_y;
+    const cell_size = Math.min(width, height);
+    if (!(cell_size > 0)) return null;
+    // A percent of the short side is plenty for a label anchor, and keeps
+    // the search bounded on the thousands of fragments a fill can produce.
+    precision ??= Math.max(cell_size / 50, 0.01);
+
+    type Cell = { x: number; y: number; h: number; d: number; max: number };
+    const make_cell = (x: number, y: number, h: number): Cell => {
+        const d = signed_distance_to_ring(new Vec2(x, y), ring);
+        return { x, y, h, d, max: d + h * Math.SQRT2 };
+    };
+
+    const queue: Cell[] = [];
+    let h = cell_size / 2;
+    for (let x = min_x; x < max_x; x += cell_size) {
+        for (let y = min_y; y < max_y; y += cell_size) {
+            queue.push(make_cell(x + h, y + h, h));
+        }
+    }
+
+    // Seed with the bbox centre, which is the pole of every rectangle.
+    let best = make_cell(min_x + width / 2, min_y + height / 2, 0);
+
+    while (queue.length) {
+        // Take the cell with the highest potential.
+        let index = 0;
+        for (let i = 1; i < queue.length; i++) {
+            if (queue[i]!.max > queue[index]!.max) index = i;
+        }
+        const cell = queue[index]!;
+        queue[index] = queue[queue.length - 1]!;
+        queue.pop();
+
+        if (cell.d > best.d) best = cell;
+        if (cell.max - best.d <= precision) continue;
+
+        h = cell.h / 2;
+        queue.push(make_cell(cell.x - h, cell.y - h, h));
+        queue.push(make_cell(cell.x + h, cell.y - h, h));
+        queue.push(make_cell(cell.x - h, cell.y + h, h));
+        queue.push(make_cell(cell.x + h, cell.y + h, h));
+    }
+
+    if (!(best.d > 0)) return null;
+    return { center: new Vec2(best.x, best.y), radius: best.d };
+}
+
+/** Minimum zoom (px/mm) at which a zone label at `pole` is drawn. */
+export function zone_label_min_zoom(pole: PolygonPole): number {
+    if (!(pole.radius > 0)) return Infinity;
+    return ZONE_LABEL_MIN_PX / (2 * pole.radius);
+}
+
+/**
+ * One net-name label centred on a filled polygon's pole. Sized like a pad
+ * net name whose "pad" is the inscribed circle, so the text always sits
+ * inside copper, and stroked a little lighter than a pad label so a pour's
+ * name reads as context rather than as a pad.
+ */
+export function zone_label_layout(
+    pole: PolygonPole,
+    name: string,
+): LabelLayout | null {
+    if (!name) return null;
+    if (pole.radius < ZONE_LABEL_MIN_INSCRIBED_MM / 2) return null;
+
+    const room = 2 * pole.radius;
+    const size = Math.min(room, ZONE_LABEL_MAX_MM);
+    let tsize = (1.5 * room) / Math.max(char_count(name) + 1, 5);
+    tsize = Math.min(tsize, size);
+    // The inscribed circle is round: shrink like a circular pad.
+    tsize *= 0.85 * 0.9;
+
+    const glyph = new Vec2(tsize * 0.9, tsize);
+    return {
+        position: pole.center,
+        angle: Angle.from_degrees(0),
+        lines: [{ text: name, size: glyph, stroke: glyph.x / 8, y: 0 }],
+    };
+}
+
+/* ------------------------------------------------------------- drawing */
+
+/**
+ * The screen height of a layout's smallest line, used with `MIN_GLYPH_PX`
+ * to skip labels that would be illegible at the given zoom.
+ */
+export function min_glyph_height(layout: LabelLayout): number {
+    let min = Infinity;
+    for (const line of layout.lines) {
+        min = Math.min(min, line.size.y);
+    }
+    return min;
+}
+
+/**
+ * Stroke a label into the renderer's current layer. Each line's y offset is
+ * applied in the label's own frame and then rotated with the label.
+ */
+export function draw_label(
+    gfx: Renderer,
+    layout: LabelLayout,
+    color: Color,
+): void {
+    for (const line of layout.lines) {
+        if (!line.text) continue;
+        const offset = layout.angle.rotate_point(new Vec2(0, line.y));
+        const position = layout.position.add(offset);
+
+        const attrs = new TextAttributes();
+        attrs.h_align = "center";
+        attrs.v_align = "center";
+        attrs.angle = layout.angle;
+        attrs.size = line.size.multiply(10000);
+        attrs.stroke_width = line.stroke * 10000;
+        attrs.color = color;
+        attrs.multiline = false;
+
+        StrokeFont.default().draw(
+            gfx,
+            line.text,
+            position.multiply(10000),
+            attrs,
+        );
+    }
+}
