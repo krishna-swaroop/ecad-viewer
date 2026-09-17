@@ -22,6 +22,15 @@ export { ViewLayer };
  * for drill holes and such.
  */
 export enum LayerNames {
+    /**
+     * Low-alpha hatch drawn over footprint-effective DNP (VAR-06).
+     *
+     * Declared first because `LayerSet` adds layers front-to-back and draws
+     * them back-to-front: only a layer added first is painted above the board
+     * content. It is not part of `in_ui_order`, so it never appears as a
+     * user-managed board layer.
+     */
+    dnp = ":DNP",
     dwgs_user = "Dwgs.User",
     cmts_user = "Cmts.User",
     eco1_user = "Eco1.User",
@@ -152,6 +161,12 @@ export const ObjLayerNames = [
 
 const ObjLayerNamesSet = new Set(ObjLayerNames);
 
+/**
+ * Opacity of the DNP hatch overlay (VAR-06). Low enough that pads, copper and
+ * silkscreen below stay readable; the hatch is a marker, not a mask.
+ */
+export const DNP_HATCH_OPACITY = 0.18;
+
 export enum FabVirtualLayerNames {
     hidden_text = "hidden_text",
     fp_value = "fp_value",
@@ -224,6 +239,22 @@ export class LayerSet extends BaseLayerSet {
 
             let visible: VisibilityType = true;
             let interactive = false;
+
+            // The DNP hatch is a display overlay: never interactive, and
+            // painted at low opacity so it marks a footprint without reading
+            // as copper, pads or silkscreen.
+            if (layer_name === LayerNames.dnp) {
+                const layer = new ViewLayer(
+                    this,
+                    layer_name,
+                    true,
+                    false,
+                    this.dnp_hatch_color(),
+                );
+                layer.opacity = DNP_HATCH_OPACITY;
+                this.add(layer);
+                continue;
+            }
 
             // These virtual layers require at least one visible copper layer to be shown.
             if (HoleLayerNames.includes(layer_name)) {
@@ -335,6 +366,14 @@ export class LayerSet extends BaseLayerSet {
         }
 
         return color;
+    }
+
+    /**
+     * The DNP hatch color: KiCad's PCB DNP marker tone, painted at full
+     * intensity because the layer's own opacity makes it faint.
+     */
+    dnp_hatch_color(): Color {
+        return this.theme.drc_error.with_alpha(1);
     }
 
     /**

@@ -36,6 +36,7 @@ import type {
     EcadOverlayAnchor,
     ResolvedOverlayAnchor,
 } from "../base/overlay-scene";
+import { normalize_variant_name } from "../../kicanvas/project";
 
 export function get_sch_bbox(
     theme: SchematicTheme,
@@ -93,23 +94,71 @@ export class SchematicViewer extends DocumentViewer<
     #last_hover_bbox: BBox | null = null;
     #instance_context?: SchematicInstanceContext;
 
+    /**
+     * Explicitly requested variant; `undefined` follows the project's
+     * `active_variant`, `null` is the default design.
+     */
+    #variant: string | null | undefined = undefined;
+
     get instance_context(): SchematicInstanceContext | undefined {
         return this.#instance_context;
+    }
+
+    /**
+     * Select the design variant this viewer renders. `null`, the empty string
+     * and the `< Default >` sentinel select the default design. Returns
+     * whether the selection changed; an unknown name is still selected here
+     * and resolves the base state (the public element validates names
+     * against the catalog).
+     */
+    set_variant(name: string | null): boolean {
+        const normalized = normalize_variant_name(name);
+        // Compare against the selection this viewer applied itself, never
+        // `get_variant()`: the element stores the new variant on the project
+        // before calling here, so the getter -- which falls back to
+        // `project.active_variant` -- already reports the new name and an
+        // early return would leave the previously painted scene on screen.
+        // BoardViewer compares its own field for the same reason.
+        const applied =
+            this.#variant !== undefined
+                ? this.#variant
+                : this.#instance_context?.variant;
+        if (applied !== undefined && normalized === applied) return false;
+        this.#variant = normalized;
+        if (this.#instance_context) {
+            this.#instance_context.variant = normalized;
+        }
+        if (this.document && this.painter) {
+            this.paint();
+            this.draw();
+        }
+        return true;
+    }
+
+    /** The variant this viewer renders; `null` is the default design. */
+    get_variant(): string | null {
+        if (this.#variant !== undefined) return this.#variant;
+        return this.#instance_context?.active_variant ?? null;
     }
 
     public set_instance_context(context: SchematicInstanceContext): boolean {
         if (
             this.#instance_context?.document === context.document &&
-            this.#instance_context.sheet_path === context.sheet_path
+            this.#instance_context.sheet_path === context.sheet_path &&
+            this.#instance_context.active_variant === context.active_variant
         ) {
             return false;
         }
         this.#instance_context = context;
+        if (this.#variant !== undefined) context.variant = this.#variant;
         return true;
     }
 
     protected override get scene_cache_context(): unknown {
-        return this.#instance_context?.sheet_path ?? "";
+        // A warm scene belongs to one (page, variant) pair; restoring a
+        // default-design scene for a named variant would silently show the
+        // wrong assembly state.
+        return `${this.#instance_context?.sheet_path ?? ""}\u0000${this.get_variant() ?? ""}`;
     }
 
     get sch_name() {
@@ -130,6 +179,9 @@ export class SchematicViewer extends DocumentViewer<
                 src,
                 first_instance_path ?? (src.uuid ? `/${src.uuid}` : "/"),
             );
+        }
+        if (this.#variant !== undefined && this.#instance_context) {
+            this.#instance_context.variant = this.#variant;
         }
         this.schematic_renderer.reset_scene_bbox();
         const context_changed =

@@ -224,6 +224,35 @@ export interface I_Model {
     opacity: number;
 }
 
+/** One `(field (name …) (value …))` override inside a footprint variant record. */
+export interface I_FootprintVariantField {
+    name: string;
+    value: string;
+}
+
+/**
+ * A KiCad 10 design-variant record on a footprint: `(variant (name …)
+ * [(dnp yes|no)] [(exclude_from_bom …)] [(exclude_from_pos_files …)]
+ * (field …)*)`. Tokens are written by KiCad only when they differ from the
+ * footprint's own `attr` flags, so `undefined` means "same as base" and is
+ * kept apart from `false`. Names are matched case-insensitively by KiCad;
+ * the parser keeps them as written. Unknown tokens (KiCad 11
+ * `exclude_from_sim`) are dropped like any other unknown token.
+ */
+export interface I_FootprintVariant {
+    name: string;
+    dnp?: boolean;
+    exclude_from_bom?: boolean;
+    exclude_from_pos_files?: boolean;
+    fields: I_FootprintVariantField[];
+}
+
+/** Board-level variant registry entry from the `(variants …)` header. */
+export interface I_BoardVariant {
+    name: string;
+    description?: string;
+}
+
 export interface I_Footprint {
     library_link: string;
     version: number;
@@ -256,9 +285,13 @@ export interface I_Footprint {
         board_only: boolean;
         exclude_from_pos_files: boolean;
         exclude_from_bom: boolean;
+        /** Do-not-populate in the default design (`(attr … dnp)`). */
+        dnp: boolean;
         allow_solder_mask_bridges: boolean;
         allow_missing_courtyard: boolean;
     };
+    /** Per-variant overrides, in file order; absent when the footprint has none. */
+    variants?: I_FootprintVariant[];
     properties: Record<string, string>;
     drawings: (I_Line | I_Circle | I_Arc | I_Poly | I_Rect)[];
     fp_texts: I_FpText[];
@@ -455,6 +488,8 @@ export interface I_KicadPCB {
     properties?: Record<string, string>;
     layers: I_Layer[];
     nets: I_Net[];
+    /** `(variants …)` header: the board's variant registry, in file order. */
+    variants?: I_BoardVariant[];
     footprints: I_Footprint[];
     zones: I_Zone[];
     embedded_fonts?: boolean;

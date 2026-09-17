@@ -11,6 +11,7 @@ import { Color, Renderer } from "../../graphics";
 import { WebGL2Renderer } from "../../graphics/webgl";
 import type { BoardTheme } from "../../kicad";
 import * as board_items from "../../kicad/board";
+import { normalize_variant_name } from "../../kicad/board-variant-resolution";
 import {
     BoardBBoxVisitor,
     type BoardInteractiveItem,
@@ -52,6 +53,45 @@ export class BoardViewer extends DocumentViewer<
     #should_restore_visibility = false;
     #zones_visibility = new Map<string, VisibilityType>();
     #layer_visibility_ctrl: KCBoardLayersPanelElement;
+
+    /**
+     * The selected board variant; `null` is the default design. Footprint
+     * painters resolve their effective flags against it (VAR-06).
+     */
+    #variant: string | null = null;
+
+    /**
+     * Select the board variant. `null`, the empty string and the
+     * `< Default >` sentinel select the default design; an unknown name
+     * resolves the base state silently, as native does (packet N17/N18).
+     * Returns whether the selection changed.
+     *
+     * The public `setVariant` wrapper that validates against the catalog
+     * belongs to the ecad-viewer element (VAR-05).
+     */
+    set_variant(name: string | null): boolean {
+        const normalized = normalize_variant_name(name);
+        if (normalized === this.#variant) return false;
+        this.#variant = normalized;
+        if (this.document && this.painter) {
+            this.painter.active_variant = normalized;
+            this.paint();
+            this.draw();
+        }
+        return true;
+    }
+
+    get_variant(): string | null {
+        return this.#variant;
+    }
+
+    /**
+     * Scenes are variant-specific: a warm cache entry for the default design
+     * must never be restored for a named variant.
+     */
+    protected override get scene_cache_context(): unknown {
+        return this.#variant;
+    }
 
     set layer_visibility_ctrl(ctr: KCBoardLayersPanelElement) {
         this.#layer_visibility_ctrl = ctr;
@@ -717,7 +757,13 @@ export class BoardViewer extends DocumentViewer<
     }
 
     protected override create_painter() {
-        return new BoardPainter(this.renderer, this.layers, this.theme);
+        const painter = new BoardPainter(
+            this.renderer,
+            this.layers,
+            this.theme,
+        );
+        painter.active_variant = this.#variant;
+        return painter;
     }
 
     protected override create_layer_set() {

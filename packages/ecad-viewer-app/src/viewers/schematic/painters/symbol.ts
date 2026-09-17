@@ -86,7 +86,14 @@ export class SchematicSymbolPainter extends SchematicItemPainter {
             // LayerNames.symbol_pin,
         ];
 
-        if (item.dnp) {
+        // Resolve DNP through this symbol's instance context so a variant
+        // record (and the ancestor sheet fold) decides the marker, not the
+        // base attribute (packet 2.2). `context_for_symbol` is used rather
+        // than the painter's current context because layer assignment runs
+        // for every item before painting starts.
+        const dnp =
+            this.view_painter.context_for_symbol(item)?.dnp(item) ?? item.dnp;
+        if (dnp) {
             layers.push(LayerNames.marks);
         }
 
@@ -134,7 +141,10 @@ export class SchematicSymbolPainter extends SchematicItemPainter {
             }
         }
 
-        if (si.dnp && layer.name == LayerNames.marks) {
+        if (
+            (this.view_painter.active_instance_context?.dnp(si) ?? si.dnp) &&
+            layer.name == LayerNames.marks
+        ) {
             const { body, body_and_pins } = measure_symbol_bboxes(
                 this.theme,
                 si,
