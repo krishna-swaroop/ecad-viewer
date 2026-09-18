@@ -65,6 +65,127 @@ class Tesselator {
     }
 
     /**
+     * Write a quad's two triangles directly into `dest` at `offset` (12
+     * floats), without allocating. Same vertex order as quad_to_triangles.
+     */
+    static write_quad_triangles(
+        dest: Float32Array,
+        offset: number,
+        quad: [Vec2, Vec2, Vec2, Vec2],
+    ) {
+        const a = quad[0] as Vec2;
+        const b = quad[1] as Vec2;
+        const c = quad[2] as Vec2;
+        const d = quad[3] as Vec2;
+
+        dest[offset] = a.x;
+        dest[offset + 1] = a.y;
+        dest[offset + 2] = c.x;
+        dest[offset + 3] = c.y;
+        dest[offset + 4] = b.x;
+        dest[offset + 5] = b.y;
+        dest[offset + 6] = b.x;
+        dest[offset + 7] = b.y;
+        dest[offset + 8] = c.x;
+        dest[offset + 9] = c.y;
+        dest[offset + 10] = d.x;
+        dest[offset + 11] = d.y;
+    }
+
+    /**
+     * Tesselate one polyline straight into the aggregate buffers that
+     * PolylineSet uploads. The per-segment quads here are computed in scalars
+     * on purpose: this runs tens of thousands of times per label repaint, and
+     * the Vec2-building version of tesselate_segment was the hottest function
+     * in the zoom profile. Returns the number of vertices written.
+     */
+    static write_polyline(
+        position_data: Float32Array,
+        position_idx: number,
+        cap_data: Float32Array,
+        cap_idx: number,
+        color_data: Float32Array,
+        color_idx: number,
+        polyline: Polyline,
+    ): number {
+        const width = polyline.width || 0;
+        const w2 = width / 2;
+        const points = polyline.points;
+        const color = polyline.color ? polyline.color.to_array() : [1, 0, 0, 1];
+        const cr = color[0]!;
+        const cg = color[1]!;
+        const cb = color[2]!;
+        const ca = color[3]!;
+        let vertices = 0;
+
+        for (let i = 1; i < points.length; i++) {
+            const p1 = points[i - 1]!;
+            const p2 = points[i]!;
+            const dx = p2.x - p1.x;
+            const dy = p2.y - p1.y;
+            const length = Math.sqrt(dx * dx + dy * dy);
+
+            // skip zero-length segments
+            if (length == 0) {
+                continue;
+            }
+
+            // Inlined tesselate_segment for a segment of width `width`.
+            const ux = -dy / length;
+            const uy = dx / length;
+            const nx = ux * w2;
+            const ny = uy * w2;
+            const n2x = -ny;
+            const n2y = nx;
+
+            const ax = p1.x + nx + n2x;
+            const ay = p1.y + ny + n2y;
+            const bx = p1.x - nx + n2x;
+            const by = p1.y - ny + n2y;
+            const cx = p2.x + nx - n2x;
+            const cy = p2.y + ny - n2y;
+            const ex = p2.x - nx - n2x;
+            const ey = p2.y - ny - n2y;
+
+            // a, c, b, b, c, e as one triangle pair.
+            position_data[position_idx] = ax;
+            position_data[position_idx + 1] = ay;
+            position_data[position_idx + 2] = cx;
+            position_data[position_idx + 3] = cy;
+            position_data[position_idx + 4] = bx;
+            position_data[position_idx + 5] = by;
+            position_data[position_idx + 6] = bx;
+            position_data[position_idx + 7] = by;
+            position_data[position_idx + 8] = cx;
+            position_data[position_idx + 9] = cy;
+            position_data[position_idx + 10] = ex;
+            position_data[position_idx + 11] = ey;
+            position_idx += 12;
+
+            const cap = width / (length + width);
+            cap_data[cap_idx] = cap;
+            cap_data[cap_idx + 1] = cap;
+            cap_data[cap_idx + 2] = cap;
+            cap_data[cap_idx + 3] = cap;
+            cap_data[cap_idx + 4] = cap;
+            cap_data[cap_idx + 5] = cap;
+            cap_idx += 6;
+
+            const color_end = color_idx + 24;
+            for (; color_idx < color_end; color_idx += 4) {
+                color_data[color_idx] = cr;
+                color_data[color_idx + 1] = cg;
+                color_data[color_idx + 2] = cb;
+                color_data[color_idx + 3] = ca;
+            }
+
+            vertices += this.vertices_per_quad;
+        }
+
+        return vertices;
+    }
+
+    /**
      * Populate an array with repeated copies of the given color
      */
     static populate_color_data(
@@ -281,12 +402,36 @@ export class CircleSet implements IDisposable {
      * Tesselate an array of circles and upload them to the GPU.
      */
     set(circles: Circle[]) {
-        const { position_array, cap_array, color_array } =
-            Tesselator.tesselate_circles(circles);
-        this.position_buf.set(position_array);
-        this.cap_region_buf.set(cap_array);
-        this.color_buf.set(color_array);
-        this.vertex_count = position_array.length / 2;
+        const vertex_count = circles.length * Tesselator.vertices_per_quad;
+        const position_data = new Float32Array(vertex_count * 2);
+        const cap_data = new Float32Array(vertex_count);
+        const color_data = new Float32Array(vertex_count * 4);
+        let position_idx = 0;
+        let cap_idx = 0;
+        let color_idx = 0;
+
+        for (let i = 0; i < circles.length; i++) {
+            const c = circles[i]!;
+            const quad = Tesselator.tesselate_circle(c);
+            Tesselator.write_quad_triangles(position_data, position_idx, quad);
+            position_idx += Tesselator.vertices_per_quad * 2;
+
+            cap_data.fill(1.0, cap_idx, cap_idx + Tesselator.vertices_per_quad);
+            cap_idx += Tesselator.vertices_per_quad;
+
+            Tesselator.populate_color_data(
+                color_data,
+                c.color as Color,
+                color_idx,
+                Tesselator.vertices_per_quad * 4,
+            );
+            color_idx += Tesselator.vertices_per_quad * 4;
+        }
+
+        this.position_buf.set(position_data);
+        this.cap_region_buf.set(cap_data);
+        this.color_buf.set(color_data);
+        this.vertex_count = position_data.length / 2;
     }
 
     render() {
@@ -369,22 +514,23 @@ export class PolylineSet implements IDisposable {
         let color_idx = 0;
 
         for (const line of lines) {
-            const { position_array, cap_array, color_array } =
-                Tesselator.tesselate_polyline(line);
-
-            position_data.set(position_array, position_idx);
-            position_idx += position_array.length;
-
-            cap_data.set(cap_array, cap_idx);
-            cap_idx += cap_array.length;
-
-            color_data.set(color_array, color_idx);
-            color_idx += color_array.length;
+            const written = Tesselator.write_polyline(
+                position_data,
+                position_idx,
+                cap_data,
+                cap_idx,
+                color_data,
+                color_idx,
+                line,
+            );
+            position_idx += written * 2;
+            cap_idx += written;
+            color_idx += written * 4;
         }
 
-        this.position_buf.set(position_data);
-        this.cap_region_buf.set(cap_data);
-        this.color_buf.set(color_data);
+        this.position_buf.set(position_data.subarray(0, position_idx));
+        this.cap_region_buf.set(cap_data.subarray(0, cap_idx));
+        this.color_buf.set(color_data.subarray(0, color_idx));
 
         this.vertex_count = position_idx / 2;
     }

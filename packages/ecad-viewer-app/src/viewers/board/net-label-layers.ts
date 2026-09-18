@@ -5,9 +5,9 @@
     and `on_draw` only re-renders them with the camera matrix. Labels are the
     one board element with per-item zoom gates (KiCad's `ViewGetLOD`), so they
     get their own small dynamic layers, rebuilt the way `Grid` rebuilds the
-    grid: only when the camera leaves the last cached region, a zoom threshold
-    is crossed, or an option changes. Panning inside the region and zooming
-    between thresholds cost nothing.
+    grid: only when the camera leaves the last cached region, the zoom leaves
+    the band around the last rebuild, or an option changes. Panning inside
+    the region and zooming inside the band cost nothing.
 */
 
 import { BBox, Camera2 } from "../../base/math";
@@ -85,13 +85,22 @@ function bbox_intersects(a: BBox, b: BBox): boolean {
 }
 
 export class NetLabelLayers {
+    /**
+     * The cache's zoom quantum. `min_zoom` is a continuous per-item value,
+     * so comparing the global visible count (the old key) made almost every
+     * wheel tick rebuild every label layer. Rebuilding only when the camera
+     * leaves a zoom band costs at most one rebuild per band; labels pop in
+     * at band boundaries, which is how KiCad's own LOD thresholds behave.
+     */
+    static readonly ZOOM_REBUILD_BAND = 1.25;
+
     #candidates: Candidate[] = [];
     #layers: ViewLayer[] = [];
     #copper_count = 0;
     #built = false;
 
     #last_region: BBox | null = null;
-    #last_visible_count = -1;
+    #last_zoom: number | null = null;
     #last_options: NetLabelOptions | null = null;
     #last_copper_visible = false;
 
@@ -119,7 +128,7 @@ export class NetLabelLayers {
             layer.graphics = undefined;
         }
         this.#last_region = null;
-        this.#last_visible_count = -1;
+        this.#last_zoom = null;
         this.#last_options = null;
     }
 
@@ -140,32 +149,42 @@ export class NetLabelLayers {
 
         const zoom = this.camera.zoom;
         const viewport = this.camera.bbox;
-        const visible_count = this.#visible_count(zoom);
         const options = this.#options;
+        const band = NetLabelLayers.ZOOM_REBUILD_BAND;
+        const options_changed =
+            !this.#last_options ||
+            this.#last_options.padNumbers !== options.padNumbers ||
+            this.#last_options.padNetNames !== options.padNetNames ||
+            this.#last_options.trackNetNames !== options.trackNetNames;
 
         if (
             this.#last_region &&
-            this.#last_visible_count === visible_count &&
+            this.#last_zoom !== null &&
+            zoom > this.#last_zoom / band &&
+            zoom < this.#last_zoom * band &&
             this.#last_region.contains(viewport) &&
-            this.#last_options &&
-            this.#last_options.padNumbers === options.padNumbers &&
-            this.#last_options.padNetNames === options.padNetNames &&
-            this.#last_options.trackNetNames === options.trackNetNames
+            !options_changed
         ) {
             return;
         }
 
         // Grow the region well beyond the viewport so panning stays inside
-        // the cached labels and does not re-tessellate every frame.
+        // the cached labels and does not re-tessellate every frame. It is
+        // recomputed on every rebuild: keeping an old (larger) region would
+        // include every label on the board once zoomed in.
         const region = viewport.grow(viewport.w * 1.5, viewport.h * 1.5);
         this.#last_region = region;
-        this.#last_visible_count = visible_count;
+        this.#last_zoom = zoom;
         this.#last_options = { ...options };
 
-        this.#repaint(zoom, region, visible_count, options);
+        this.#repaint(zoom, region, this.#visible_count(zoom), options);
     }
 
-    /** Layout every label that would be drawn right now, for tests and tools. */
+    /**
+     * Layout every label whose zoom gate passes right now, for tests and
+     * tools. Exact per-item gating: inside a rebuild band the drawn layers
+     * can lag this by up to `ZOOM_REBUILD_BAND`.
+     */
     layouts(): Map<string, LabelLayout[]> {
         if (!this.#built) this.#build_candidates();
         const zoom = this.camera.zoom;

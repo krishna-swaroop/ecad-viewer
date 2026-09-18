@@ -13,6 +13,7 @@ import { Angle, BBox, Vec2 } from "../src/base/math";
 import { NullRenderer } from "../src/graphics/null-renderer";
 import { KicadPCB } from "../src/kicad";
 import * as board_items from "../src/kicad/board";
+import { StrokeFont, TextAttributes } from "../src/kicad/text";
 import themes from "../src/kicanvas/themes";
 import {
     CopperVirtualLayerNames,
@@ -27,6 +28,7 @@ import {
     TRACK_LABEL_MIN_PX,
     VIA_LABEL_MIN_PX,
     arc_label_layout,
+    clear_shaped_line_cache,
     copper_layer_index,
     display_net_name,
     draw_label,
@@ -40,7 +42,9 @@ import {
     via_label_layout,
     via_label_min_zoom,
 } from "../src/viewers/board/net-label-painter";
+import { NetLabelLayers } from "../src/viewers/board/net-label-layers";
 import { BoardViewer } from "../src/viewers/board/viewer";
+import type { Polyline } from "../src/graphics/shapes";
 
 const FIXTURES = "/kicad-parser/tests/fixtures/net-labels";
 
@@ -398,6 +402,152 @@ suite("net labels: drawing", () => {
         expect(rotated.x).to.be.closeTo(1, 0.3);
         expect(rotated.y).to.be.closeTo(0, 0.3);
     });
+
+    /** The polylines a NullRenderer collected, as flat point lists. */
+    function strokes_of(gfx: NullRenderer): Vec2[][] {
+        const layer = gfx.end_layer();
+        return layer.shapes
+            .filter((s): s is Polyline => "points" in s && "width" in s)
+            .map((l) => l.points);
+    }
+
+    function direct_draw(
+        text: string,
+        position: Vec2,
+        angle: Angle,
+        size: Vec2,
+        stroke: number,
+    ): Vec2[][] {
+        const gfx = new NullRenderer();
+        gfx.start_layer("direct");
+        const attrs = new TextAttributes();
+        attrs.h_align = "center";
+        attrs.v_align = "center";
+        attrs.angle = angle;
+        attrs.size = size.multiply(10000);
+        attrs.stroke_width = stroke * 10000;
+        attrs.color = NetLabelColors.light;
+        attrs.multiline = false;
+        StrokeFont.default().draw(gfx, text, position.multiply(10000), attrs);
+        return strokes_of(gfx);
+    }
+
+    // 10 nm: the direct path shapes at ~4e5 font units, the cache at the
+    // origin, so the last float bits differ.
+    function expect_same_strokes(actual: Vec2[][], expected: Vec2[][]) {
+        expect(actual.length).to.equal(expected.length);
+        for (let i = 0; i < actual.length; i++) {
+            expect(actual[i]!.length).to.equal(expected[i]!.length);
+            for (let j = 0; j < actual[i]!.length; j++) {
+                expect(actual[i]![j]!.x).to.be.closeTo(
+                    expected[i]![j]!.x,
+                    1e-5,
+                );
+                expect(actual[i]![j]!.y).to.be.closeTo(
+                    expected[i]![j]!.y,
+                    1e-5,
+                );
+            }
+        }
+    }
+
+    test("replaying a shaped line matches drawing it through the font, cold and cached", () => {
+        clear_shaped_line_cache();
+        const size = new Vec2(0.36, 0.4);
+        const angle = Angle.from_degrees(90);
+        // Two placements of the same text: the first shapes and caches the
+        // line, the second must replay it at the new position.
+        for (const position of [new Vec2(12.5, -3.25), new Vec2(-40, 7)]) {
+            const gfx = new NullRenderer();
+            gfx.start_layer("label");
+            draw_label(
+                gfx,
+                {
+                    position,
+                    angle,
+                    lines: [
+                        { text: "GND", size, stroke: 0.05, y: 0.28 },
+                        { text: "14", size, stroke: 0.05, y: -0.23 },
+                    ],
+                },
+                NetLabelColors.light,
+            );
+            const actual = strokes_of(gfx);
+            const expected = [
+                ...direct_draw(
+                    "GND",
+                    position.add(angle.rotate_point(new Vec2(0, 0.28))),
+                    angle,
+                    size,
+                    0.05,
+                ),
+                ...direct_draw(
+                    "14",
+                    position.add(angle.rotate_point(new Vec2(0, -0.23))),
+                    angle,
+                    size,
+                    0.05,
+                ),
+            ];
+            expect(actual.length).to.be.greaterThan(0);
+            expect_same_strokes(actual, expected);
+        }
+    });
+
+    test("a cached line is keyed on size and angle, not just text", () => {
+        clear_shaped_line_cache();
+        const draw = (size: Vec2, degrees: number) => {
+            const gfx = new NullRenderer();
+            gfx.start_layer("label");
+            draw_label(
+                gfx,
+                {
+                    position: new Vec2(0, 0),
+                    angle: Angle.from_degrees(degrees),
+                    lines: [{ text: "A", size, stroke: 0.05, y: 0 }],
+                },
+                NetLabelColors.light,
+            );
+            return strokes_of(gfx);
+        };
+        const small = draw(new Vec2(0.9, 1), 0);
+        const big = draw(new Vec2(1.8, 2), 0);
+        const turned = draw(new Vec2(0.9, 1), 90);
+        expect(BBox.from_points(big.flat()).h).to.be.closeTo(
+            BBox.from_points(small.flat()).h * 2,
+            1e-6,
+        );
+        expect(BBox.from_points(turned.flat()).w).to.be.closeTo(
+            BBox.from_points(small.flat()).h,
+            1e-6,
+        );
+    });
+
+    test("the stroke width is per placement, not part of the cached shape", () => {
+        clear_shaped_line_cache();
+        const widths: number[] = [];
+        for (const stroke of [0.05, 0.2]) {
+            const gfx = new NullRenderer();
+            gfx.start_layer("label");
+            draw_label(
+                gfx,
+                {
+                    position: new Vec2(0, 0),
+                    angle: Angle.from_degrees(0),
+                    lines: [
+                        { text: "B", size: new Vec2(0.9, 1), stroke, y: 0 },
+                    ],
+                },
+                NetLabelColors.light,
+            );
+            const layer = gfx.end_layer();
+            const line = layer.shapes.find(
+                (s): s is Polyline => "points" in s && "width" in s,
+            )!;
+            widths.push(line.width);
+        }
+        expect(widths).to.deep.equal([0.05, 0.2]);
+    });
 });
 
 suite("net labels: layers", () => {
@@ -553,6 +703,72 @@ suite("net labels: viewer integration", () => {
             viewer.viewport.camera.center = new Vec2(25, 10);
             viewer.draw();
             expect(drawn(viewer)).to.include(LayerNames.via_netnames);
+        } finally {
+            viewer.dispose();
+            canvas.remove();
+        }
+    });
+
+    test("zooming inside the rebuild band keeps the tessellated layers; leaving it rebuilds", async () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 800;
+        canvas.height = 600;
+        document.body.append(canvas);
+        const viewer = await viewer_on(canvas);
+        try {
+            viewer.viewport.camera.zoom = 40;
+            viewer.viewport.camera.center = new Vec2(25, 10);
+            viewer.draw();
+            const pads = label_layers(viewer).find(
+                (l) => l.name === LayerNames.pad_netnames,
+            )!;
+            const before = pads.graphics;
+            expect(before).to.not.equal(undefined);
+
+            // Every wheel tick used to cross some item's continuous
+            // min_zoom and rebuild every layer. Inside the band nothing
+            // is touched.
+            const band = NetLabelLayers.ZOOM_REBUILD_BAND;
+            viewer.viewport.camera.zoom = 40 * Math.sqrt(band);
+            viewer.draw();
+            expect(pads.graphics).to.equal(before);
+            viewer.viewport.camera.zoom = 40 / Math.sqrt(band);
+            viewer.draw();
+            expect(pads.graphics).to.equal(before);
+
+            viewer.viewport.camera.zoom = 40 * band * 1.01;
+            viewer.draw();
+            expect(pads.graphics).to.not.equal(before);
+            expect(pads.graphics).to.not.equal(undefined);
+        } finally {
+            viewer.dispose();
+            canvas.remove();
+        }
+    });
+
+    test("rebuilding the label layers does not accumulate dead renderer layers", async () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 800;
+        canvas.height = 600;
+        document.body.append(canvas);
+        const viewer = await viewer_on(canvas);
+        try {
+            const count = () => Array.from(viewer.renderer.layers).length;
+            viewer.viewport.camera.zoom = 40;
+            viewer.viewport.camera.center = new Vec2(25, 10);
+            viewer.draw();
+            const baseline = count();
+            expect(drawn(viewer).length).to.be.greaterThan(0);
+
+            // Force a rebuild per step by leaving the band each time.
+            let zoom = 40;
+            for (let i = 0; i < 6; i++) {
+                zoom *= NetLabelLayers.ZOOM_REBUILD_BAND * 1.05;
+                viewer.viewport.camera.zoom = zoom;
+                viewer.draw();
+                expect(drawn(viewer).length).to.be.greaterThan(0);
+            }
+            expect(count()).to.equal(baseline);
         } finally {
             viewer.dispose();
             canvas.remove();

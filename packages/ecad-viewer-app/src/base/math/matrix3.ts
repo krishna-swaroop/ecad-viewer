@@ -88,6 +88,26 @@ export class Matrix3 {
     }
 
     /**
+     * @returns true when this matrix leaves points unchanged. Hot paths use it
+     * to skip per-point copies; identity matrices are always built from exact
+     * literals, so equality is safe.
+     */
+    get is_identity(): boolean {
+        const e = this.elements;
+        return (
+            e[0] === 1 &&
+            e[1] === 0 &&
+            e[2] === 0 &&
+            e[3] === 0 &&
+            e[4] === 1 &&
+            e[5] === 0 &&
+            e[6] === 0 &&
+            e[7] === 0 &&
+            e[8] === 1
+        );
+    }
+
+    /**
      * @returns a new matrix representing a 2d orthographic projection
      */
     static orthographic(width: number, height: number): Matrix3 {
