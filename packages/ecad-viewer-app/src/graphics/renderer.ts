@@ -135,6 +135,14 @@ export abstract class Renderer implements IDisposable {
     }
 
     /**
+     * Whether a painter currently tracks bounding boxes. Backends use this to
+     * skip per-primitive bbox work they would throw away.
+     */
+    protected get tracking_bbox(): boolean {
+        return this.#current_bbox != null;
+    }
+
+    /**
      * Adds a bbox to the current bbox.
      */
     add_bbox(bb: BBox) {
@@ -223,13 +231,15 @@ export abstract class Renderer implements IDisposable {
 
         circle.center = this.state.matrix.transform(circle.center);
 
-        const radial = new Vec2(circle.radius, circle.radius);
-        this.add_bbox(
-            BBox.from_points([
-                circle.center.add(radial),
-                circle.center.sub(radial),
-            ]),
-        );
+        if (this.#current_bbox) {
+            const radial = new Vec2(circle.radius, circle.radius);
+            this.add_bbox(
+                BBox.from_points([
+                    circle.center.add(radial),
+                    circle.center.sub(radial),
+                ]),
+            );
+        }
 
         return circle;
     }
@@ -340,9 +350,14 @@ export abstract class Renderer implements IDisposable {
 
         line.points = Array.from(this.state.matrix.transform_all(line.points));
 
-        let bbox = BBox.from_points(line.points);
-        bbox = bbox.grow(line.width);
-        this.add_bbox(bbox);
+        // Bounds are only tracked while a painter asked for them. The label
+        // layers stroke thousands of lines per repaint and never do, so do
+        // not build a bbox per stroke for nobody.
+        if (this.#current_bbox) {
+            let bbox = BBox.from_points(line.points);
+            bbox = bbox.grow(line.width);
+            this.add_bbox(bbox);
+        }
 
         return line;
     }
@@ -376,7 +391,9 @@ export abstract class Renderer implements IDisposable {
             this.state.matrix.transform_all(polygon.points),
         );
 
-        this.add_bbox(BBox.from_points(polygon.points));
+        if (this.#current_bbox) {
+            this.add_bbox(BBox.from_points(polygon.points));
+        }
 
         return polygon;
     }

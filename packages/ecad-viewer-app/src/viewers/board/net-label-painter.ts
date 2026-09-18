@@ -15,6 +15,7 @@
 import { Angle, Arc, BBox, Vec2 } from "../../base/math";
 import { Color } from "../../base/color";
 import { Renderer } from "../../graphics";
+import { NullRenderer } from "../../graphics/null-renderer";
 import * as board_items from "../../kicad/board";
 import { StrokeFont, TextAttributes } from "../../kicad/text";
 import {
@@ -437,9 +438,95 @@ export function min_glyph_height(layout: LabelLayout): number {
     return min;
 }
 
+/** Origin-relative strokes of one shaped label line, in board millimetres. */
+interface ShapedLine {
+    sx: number;
+    sy: number;
+    degrees: number;
+    strokes: Vec2[][];
+}
+
+/**
+ * Collects the polylines `Font.draw` emits instead of rendering them, so a
+ * line can be shaped once through the normal font path (same alignment and
+ * rotation maths as any other board text) and replayed at many positions.
+ */
+class StrokeCapture extends NullRenderer {
+    strokes: Vec2[][] = [];
+
+    override polylines(lines: Vec2[][]): void {
+        this.strokes.push(...lines);
+    }
+}
+
+/**
+ * Shaped lines keyed by text. A label rebuild replays thousands of lines,
+ * most of them the same few hundred net names at the same few pad sizes, so
+ * this turns the per-line cost into a map lookup and a translation. Keyed on
+ * the text alone with a short linear scan over sizes and angles: float keys
+ * would need string building on every hit. Not an LRU: when it fills up it
+ * is simply dropped, which costs one reshape per line on the next rebuild.
+ */
+const SHAPED_LINE_CACHE_MAX = 8192;
+let shaped_lines = new Map<string, ShapedLine[]>();
+let shaped_line_count = 0;
+
+/** Drop every cached shaped line. Exposed for tests. */
+export function clear_shaped_line_cache(): void {
+    shaped_lines = new Map();
+    shaped_line_count = 0;
+}
+
+function shape_line(text: string, size: Vec2, angle: Angle): Vec2[][] {
+    const attrs = new TextAttributes();
+    attrs.h_align = "center";
+    attrs.v_align = "center";
+    attrs.angle = angle;
+    attrs.size = size.multiply(10000);
+    attrs.multiline = false;
+
+    const capture = new StrokeCapture();
+    StrokeFont.default().draw(capture, text, new Vec2(0, 0), attrs);
+    return capture.strokes;
+}
+
+function shaped_line(text: string, size: Vec2, angle: Angle): Vec2[][] {
+    const degrees = angle.degrees;
+    let entries = shaped_lines.get(text);
+    if (entries) {
+        for (const entry of entries) {
+            if (
+                entry.sx === size.x &&
+                entry.sy === size.y &&
+                entry.degrees === degrees
+            ) {
+                return entry.strokes;
+            }
+        }
+    }
+
+    const strokes = shape_line(text, size, angle);
+
+    if (shaped_line_count >= SHAPED_LINE_CACHE_MAX) {
+        clear_shaped_line_cache();
+        entries = undefined;
+    }
+    if (!entries) {
+        entries = [];
+        shaped_lines.set(text, entries);
+    }
+    entries.push({ sx: size.x, sy: size.y, degrees, strokes });
+    shaped_line_count++;
+    return strokes;
+}
+
 /**
  * Stroke a label into the renderer's current layer. Each line's y offset is
  * applied in the label's own frame and then rotated with the label.
+ *
+ * Lines are shaped at the origin once (see `shaped_line`) and translated
+ * here; the font rotates about the text origin, so translating the shaped
+ * strokes is exactly what drawing at `position` would produce.
  */
 export function draw_label(
     gfx: Renderer,
@@ -449,22 +536,20 @@ export function draw_label(
     for (const line of layout.lines) {
         if (!line.text) continue;
         const offset = layout.angle.rotate_point(new Vec2(0, line.y));
-        const position = layout.position.add(offset);
+        const px = layout.position.x + offset.x;
+        const py = layout.position.y + offset.y;
 
-        const attrs = new TextAttributes();
-        attrs.h_align = "center";
-        attrs.v_align = "center";
-        attrs.angle = layout.angle;
-        attrs.size = line.size.multiply(10000);
-        attrs.stroke_width = line.stroke * 10000;
-        attrs.color = color;
-        attrs.multiline = false;
-
-        StrokeFont.default().draw(
-            gfx,
-            line.text,
-            position.multiply(10000),
-            attrs,
-        );
+        const strokes = shaped_line(line.text, line.size, layout.angle);
+        const placed = new Array<Vec2[]>(strokes.length);
+        for (let i = 0; i < strokes.length; i++) {
+            const stroke = strokes[i]!;
+            const points = new Array<Vec2>(stroke.length);
+            for (let j = 0; j < stroke.length; j++) {
+                const p = stroke[j]!;
+                points[j] = new Vec2(p.x + px, p.y + py);
+            }
+            placed[i] = points;
+        }
+        gfx.polylines(placed, line.stroke, color);
     }
 }

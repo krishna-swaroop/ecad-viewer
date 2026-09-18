@@ -234,6 +234,33 @@ export class WebGL2Renderer extends Renderer {
         this.#active_layer!.geometry.add_line(line);
     }
 
+    override polylines(lines: Vec2[][], width?: number, color?: Color): void {
+        // Bulk text (net labels, board text) is stroked by the thousand on
+        // layers that never track bboxes, usually at an identity state
+        // matrix. In that case skip prep_line's per-stroke copy, matrix pass
+        // and bbox bookkeeping: at that volume it costs more than the
+        // tessellation it feeds.
+        if (this.tracking_bbox || !this.state.matrix.is_identity) {
+            super.polylines(lines, width, color);
+            return;
+        }
+
+        let stroke_color =
+            color ?? this.state.stroke ?? Color.transparent_black;
+        if (stroke_color.is_transparent_black) {
+            stroke_color = this.state.stroke ?? Color.transparent_black;
+        }
+        if (this.color_transform) {
+            stroke_color = this.color_transform(stroke_color);
+        }
+
+        const stroke_width = width ?? this.state.stroke_width;
+        const geometry = this.#active_layer!.geometry;
+        for (const points of lines) {
+            geometry.add_line(new Polyline(points, stroke_width, stroke_color));
+        }
+    }
+
     override polygon(polygon_or_points: Polygon | Vec2[], color?: Color): void {
         const polygon = super.prep_polygon(polygon_or_points, color);
 
@@ -275,6 +302,10 @@ class WebGL2RenderLayer extends RenderLayer {
 
     override dispose(): void {
         this.clear();
+        // Drop the renderer's reference too. Dynamic layers (grid, net
+        // labels) are rebuilt many times per session; without this every
+        // rebuild left a dead layer in the renderer's list.
+        this.renderer.remove_layer(this);
     }
 
     clear() {
