@@ -11,6 +11,7 @@ import { NullRenderer } from "../../graphics/null-renderer";
 import { type SchematicTheme } from "../../kicad";
 import {
     HierarchicalSheetPin,
+    item_hyperlink,
     KicadSch,
     Label,
     PinInstance,
@@ -23,6 +24,7 @@ import {
     KiCanvasSelectEvent,
     select_modifiers,
     LabelClickEvent,
+    LinkClickEvent,
     SheetChangeEvent,
     SheetLoadEvent,
 } from "../base/events";
@@ -241,6 +243,14 @@ export class SchematicViewer extends DocumentViewer<
 
         if (ct.item) {
             const it = ct.item;
+            const link = item_hyperlink(it);
+            if (link) {
+                // A click on an embedded hyperlink follows the link instead
+                // of selecting; the app element decides what "opens" means
+                // (external URL vs. navigating to a project page).
+                this.dispatchEvent(new LinkClickEvent(link));
+                return;
+            }
             this.dispatchEvent(
                 new KiCanvasSelectEvent({
                     item: it,
@@ -332,6 +342,12 @@ export class SchematicViewer extends DocumentViewer<
                 : null,
         );
 
+        // An embedded hyperlink advertises itself with a pointer cursor so
+        // users can tell the text is interactive. This must run before the
+        // rebuild guard below: the cursor tracks the item identity, and the
+        // overlay layers only need rebuilding when the highlight changes.
+        this.#update_link_cursor(it.item);
+
         // Moving the pointer within the same item -- or across empty sheet --
         // leaves the overlay exactly as it already is. Rebuilding it anyway
         // costs a full display-list replay per mousemove frame, which on a
@@ -365,8 +381,16 @@ export class SchematicViewer extends DocumentViewer<
     protected override on_pointer_leave(): void {
         this.#update_probe_hover(null);
         this.#last_hover_bbox = null;
+        this.#update_link_cursor(null);
         this.layers.overlay.clear();
         this.draw();
+    }
+
+    #update_link_cursor(item: unknown) {
+        const cursor = item_hyperlink(item) ? "pointer" : "";
+        if (this.canvas.style.cursor !== cursor) {
+            this.canvas.style.cursor = cursor;
+        }
     }
 
     #update_probe_hover(next: PinInstance | null) {

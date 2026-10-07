@@ -26,6 +26,7 @@ import {
     HierarchicalSheetPinClickEvent,
     KiCanvasFitterMenuEvent,
     LabelClickEvent,
+    LinkClickEvent,
     NetItemSelectEvent,
     ProjectERCResultEvent,
     SelectDesignatorEvent,
@@ -173,6 +174,10 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
             }
         });
 
+        this.viewer.addEventListener(LinkClickEvent.type, (e) => {
+            this.#open_hyperlink(e.detail);
+        });
+
         this.viewer.addEventListener(LabelClickEvent.type, (e) => {
             // Prism hosts its own Selection inspector; skip the canvas popover
             // when the embedded selection panel is disabled.
@@ -281,6 +286,63 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
                 inspector.ercResult = e.detail;
             }
         });
+    }
+
+    /**
+     * Follow a schematic hyperlink.
+     *
+     * KiCad authors embedded links as `(href "...")` on a text item's
+     * effects. Two kinds exist: absolute URLs (web pages, mailto:) which
+     * open in a new browser tab, and project-relative file paths which
+     * navigate inside the loaded project the same way KiCad resolves
+     * sibling sheet references.
+     */
+    #open_hyperlink(url: string) {
+        if (!url) return;
+
+        const scheme = url.match(/^([a-z][a-z0-9+.-]*):/i)?.[1]?.toLowerCase();
+
+        if (scheme) {
+            // Only safe, user-facing schemes are followed; anything else
+            // (javascript:, data:, unknown protocols) is ignored.
+            if (!["http", "https", "mailto"].includes(scheme)) {
+                console.warn(
+                    `Refusing to open hyperlink with scheme ${scheme}`,
+                );
+                return;
+            }
+            window.open(url, "_blank", "noopener,noreferrer");
+            return;
+        }
+
+        // No scheme: a link to a file in the repo. Resolve it relative to
+        // the sheet the link was authored on, then switch to that page.
+        const resolved = this.project.resolve_schematic_filename(
+            this.sch_viewer.sch_name,
+            url,
+        );
+        if (resolved) {
+            const file = this.project.file_by_name(resolved);
+            if (file instanceof KicadSch) {
+                const page =
+                    this.project.pages.find(
+                        (candidate) => candidate.document === file,
+                    ) ??
+                    this.project.pages.find(
+                        (candidate) => candidate.filename === resolved,
+                    );
+                if (page) {
+                    this.project.activate_sch(page.project_path);
+                    return;
+                }
+                this.viewer.load(file);
+                return;
+            }
+        }
+
+        // Not a loaded schematic; hand the path to the host, which may
+        // serve linked documents (PDFs, images) next to the project.
+        window.open(url, "_blank", "noopener,noreferrer");
     }
 
     #select_item(idx: NetItemIndex & { project_path?: string }) {

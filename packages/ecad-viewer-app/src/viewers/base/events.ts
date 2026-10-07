@@ -331,6 +331,20 @@ export class LabelClickEvent extends CustomEvent<LabelIndex> {
     }
 }
 
+/**
+ * Dispatched when the user clicks a schematic item that carries an embedded
+ * hyperlink (KiCad authors these as `(href "...")` on a text item's effects).
+ * The detail is the raw URL as written in the file: an absolute URL for web
+ * links, or a project-relative path for links to files within the repo.
+ */
+export class LinkClickEvent extends CustomEvent<string> {
+    static readonly type = "sch:link:click";
+
+    constructor(url: string) {
+        super(LinkClickEvent.type, { detail: url });
+    }
+}
+
 export class HierarchicalSheetPinClickEvent extends CustomEvent<LabelIndex> {
     static readonly type = "sch:hierarchical_sheet_pin:click";
 
@@ -493,6 +507,7 @@ export interface KiCanvasEventMap {
     [Online3dViewerUrlReady.type]: Online3dViewerUrlReady;
     [Online3dViewerLoaded.type]: Online3dViewerLoaded;
     [LabelClickEvent.type]: LabelClickEvent;
+    [LinkClickEvent.type]: LinkClickEvent;
     [HierarchicalSheetPinClickEvent.type]: HierarchicalSheetPinClickEvent;
     [NetItemSelectEvent.type]: NetItemSelectEvent;
     [OpenBarrierEvent.type]: OpenBarrierEvent;
@@ -514,6 +529,7 @@ declare global {
         [Online3dViewerUrlReady.type]: Online3dViewerUrlReady;
         [Online3dViewerLoaded.type]: Online3dViewerLoaded;
         [LabelClickEvent.type]: LabelClickEvent;
+        [LinkClickEvent.type]: LinkClickEvent;
         [HierarchicalSheetPinClickEvent.type]: HierarchicalSheetPinClickEvent;
         [KiCanvasFitterMenuEvent.type]: KiCanvasFitterMenuEvent;
         [OpenBarrierEvent.type]: OpenBarrierEvent;
@@ -532,6 +548,7 @@ declare global {
         [Online3dViewerUrlReady.type]: Online3dViewerUrlReady;
         [Online3dViewerLoaded.type]: Online3dViewerLoaded;
         [LabelClickEvent.type]: LabelClickEvent;
+        [LinkClickEvent.type]: LinkClickEvent;
         [HierarchicalSheetPinClickEvent.type]: HierarchicalSheetPinClickEvent;
         [KiCanvasFitterMenuEvent.type]: KiCanvasFitterMenuEvent;
         [OpenBarrierEvent.type]: OpenBarrierEvent;
