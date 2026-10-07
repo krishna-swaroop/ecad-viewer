@@ -228,25 +228,30 @@ export class BoardBBoxVisitor extends BoardVisitorBase {
         );
         this.interactive_items.push(line);
 
-        if (!this.#net_info.has(lineSegment.net))
-            this.#net_info.set(lineSegment.net, {
-                routed_length: lineSegment.routed_length,
-                layers: new Set([lineSegment.layer]),
-            });
-        else {
-            const current = this.#net_info.get(lineSegment.net)!;
-            this.#net_info.set(lineSegment.net, {
-                routed_length:
-                    current.routed_length + lineSegment.routed_length,
-                layers: new Set([...current.layers, lineSegment.layer]),
-            });
-        }
+        this.#accumulate_net(lineSegment);
 
         return true;
     }
 
     protected override visitArcSegment(arcSegment: ArcSegment) {
+        // Arcs are not pickable yet, but they are routed copper all the same.
+        this.#accumulate_net(arcSegment);
         return true;
+    }
+
+    #accumulate_net(track: LineSegment | ArcSegment) {
+        const current = this.#net_info.get(track.net);
+        if (!current) {
+            this.#net_info.set(track.net, {
+                routed_length: track.routed_length,
+                layers: new Set([track.layer]),
+            });
+            return;
+        }
+        this.#net_info.set(track.net, {
+            routed_length: current.routed_length + track.routed_length,
+            layers: new Set([...current.layers, track.layer]),
+        });
     }
     protected override visitVia(via: Via) {
         this.interactive_items.push(

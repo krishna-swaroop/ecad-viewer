@@ -46,6 +46,68 @@ import { ecadPerfLog, formatBytes, isEcadPerfLogEnabled } from "./perf_log";
 
 const log = new Logger("kicanvas:project");
 
+/** KiCad's default-design sentinel; it is not a selectable variant name. */
+export const DEFAULT_VARIANT_PLACEHOLDER = "< Default >";
+
+/**
+ * The empty string and the `< Default >` sentinel mean the default design
+ * (packet 2.1). Schematic catalog identity is otherwise case-sensitive;
+ * board-side folding happens while the catalog is built.
+ */
+export function normalize_variant_name(
+    name: string | null | undefined,
+): string | null {
+    if (!name) return null;
+    return name.toLowerCase() === DEFAULT_VARIANT_PLACEHOLDER.toLowerCase()
+        ? null
+        : name;
+}
+
+/** One entry of the project's variant catalog (packet 2.1). */
+export interface ProjectVariant {
+    name: string;
+    description: string | null;
+}
+
+/** Outcome of validating a requested variant against the loaded catalog. */
+export interface VariantRequestResolution {
+    /** Name to apply; `null` is the default design. */
+    effective: string | null;
+    /** What to keep for the next settle; `null` when rejected or default. */
+    requested: string | null;
+    /** Whether the request is in the catalog (true when it cannot be checked yet). */
+    known: boolean;
+}
+
+/**
+ * Validate a requested variant against the project's catalog. Before the
+ * sources settle nothing can be checked, so the request is kept and the
+ * current selection is left alone (the element replays it after load). Once
+ * loaded, an unknown name resolves the default design *and* clears the
+ * request, so a later reload does not resurrect it.
+ */
+export function resolve_variant_request(
+    project: Project,
+    requested: string | null,
+    loaded: boolean,
+): VariantRequestResolution {
+    const normalized = normalize_variant_name(requested);
+    if (!loaded) {
+        return {
+            effective: project.active_variant,
+            requested: normalized,
+            known: true,
+        };
+    }
+    const known =
+        normalized === null ||
+        project.variant_catalog().some((entry) => entry.name === normalized);
+    if (!known) {
+        return { effective: null, requested: null, known: false };
+    }
+    return { effective: normalized, requested: normalized, known: true };
+}
+
 export enum AssertType {
     SCH,
     PCB,
@@ -296,6 +358,7 @@ export class Project extends EventTarget implements IDisposable {
         this._project_name = source._project_name;
         this.active_sch_file_name = source.active_sch_file_name;
         this.active_sch_name = source.active_sch_name;
+        this.active_variant = source.active_variant;
         this._found_cjk = source._found_cjk;
         this.settings = source.settings;
         this._root_schematic_page = source._root_schematic_page;
@@ -398,32 +461,7 @@ export class Project extends EventTarget implements IDisposable {
         if (this.has_schematics)
             has_root_sch = this._determine_schematic_hierarchy();
 
-        const bom_items = (() => {
-            if (this.has_schematics) {
-                const sch_visitor = new SchematicBomVisitor();
-                if (has_root_sch) {
-                    for (const page of this.pages) {
-                        const context = page.schematic_context;
-                        if (context) sch_visitor.visit_instance(context);
-                    }
-                } else {
-                    for (const sch of this.schematics()) {
-                        sch_visitor.visit(sch);
-                    }
-                }
-
-                this._designator_refs = sch_visitor.designator_refs;
-                if (sch_visitor.bom_list.length) return sch_visitor.bom_list;
-            }
-            if (this.has_boards) {
-                const visitor = new BoardBomItemVisitor();
-                for (const b of this.boards()) visitor.visit(b);
-                this._designator_refs = visitor.designator_refs;
-                return visitor.bom_list;
-            }
-            return [];
-        })();
-        this._sort_bom(bom_items);
+        this._recompute_bom(has_root_sch);
 
         this.loaded.open();
 
@@ -465,6 +503,182 @@ export class Project extends EventTarget implements IDisposable {
         }
         this._bom_items = Array.from(grouped_it_map.values());
     }
+
+    /**
+     * Rebuild the engineering BOM from the current revision and the selected
+     * variant. The schematic visitor resolves each occurrence's effective
+     * flags and fields through its instance context, and those contexts read
+     * `active_variant`, so a variant switch is a recompute rather than a
+     * second copy of the BOM.
+     */
+    _recompute_bom(has_root_sch: boolean) {
+        const bom_items = (() => {
+            if (this.has_schematics) {
+                const sch_visitor = new SchematicBomVisitor();
+                if (has_root_sch) {
+                    for (const page of this.pages) {
+                        const context = page.schematic_context;
+                        if (context) sch_visitor.visit_instance(context);
+                    }
+                } else {
+                    for (const sch of this.schematics()) {
+                        sch_visitor.visit(sch);
+                    }
+                }
+
+                this._designator_refs = sch_visitor.designator_refs;
+                if (sch_visitor.bom_list.length) return sch_visitor.bom_list;
+            }
+            if (this.has_boards) {
+                const visitor = new BoardBomItemVisitor();
+                for (const b of this.boards()) visitor.visit(b);
+                this._designator_refs = visitor.designator_refs;
+                return visitor.bom_list;
+            }
+            return [];
+        })();
+        this._sort_bom(bom_items);
+    }
+
+    /**
+     * Select the design variant this project resolves against. `null` (or the
+     * empty/sentinel name) is the default design. The selection survives
+     * source replacement because `reset()` keeps it; a revision that dropped
+     * the name resolves the base until the host selects another.
+     */
+    set_active_variant(name: string | null): boolean {
+        const normalized = normalize_variant_name(name);
+        if (normalized === this.active_variant) return false;
+        this.active_variant = normalized;
+        this._recompute_bom(!!this._root_schematic_page);
+        this.on_loaded();
+        return true;
+    }
+
+    /** The selected variant; `null` is the default design. */
+    public active_variant: string | null = null;
+
+    /** Description from the catalog, or undefined when there is none. */
+    variant_description(name: string): string | undefined {
+        return (
+            this.variant_catalog().find((entry) => entry.name === name)
+                ?.description ?? undefined
+        );
+    }
+
+    /**
+     * The variant catalog for the loaded revision (packet 2.1): project
+     * registry first in file order, then board-header names, then schematic
+     * record names in hierarchy walk order, then footprint record names, each
+     * in first-seen order. Board-side names fold case-insensitively into an
+     * existing entry; schematic names stay case-sensitive.
+     */
+    public variant_catalog(): ProjectVariant[] {
+        const entries: ProjectVariant[] = [];
+
+        const merge_description = (
+            entry: ProjectVariant,
+            description: string | null,
+        ) => {
+            if (entry.description === null && description !== null)
+                entry.description = description;
+        };
+
+        const add = (
+            name: string,
+            description: string | null,
+            fold: boolean,
+        ) => {
+            if (!name) return;
+            const exact = entries.find((entry) => entry.name === name);
+            if (exact) {
+                merge_description(exact, description);
+                return;
+            }
+            if (fold) {
+                // Board-side names fold case-insensitively into the first
+                // catalog entry with that spelling (packet 2.1). Exact names
+                // win, and two schematic names differing only by case stay
+                // distinct.
+                const folded = name.toLowerCase();
+                const match = entries.find(
+                    (entry) => entry.name.toLowerCase() === folded,
+                );
+                if (match) {
+                    merge_description(match, description);
+                    return;
+                }
+            }
+            entries.push({ name, description });
+        };
+
+        // 1. `.kicad_pro` `$.schematic.variants`, in file order (N10).
+        const registry = (this.settings.schematic as { variants?: unknown })
+            .variants;
+        if (Array.isArray(registry)) {
+            for (const raw of registry) {
+                if (!raw || typeof raw !== "object") continue;
+                const record = raw as { name?: unknown; description?: unknown };
+                if (typeof record.name !== "string") continue;
+                add(
+                    record.name,
+                    typeof record.description === "string"
+                        ? record.description
+                        : null,
+                    false,
+                );
+            }
+        }
+
+        // 2. Board headers, in board then file order (N18).
+        for (const board of this.boards()) {
+            for (const variant of board.variants) {
+                add(variant.name, variant.description ?? null, true);
+            }
+        }
+
+        // 3. Schematic symbol- and sheet-instance records, hierarchy walk
+        //    order then file order (N1/N2).
+        const visited_documents = new Set<KicadSch>();
+        const add_schematic_names = (document: KicadSch) => {
+            if (visited_documents.has(document)) return;
+            visited_documents.add(document);
+            for (const symbol of document.symbols.values()) {
+                for (const instance of symbol.instances.values()) {
+                    for (const name of instance.variants.keys())
+                        add(name, null, false);
+                }
+            }
+            for (const sheet of document.sheets) {
+                for (const instance of sheet.instances.values()) {
+                    for (const name of instance.variants.keys())
+                        add(name, null, false);
+                }
+            }
+        };
+        const pages = this.pages;
+        if (pages.length) {
+            for (const page of pages) {
+                const document = page.document;
+                if (document instanceof KicadSch) add_schematic_names(document);
+            }
+        } else {
+            for (const schematic of this.schematics())
+                add_schematic_names(schematic);
+        }
+
+        // 4. Footprint records, board then file order (N16).
+        for (const board of this.boards()) {
+            for (const footprint of board.footprints) {
+                for (const record of footprint.variants) {
+                    add(record.name, null, true);
+                }
+            }
+        }
+
+        return entries;
+    }
+
     public get root_schematic_page() {
         return this._root_schematic_page;
     }

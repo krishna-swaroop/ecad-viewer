@@ -47,8 +47,7 @@ class LinePainter extends BoardItemPainter {
     }
 
     paint(layer: ViewLayer, s: board_items.GrLine | board_items.FpLine) {
-        let color = layer.color;
-        if (this.filter_net) color = Color.dark_gray;
+        const color = layer.color;
 
         const points = [s.start, s.end];
         this.gfx.line(new Polyline(points, s.width, color));
@@ -63,8 +62,7 @@ class RectPainter extends BoardItemPainter {
     }
 
     paint(layer: ViewLayer, r: board_items.GrRect | board_items.FpRect) {
-        let color = layer.color;
-        if (this.filter_net) color = Color.dark_gray;
+        const color = layer.color;
 
         const points = [
             r.start,
@@ -95,8 +93,7 @@ class PolyPainter extends BoardItemPainter {
         layer: ViewLayer,
         p: board_items.Poly | board_items.GrPoly | board_items.FpPoly,
     ) {
-        let color = layer.color;
-        if (this.filter_net) color = Color.dark_gray;
+        const color = layer.color;
 
         if (p.width) {
             this.gfx.line(
@@ -119,8 +116,7 @@ class ArcPainter extends BoardItemPainter {
     }
 
     paint(layer: ViewLayer, a: board_items.GrArc | board_items.FpArc) {
-        let color = layer.color;
-        if (this.filter_net) color = Color.dark_gray;
+        const color = layer.color;
         const arc = a.arc;
         const points = arc.to_polyline();
         this.gfx.line(new Polyline(points, arc.width, color));
@@ -135,8 +131,7 @@ class CirclePainter extends BoardItemPainter {
     }
 
     paint(layer: ViewLayer, c: board_items.GrCircle | board_items.FpCircle) {
-        let color = layer.color;
-        if (this.filter_net) color = Color.dark_gray;
+        const color = layer.color;
 
         const radius = c.center.sub(c.end).magnitude;
         const arc = new Arc(
@@ -166,14 +161,7 @@ class TraceSegmentPainter extends BoardItemPainter {
     }
 
     paint(layer: ViewLayer, s: board_items.LineSegment) {
-        let color = layer.color;
-        if (this.filter_net) {
-            color = this.color_for(s.layer);
-
-            if (s.net != this.filter_net) color = Color.light_gray;
-            else color = this.color_for(s.layer);
-        }
-
+        const color = this.emphasis_color(layer, s.layer);
         const points = [s.start, s.end];
         this.gfx.line(new Polyline(points, s.width, color));
     }
@@ -187,10 +175,7 @@ class TraceArcPainter extends BoardItemPainter {
     }
 
     paint(layer: ViewLayer, a: board_items.ArcSegment) {
-        let color = layer.color;
-        if (this.filter_net && a.net !== this.filter_net)
-            color = Color.dark_gray;
-
+        const color = this.emphasis_color(layer, a.layer);
         const arc = Arc.from_three_points(a.start, a.mid, a.end, a.width);
         const points = arc.to_polyline();
         this.gfx.line(new Polyline(points, arc.width, color));
@@ -230,12 +215,7 @@ class ViaPainter extends BoardItemPainter {
     }
 
     paint(layer: ViewLayer, v: board_items.Via) {
-        let color = layer.color;
-
-        if (this.filter_net) {
-            if (v.net !== this.filter_net) color = Color.light_gray;
-            else color = Color.cyan;
-        }
+        const color = this.emphasis_color(layer, LayerNames.via_holewalls);
 
         if (
             layer.name.endsWith("HoleWalls") ||
@@ -278,8 +258,6 @@ class GrTextPainter extends BoardItemPainter {
     }
 
     paint(layer: ViewLayer, t: board_items.GrText) {
-        if (this.filter_net) return;
-
         if (t.hide || !t.shown_text) {
             return;
         }
@@ -342,8 +320,6 @@ class FpTextPainter extends BoardItemPainter {
         layer: ViewLayer,
         t: board_items.FpText | board_items.Property_Kicad_8,
     ) {
-        if (this.filter_net) return;
-
         if (t.hide || !t.shown_text) {
             return;
         }
@@ -679,6 +655,16 @@ class DimensionPainter extends BoardItemPainter {
     }
 }
 
+/** Alpha of the dim pass drawn over the board while nets are highlighted. */
+export const HIGHLIGHT_DIM_OPACITY = 0.72;
+
+/**
+ * Opacity of highlighted zone fills. Below the zone layers' own 0.6 because
+ * the emphasis sits above every native layer, and a pour of the highlighted
+ * net would otherwise hide the dimmed tracks of other nets crossing it.
+ */
+export const ZONE_EMPHASIS_OPACITY = 0.45;
+
 export class BoardPainter extends DocumentPainter {
     override theme: BoardTheme;
 
@@ -702,22 +688,31 @@ export class BoardPainter extends DocumentPainter {
         ];
     }
 
-    // Used to filter out items by net when highlighting nets. Painters
-    // should use this to determine whether to draw or skip the current item.
-    #filter_net: number | null = null;
+    /**
+     * Net codes currently emphasised, or null when no highlight is active.
+     * Item painters never consult this: the board keeps painting normally and
+     * {@link paint_highlight} repaints the members on top of a dim pass.
+     */
+    #highlight_nets: ReadonlySet<number> | null = null;
 
-    get filter_net() {
-        return this.#filter_net;
+    get highlight_nets(): ReadonlySet<number> | null {
+        return this.#highlight_nets;
     }
 
-    set filter_net(net: number | null) {
-        this.#filter_net = net;
-    }
+    /**
+     * The board variant the footprint painters resolve against; `null` is the
+     * default design. The board viewer sets it before repainting.
+     */
+    active_variant: string | null = null;
 
-    #net_bbox: BBox | null = null;
+    #highlight_bbox: BBox | null = null;
 
-    get net_bbox() {
-        return this.#net_bbox;
+    /**
+     * World-space bounds of the highlighted nets' pads, tracks, arcs and vias
+     * (zones only when a net has nothing else), for "fit highlighted".
+     */
+    get highlight_bbox() {
+        return this.#highlight_bbox;
     }
 
     paint_footprint(fp: board_items.Footprint) {
@@ -752,13 +747,22 @@ export class BoardPainter extends DocumentPainter {
         outline.graphics.composite_operation = "source-over";
     }
 
+    /**
+     * Empty the interactive layers and forget any highlight. The highlight
+     * pass drives these layers' opacity; a later outline, hatch or diff
+     * paint expects them opaque again.
+     */
     clear_interactive() {
         for (const layer of [
             this.layers.selection_bg,
             this.layers.selection_fg,
             this.layers.selection_mask,
-        ])
+        ]) {
             layer.clear();
+            layer.opacity = 1;
+        }
+        this.#highlight_bbox = null;
+        this.#highlight_nets = null;
     }
 
     /**
@@ -809,97 +813,138 @@ export class BoardPainter extends DocumentPainter {
         layer.graphics.composite_operation = "source-over";
     }
 
-    paint_net(
+    /**
+     * Emphasise a set of nets: a translucent dim pass over the whole board
+     * (the native layers stay exactly as the user left them) and the members
+     * repainted above it in their own layer colours. Items on hidden layers
+     * are not repainted, so hidden copper stays hidden. Pads and vias are
+     * multi-layer: they show while any of their copper layers is visible.
+     *
+     * Returns false and clears both passes when `nets` is empty.
+     */
+    paint_highlight(
         board: board_items.KicadPCB,
-        net: number | null,
-        layer_visibility: Map<string, boolean>,
-    ) {
-        if (this.filter_net === net) return false;
+        nets: ReadonlySet<number>,
+        layer_visible: (layer_name: string) => boolean,
+    ): boolean {
+        this.clear_interactive();
+        if (nets.size === 0) return false;
+        this.#highlight_nets = new Set(nets);
 
-        if (!net) return false;
+        const any_copper_visible = (layers: string[]) =>
+            layers.some(
+                (name) =>
+                    name === "*.Cu" ||
+                    (name.endsWith(".Cu") && layer_visible(name)),
+            );
 
-        this.filter_net = net;
-
-        //SECTION - the background
+        // Dim pass: one board-sized quad. Its opacity is the layer's, so the
+        // renderer blends it over the copper below.
         {
             const layer = this.layers.selection_bg;
+            layer.opacity = HIGHLIGHT_DIM_OPACITY;
+            const extent = this.#board_extent(board);
             this.gfx.start_layer(layer.name);
-
-            for (const item of board.items()) {
-                switch (item.typeId) {
-                    case "LineSegment": {
-                        const line = item as board_items.LineSegment;
-                        if (
-                            layer_visibility.get(line.layer) &&
-                            line.net !== net
-                        ) {
-                            const painter = this.painter_for(item);
-                            if (!painter) continue;
-                            this.paint_item(layer, item);
-                        }
-
-                        break;
-                    }
-                    default:
-                        {
-                            const painter = this.painter_for(item);
-
-                            if (!painter) continue;
-
-                            this.paint_item(layer, item);
-                        }
-                        break;
-                }
-            }
-
+            this.gfx.polygon(
+                Polygon.from_BBox(extent, this.theme.background ?? Color.black),
+            );
             layer.graphics = this.gfx.end_layer();
             layer.graphics.composite_operation = "source-over";
         }
 
-        //SECTION - The foreground
+        // Emphasis pass, split over two layers so a highlighted pour sits
+        // under the tracks and at its own translucency: zone fills on the
+        // foreground layer, tracks / vias / pads on the mask layer above it.
+        // Vertex alpha is not blended by the renderer; layer opacity is.
+        let bbox: BBox | null = null;
+        let zone_bbox: BBox | null = null;
+        const grow = (box: BBox) => {
+            bbox = bbox ? BBox.combine([bbox, box]) : box;
+        };
         {
-            this.#net_bbox = null;
             const layer = this.layers.selection_fg;
+            layer.opacity = ZONE_EMPHASIS_OPACITY;
             this.gfx.start_layer(layer.name);
-
-            for (const item of board.items()) {
-                switch (item.typeId) {
-                    case "LineSegment":
-                        if ((item as board_items.LineSegment).net === net) {
-                            const painter = this.painter_for(item);
-                            const line = item as board_items.LineSegment;
-
-                            if (!this.#net_bbox) this.#net_bbox = line.bbox;
-                            else
-                                this.#net_bbox = BBox.combine([
-                                    line.bbox,
-                                    this.#net_bbox,
-                                ]);
-
-                            if (!painter) continue;
-                            this.paint_item(layer, item);
-                        }
-                        break;
-                    case "Zone":
-                        {
-                            const painter = this.painter_for(item);
-
-                            if (!painter) continue;
-
-                            this.paint_item(layer, item);
-                        }
-                        break;
-
-                    default:
-                        break;
-                }
+            for (const zone of board.zones) {
+                if (!nets.has(zone.net) || !zone.filled_polygons) continue;
+                const zone_layers = zone.layers ?? [zone.layer];
+                if (!zone_layers.some((name) => layer_visible(name))) continue;
+                this.paint_item(layer, zone);
+                const box = zone.bbox;
+                if (box?.valid)
+                    zone_bbox = zone_bbox
+                        ? BBox.combine([zone_bbox, box])
+                        : box;
             }
-
             layer.graphics = this.gfx.end_layer();
             layer.graphics.composite_operation = "source-over";
         }
+        {
+            const layer = this.layers.selection_mask;
+            layer.opacity = 1;
+            this.gfx.start_layer(layer.name);
+            for (const track of board.segments) {
+                if (!nets.has(track.net) || !layer_visible(track.layer))
+                    continue;
+                this.paint_item(layer, track);
+                grow(track.bbox.grow(track.width / 2));
+            }
+            for (const via of board.vias) {
+                if (!nets.has(via.net)) continue;
+                if (!any_copper_visible(via.layers)) continue;
+                this.paint_item(layer, via);
+                grow(via.bbox);
+            }
+            for (const fp of board.footprints) {
+                for (const pad of fp.pads) {
+                    if (!pad.net || !nets.has(pad.net.number)) continue;
+                    if (!any_copper_visible(pad.layers)) continue;
+                    this.#paint_pad_in_place(layer, fp, pad);
+                    const box = pad.bbox;
+                    if (box?.valid) grow(box);
+                }
+            }
+            layer.graphics = this.gfx.end_layer();
+            layer.graphics.composite_operation = "source-over";
+        }
+        this.#highlight_bbox = bbox ?? zone_bbox;
 
         return true;
+    }
+
+    /** Pads are painted in footprint space; apply the footprint transform. */
+    #paint_pad_in_place(
+        layer: ViewLayer,
+        fp: board_items.Footprint,
+        pad: board_items.Pad,
+    ) {
+        const matrix = Matrix3.translation(
+            fp.at.position.x,
+            fp.at.position.y,
+        ).rotate_self(Angle.deg_to_rad(fp.at.rotation));
+        this.gfx.state.push();
+        this.gfx.state.multiply(matrix);
+        try {
+            this.paint_item(layer, pad);
+        } finally {
+            this.gfx.state.pop();
+        }
+    }
+
+    /** Board outline bounds, or the union of everything when there is none. */
+    #board_extent(board: board_items.KicadPCB): BBox {
+        const edge = this.layers.by_name(LayerNames.edge_cuts)?.bbox;
+        let extent = edge?.valid ? edge : null;
+        if (!extent) {
+            for (const layer of this.layers.in_order()) {
+                const box = layer.bbox;
+                if (!box?.valid) continue;
+                extent = extent ? BBox.combine([extent, box]) : box;
+            }
+        }
+        if (!extent) extent = new BBox(0, 0, 1, 1);
+        // Grow past the outline so the dim reaches drawings around the board.
+        return extent.grow(Math.max(extent.w, extent.h) * 0.25 + 5);
     }
 
     highlight(item: BoardInteractiveItem | null) {

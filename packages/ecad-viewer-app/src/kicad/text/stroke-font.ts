@@ -35,6 +35,19 @@ export class StrokeFont extends Font {
     _glyphs: Map<number, StrokeGlyph> = new Map();
     _shared_glyphs: StrokeGlyph[] = [];
 
+    /**
+     * Shaped-text cache. Entries hold the shaped glyphs, bbox, and cursor for a
+     * text drawn at the origin; get_text_as_glyphs translates them to the
+     * requested position on hit. Keyed on everything that affects shaping
+     * except position, so repeated texts across items and repaints of the same
+     * document reuse the same shaping work.
+     */
+    private _shape_cache: Map<
+        string,
+        { bbox: BBox; glyphs: Glyph[]; cursor: Vec2 }
+    > = new Map();
+    private static readonly _shape_cache_max = 4096;
+
     constructor() {
         super("stroke");
         this._load();
@@ -124,6 +137,168 @@ export class StrokeFont extends Font {
     }
 
     override get_text_as_glyphs(
+        text: string,
+        size: Vec2,
+        position: Vec2,
+        angle: Angle,
+        mirror: boolean,
+        origin: Vec2,
+        style: TextStyle,
+    ): { bbox: BBox; glyphs: Glyph[]; cursor: Vec2 } {
+        // A tab advances to the next stop measured from `origin` along the
+        // absolute cursor, so where the text starts decides where its tabs
+        // land. Shaping at the origin and translating would move the stops.
+        // Tabbed text is rare enough that shaping it directly costs nothing.
+        if (text.includes("\t")) {
+            return this._shape_text(
+                text,
+                size,
+                position,
+                angle,
+                mirror,
+                origin,
+                style,
+            );
+        }
+
+        const key = this._shape_cache_key(
+            text,
+            size,
+            style,
+            angle,
+            mirror,
+            origin,
+        );
+        let entry = this._shape_cache.get(key);
+
+        if (!entry) {
+            entry = this._shape_text(
+                text,
+                size,
+                new Vec2(0, 0),
+                angle,
+                mirror,
+                origin,
+                style,
+            );
+            if (this._shape_cache.size >= StrokeFont._shape_cache_max) {
+                const oldest = this._shape_cache.keys().next().value;
+                if (oldest !== undefined) {
+                    this._shape_cache.delete(oldest);
+                }
+            }
+            this._shape_cache.set(key, entry);
+        } else {
+            // Refresh recency so the map works as a bounded LRU.
+            this._shape_cache.delete(key);
+            this._shape_cache.set(key, entry);
+        }
+
+        // Strokes have already been mirrored and rotated about `origin`, so
+        // they move by the mirror/rotation of the position offset. The bbox
+        // and the cursor advance are kept in unrotated space, so they move by
+        // the plain position.
+        const offset = this._shape_position_offset(
+            angle,
+            mirror,
+            origin,
+            position,
+        );
+
+        // Everything below is freshly built. The cache entry is shared by
+        // every caller that shapes this text, and the font itself is a
+        // process-wide singleton, so handing out its glyphs, bbox or cursor
+        // would let one caller's edit corrupt every later paint.
+        return {
+            bbox: new BBox(
+                entry.bbox.x + position.x,
+                entry.bbox.y + position.y,
+                entry.bbox.w,
+                entry.bbox.h,
+            ),
+            glyphs: (entry.glyphs as StrokeGlyph[]).map((glyph) =>
+                this._translate_glyph(glyph, offset, position),
+            ),
+            cursor: new Vec2(
+                entry.cursor.x + position.x,
+                entry.cursor.y + position.y,
+            ),
+        };
+    }
+
+    /**
+     * Copies an origin-shaped glyph into place.
+     *
+     * `stroke_offset` moves the painted geometry; `bbox_offset` moves the
+     * glyph's bounding box, which StrokeGlyph.transform leaves in unrotated,
+     * unmirrored space and so tracks the plain position instead.
+     */
+    private _translate_glyph(
+        glyph: StrokeGlyph,
+        stroke_offset: Vec2,
+        bbox_offset: Vec2,
+    ): StrokeGlyph {
+        const bbox = glyph.bbox.copy();
+        bbox.x += bbox_offset.x;
+        bbox.y += bbox_offset.y;
+
+        return new StrokeGlyph(
+            glyph.strokes.map((stroke) =>
+                stroke.map((point) => point.add(stroke_offset)),
+            ),
+            bbox,
+        );
+    }
+
+    /**
+     * Computes the translation to apply to origin-shaped glyphs so that they
+     * land where they would have been if shaped directly at `position`.
+     */
+    private _shape_position_offset(
+        angle: Angle,
+        mirror: boolean,
+        origin: Vec2,
+        position: Vec2,
+    ): Vec2 {
+        const transform_point = (p: Vec2): Vec2 => {
+            let q = p.copy();
+            if (mirror) {
+                q.x = origin.x - (q.x - origin.x);
+            }
+            if (angle.degrees != 0) {
+                q = angle.rotate_point(q, origin);
+            }
+            return q;
+        };
+
+        return transform_point(position).sub(transform_point(new Vec2(0, 0)));
+    }
+
+    private _shape_cache_key(
+        text: string,
+        size: Vec2,
+        style: TextStyle,
+        angle: Angle,
+        mirror: boolean,
+        origin: Vec2,
+    ): string {
+        return [
+            text,
+            size.x,
+            size.y,
+            style.italic ? 1 : 0,
+            style.subscript ? 1 : 0,
+            style.superscript ? 1 : 0,
+            style.overbar ? 1 : 0,
+            style.underline ? 1 : 0,
+            angle.degrees,
+            mirror ? 1 : 0,
+            origin.x,
+            origin.y,
+        ].join("\u0000");
+    }
+
+    private _shape_text(
         text: string,
         size: Vec2,
         position: Vec2,

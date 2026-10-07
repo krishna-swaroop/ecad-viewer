@@ -1,4 +1,4 @@
-import { Color, Polygon } from "../../graphics";
+import { Polygon } from "../../graphics";
 import * as board_items from "../../kicad/board";
 import {
     CopperVirtualLayerNames,
@@ -11,7 +11,6 @@ import { BoardItemPainter } from "./painter-base";
 
 export class ZonePainter extends BoardItemPainter {
     classes = [board_items.Zone];
-    color_cache: Color | null = null;
 
     layers_for(z: board_items.Zone): string[] {
         const layers = z.layers ?? [z.layer];
@@ -35,22 +34,16 @@ export class ZonePainter extends BoardItemPainter {
             return;
         }
 
-        let color = layer.color;
-
-        if (!this.color_cache) this.color_cache = color;
-
-        if (this.filter_net) {
-            if (z.net != this.filter_net) return;
-            else color = this.color_cache;
-        }
+        const emphasised = BoardItemPainter.is_interactive_layer(layer.name);
 
         for (const p of z.filled_polygons) {
-            if (
-                !layer.name.includes(p.layer) &&
-                !BoardItemPainter.is_interactive_layer(layer.name)
-            ) {
+            if (!layer.name.includes(p.layer) && !emphasised) {
                 continue;
             }
+
+            // Repainted above the dim pass, a fill keeps its copper colour;
+            // the emphasis layer's own opacity keeps it translucent.
+            const color = emphasised ? this.color_for(p.layer) : layer.color;
 
             // FIXME paint the arc in the polygon
             this.gfx.polygon(new Polygon(p.points, color));

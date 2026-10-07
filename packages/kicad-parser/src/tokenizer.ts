@@ -202,7 +202,7 @@ export function* tokenize(input: string) {
                         .substring((start_idx ?? 0) + 1, i)
                         .replaceAll("\\n", "\n")
                         .replaceAll("\\\\", "\\")
-                        .replaceAll("\\\"", "\""),
+                        .replaceAll('\\"', '"'),
                 );
                 state = State.none;
                 escaping = false;
@@ -349,7 +349,8 @@ function decode_string(
         const c = input.charCodeAt(i);
         if (c === CC_BACKSLASH && i + 1 < end) {
             const nc = input.charCodeAt(i + 1);
-            if (nc === 110) out += "\n"; // \n
+            if (nc === 110)
+                out += "\n"; // \n
             else if (nc === CC_BACKSLASH) out += "\\";
             else if (nc === CC_QUOTE) out += '"';
             else out += input[i + 1]!; // reference keeps the char verbatim

@@ -3,7 +3,9 @@ import {
     COMMENT_OVERLAY_CHANNELS,
     comment_id_from_primitive,
     comment_overlay_scene,
+    resolve_comment_overlays,
 } from "../src/ecad-viewer/comment-overlay";
+import { BBox, Vec2 } from "../src/base/math";
 
 suite("comment-only overlay API", () => {
     test("owns marker styling and emits only comment primitives", () => {
@@ -35,5 +37,39 @@ suite("comment-only overlay API", () => {
         expect(comment_id_from_primitive("comment-1:area")).to.equal(
             "comment-1",
         );
+    });
+
+    test("reports a missing source UUID without removing its thread", () => {
+        const statuses = resolve_comment_overlays(
+            {
+                context: "PCB",
+                comments: [
+                    {
+                        id: "moved",
+                        anchor: {
+                            kind: "source-item",
+                            uuid: "pad",
+                            relativePoint: [0.25, 0.75],
+                        },
+                    },
+                    {
+                        id: "deleted",
+                        anchor: { kind: "source-item", uuid: "gone" },
+                    },
+                ],
+            },
+            (anchor) =>
+                anchor.kind === "source-item" && anchor.uuid === "pad"
+                    ? {
+                          point: new Vec2(12.5, 27.5),
+                          bounds: new BBox(10, 20, 10, 10),
+                      }
+                    : null,
+        );
+        expect(statuses.map((status) => status.state)).to.deep.equal([
+            "resolved",
+            "missing",
+        ]);
+        expect(statuses[0]?.location?.x).to.equal(12.5);
     });
 });

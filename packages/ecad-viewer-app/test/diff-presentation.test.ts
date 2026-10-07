@@ -196,9 +196,9 @@ suite("native diff presentation", () => {
         // Modified resolves on both panes, against each pane's own object.
         expect(base.statusByItem.get(baseTrack)).to.equal("modified");
         expect(head.statusByItem.get(headTrack)).to.equal("modified");
-        expect(base.itemsBySideAndSourceId.get("reference:track-1")).to.deep.equal(
-            [baseTrack],
-        );
+        expect(
+            base.itemsBySideAndSourceId.get("reference:track-1"),
+        ).to.deep.equal([baseTrack]);
         expect(
             head.itemsBySideAndSourceId.get("comparison:track-1"),
         ).to.deep.equal([headTrack]);
@@ -680,12 +680,15 @@ suite("native diff presentation", () => {
         expect(leaders).to.have.length(2);
         for (const leader of leaders) {
             expect(leader.kind).to.equal("polyline");
-            expect(leader.stroke).to.equal(diff_status_color("removed").to_css());
+            expect(leader.stroke).to.equal(
+                diff_status_color("removed").to_css(),
+            );
             expect(leader.dash).to.deep.equal([5, 4]);
             // Every leader starts at the largest piece, the one the reviewer
             // recognises as the object rather than one of its pads.
-            expect((leader as { points: Array<[number, number]> }).points[0])
-                .to.deep.equal([5, 5]);
+            expect(
+                (leader as { points: Array<[number, number]> }).points[0],
+            ).to.deep.equal([5, 5]);
         }
     });
 

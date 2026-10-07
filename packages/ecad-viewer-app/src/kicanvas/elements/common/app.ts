@@ -272,9 +272,9 @@ export abstract class KCViewerAppElement<
                 return settled.viewport?.sync_from_canvas?.() ?? false;
             };
             if (
-                "document" in documentViewer
-                && (documentViewer as Viewer & { document?: unknown }).document
-                    === src
+                "document" in documentViewer &&
+                (documentViewer as Viewer & { document?: unknown }).document ===
+                    src
             ) {
                 this.revealLoadedContent();
                 sync_viewport();

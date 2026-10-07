@@ -12,7 +12,7 @@
 
 import { Color } from "../../graphics";
 import { ItemPainter } from "../base/painter";
-import { ViewLayerNames } from "../base/view-layers";
+import { ViewLayerNames, type ViewLayer } from "../base/view-layers";
 import { LayerNames } from "./layers";
 import type { BoardTheme } from "../../kicad";
 export abstract class BoardItemPainter extends ItemPainter {
@@ -20,9 +20,21 @@ export abstract class BoardItemPainter extends ItemPainter {
         return (this.view_painter as any).theme;
     }
 
-    /** Alias for BoardPainter.filter_net */
-    get filter_net(): number | null {
-        return (this.view_painter as any).filter_net;
+    /**
+     * Emphasis colour for a board item painted into a selection layer: the
+     * item's own copper (or hole) colour rather than the selection layer's.
+     * Highlighted nets are repainted above the dimmed board in their native
+     * colours, so a track on B.Cu still reads as B.Cu.
+     */
+    emphasis_color(layer: ViewLayer, own_layer_name: string): Color {
+        return BoardItemPainter.is_interactive_layer(layer.name)
+            ? this.color_for(own_layer_name)
+            : layer.color;
+    }
+
+    /** Alias for BoardPainter.active_variant (null = default design). */
+    get active_variant(): string | null {
+        return (this.view_painter as any).active_variant ?? null;
     }
 
     static is_interactive_layer(layer_name: string): boolean {
@@ -33,6 +45,7 @@ export abstract class BoardItemPainter extends ItemPainter {
         ViewLayerNames.overlay,
         ViewLayerNames.selection_bg,
         ViewLayerNames.selection_fg,
+        ViewLayerNames.selection_mask,
     ]);
 
     color_for(layer_name: string): Color {

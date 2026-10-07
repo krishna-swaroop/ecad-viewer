@@ -15,8 +15,21 @@ import {
     Project,
     type ProjectPage,
     getParserPerfSnapshot,
+    normalize_variant_name,
+    resolve_variant_request,
 } from "../kicanvas/project";
 import type { NetRef } from "../kicad/net_ref";
+import {
+    EcadHighlightChangeEvent,
+    resolve_board_net,
+    type EcadHighlightChangeDetail,
+    type EcadNetRef,
+} from "./highlight";
+import {
+    net_statistics,
+    type NetStatistics,
+    type NetStatisticsRef,
+} from "../kicad/net_statistics";
 import { type EcadBlob, type EcadSources } from "../kicanvas/services/vfs";
 import { KCBoardAppElement } from "../kicanvas/elements/kc-board/app";
 import { KCSchematicAppElement } from "../kicanvas/elements/kc-schematic/app";
@@ -53,9 +66,11 @@ import {
     EcadCommentOverlayClickEvent,
     comment_id_from_primitive,
     comment_overlay_scene,
+    resolve_comment_overlays,
     type EcadCommentContext,
     type EcadCommentOverlayHitDetail,
     type EcadCommentOverlaySet,
+    type EcadCommentAnchorResolution,
 } from "./comment-overlay";
 import {
     EcadCrossProbeEvent,
@@ -99,9 +114,14 @@ import { ecadPerfLog } from "../kicanvas/perf_log";
 export type {
     EcadCrossProbeRequest,
     EcadHostContext,
+    EcadSelectionModifiers,
+    EcadSelectionOperation,
     EcadSemanticSelectionDetail,
     EcadSourceUpdate,
 } from "./host-adapter";
+export type { EcadNetRef, EcadHighlightChangeDetail } from "./highlight";
+export { EcadHighlightChangeEvent } from "./highlight";
+export type { NetStatistics, NetStatisticsRef } from "../kicad/net_statistics";
 export {
     EcadCrossProbeEvent,
     EcadSemanticSelectionEvent,
@@ -112,6 +132,7 @@ export type {
     EcadCommentOverlay,
     EcadCommentOverlayHitDetail,
     EcadCommentOverlaySet,
+    EcadCommentAnchorResolution,
 } from "./comment-overlay";
 export { EcadCommentOverlayClickEvent } from "./comment-overlay";
 export type {
@@ -194,13 +215,24 @@ const DIFF_STATUS_COLORS = {
     conflict: "#D76BFF",
 } as const;
 
+/**
+ * Object kinds a host can show or hide on the board. The first four are
+ * footprint text layers; the label kinds drive the zoom-gated pad-number and
+ * net-name overlays (KiCad's "Show pad numbers" / "Show net names").
+ */
+export type EcadPcbObjectVisibilityKind =
+    | "references"
+    | "values"
+    | "footprintText"
+    | "hiddenText"
+    | "padNumbers"
+    | "padNetNames"
+    | "trackNetNames";
+
 export interface EcadPcbViewState {
     layers: EcadPcbLayerState[];
     objectOpacity: Record<"tracks" | "vias" | "pads" | "zones", number>;
-    objectVisibility: Record<
-        "references" | "values" | "footprintText" | "hiddenText",
-        boolean
-    >;
+    objectVisibility: Record<EcadPcbObjectVisibilityKind, boolean>;
     highlightTracks: boolean;
 }
 
@@ -605,6 +637,92 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         top: 0,
         bottom: 0,
     };
+
+    /**
+     * The requested design variant; `null` is the default design. The
+     * attribute is the durable copy, so a reconnect or source replacement
+     * replays it.
+     */
+    #requested_variant: string | null = null;
+    /** Guards `setAttribute` from re-entering the attribute callback. */
+    #reflecting_variant = false;
+
+    static get observedAttributes(): string[] {
+        return ["variant"];
+    }
+
+    attributeChangedCallback(
+        name: string,
+        _old: string | null,
+        value: string | null,
+    ): void {
+        if (name !== "variant" || this.#reflecting_variant) return;
+        this.#requested_variant = normalize_variant_name(value);
+        this.#apply_variant_request();
+    }
+
+    /**
+     * Select the design variant rendered by the schematic and board viewers.
+     * `null`/the empty string selects the default design. Returns `false` and
+     * selects the default when `name` is not in `getVariants()`; a selection
+     * made before the catalog is loaded is applied when the sources settle.
+     */
+    public setVariant(name: string | null): boolean {
+        const resolution = resolve_variant_request(
+            this.#project,
+            name,
+            this.loaded,
+        );
+        this.#requested_variant = resolution.requested;
+        this.#reflect_variant(resolution.requested);
+        this.#apply_variant_request();
+        return resolution.known;
+    }
+
+    /** The variant currently applied to the loaded revision. */
+    public getVariant(): string | null {
+        return this.#project.active_variant;
+    }
+
+    /**
+     * The catalog of the loaded revision, in discovery order (packet 2.1).
+     * Empty until sources are loaded.
+     */
+    public getVariants(): Array<{ name: string; description: string | null }> {
+        return this.#project.variant_catalog();
+    }
+
+    #reflect_variant(name: string | null): void {
+        this.#reflecting_variant = true;
+        try {
+            if (name === null) this.removeAttribute("variant");
+            else this.setAttribute("variant", name);
+        } finally {
+            this.#reflecting_variant = false;
+        }
+    }
+
+    /**
+     * Re-validate the requested variant against the loaded catalog and apply
+     * it to the project and both viewers. Called after sources settle, page
+     * switches and appends so the selection survives all of them; a name the
+     * revision no longer has falls back to the default design.
+     */
+    #apply_variant_request(): void {
+        const resolution = resolve_variant_request(
+            this.#project,
+            this.#requested_variant,
+            this.loaded,
+        );
+        if (resolution.requested !== this.#requested_variant) {
+            this.#requested_variant = resolution.requested;
+            this.#reflect_variant(resolution.requested);
+        }
+        if (!this.loaded) return;
+        this.#project.set_active_variant(resolution.effective);
+        this.#safe_schematic_viewer()?.set_variant(resolution.effective);
+        this.#safe_board_viewer()?.set_variant(resolution.effective);
+    }
 
     #apply_viewport_insets(): void {
         this.#safe_board_viewer()?.set_viewport_insets(this.#viewport_insets);
@@ -2384,20 +2502,99 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.#safe_schematic_viewer()?.set_comment_mode(enabled);
     }
 
-    public clearSelection(): void {
+    /**
+     * Drop the inspected object in both viewers. The highlighted nets are
+     * dropped too unless `keepHighlights` is set: a host that owns the set
+     * passes it when only its inspected selection changed.
+     */
+    public clearSelection(options: { keepHighlights?: boolean } = {}): void {
         this.#probe_generation += 1;
-        this.#safe_board_viewer()?.clear_selection();
+        const board_viewer = this.#safe_board_viewer();
+        const had_nets = (board_viewer?.highlighted_nets.size ?? 0) > 0;
+        board_viewer?.clear_selection(options.keepHighlights === true);
         this.#safe_schematic_viewer()?.clear_selection();
+        if (had_nets && !options.keepHighlights)
+            this.#emit_highlight_change("clear");
+    }
+
+    /**
+     * Replace the highlighted nets on the board. Nets resolve by name first
+     * (stable across saves), then by code; unresolved refs are reported, not
+     * guessed. Never moves the camera unless `focus` is set. The host owns
+     * this set, so no `ecad-viewer:highlight-change` is emitted for it.
+     */
+    public setHighlightedNets(
+        nets: readonly EcadNetRef[],
+        options: { focus?: boolean } = {},
+    ): { applied: EcadNetRef[]; unresolved: EcadNetRef[] } {
+        const board_viewer = this.#safe_board_viewer();
+        const board = board_viewer?.board;
+        if (!board_viewer || !board)
+            return { applied: [], unresolved: [...nets] };
+        const applied: EcadNetRef[] = [];
+        const unresolved: EcadNetRef[] = [];
+        const codes: number[] = [];
+        for (const ref of nets) {
+            const code = resolve_board_net(board, ref);
+            if (code === undefined) {
+                unresolved.push(ref);
+                continue;
+            }
+            codes.push(code);
+            applied.push({
+                name: board.getNetName(code) ?? ref.name,
+                netCode: code,
+            });
+        }
+        board_viewer.set_highlighted_nets(codes);
+        if (options.focus) board_viewer.focus_highlighted_nets();
+        return { applied, unresolved };
+    }
+
+    /** The board's highlighted nets, in the order they were added. */
+    public getHighlightedNets(): EcadNetRef[] {
+        const board_viewer = this.#safe_board_viewer();
+        const board = board_viewer?.board;
+        if (!board_viewer || !board) return [];
+        return Array.from(board_viewer.highlighted_nets, (code) => ({
+            name: board.getNetName(code) ?? "",
+            netCode: code,
+        }));
+    }
+
+    /** Fit the board camera to the highlighted copper. False when empty. */
+    public focusHighlightedNets(): boolean {
+        return this.#safe_board_viewer()?.focus_highlighted_nets() ?? false;
+    }
+
+    #emit_highlight_change(source: EcadHighlightChangeDetail["source"]) {
+        this.dispatchEvent(
+            new EcadHighlightChangeEvent({
+                nets: this.getHighlightedNets(),
+                source,
+            }),
+        );
     }
 
     /**
      * Publish comment markers and optional comment areas. Arbitrary graphics
      * are intentionally not exposed at the host boundary.
      */
-    public setCommentOverlays(request: EcadCommentOverlaySet): void {
+    public setCommentOverlays(
+        request: EcadCommentOverlaySet,
+    ): EcadCommentAnchorResolution[] {
         const scene = comment_overlay_scene(request);
         this.#comment_overlay_scenes.set(request.context, scene);
-        this.#viewer_for_context(request.context)?.set_overlay_scene(scene);
+        const viewer = this.#viewer_for_context(request.context);
+        viewer?.set_overlay_scene(scene);
+        if (!viewer)
+            return request.comments.map(({ id }) => ({
+                id,
+                state: "not-loaded",
+            }));
+        return resolve_comment_overlays(request, (anchor) =>
+            viewer.resolve_overlay_anchor_for_host(anchor),
+        );
     }
 
     public clearCommentOverlays(context?: EcadCommentContext): void {
@@ -2420,55 +2617,16 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             const board_viewer = this.#safe_board_viewer();
             if (board_viewer) {
                 if (request.kind === "net") {
-                    const requested_name = request.net ?? value;
-                    // Prefer stable net *name*. Host/3D netCode is only used when
-                    // it matches an entry in the board nets table (KiCad 10 boards
-                    // synthesize codes from names; 3D ids are not interchangeable).
-                    const by_name = requested_name
-                        ? board_viewer.board.nets.find(
-                              (net) => net.name === requested_name,
-                          )
-                        : undefined;
-                    const by_code =
-                        request.netCode != null
-                            ? board_viewer.board.nets.find(
-                                  (net) => net.number === request.netCode,
-                              )
-                            : undefined;
-                    let net_code = by_name?.number ?? by_code?.number;
-                    if (net_code === undefined && requested_name) {
-                        for (const fp of board_viewer.board.footprints) {
-                            for (const pad of fp.pads ?? []) {
-                                if (pad.net?.name === requested_name) {
-                                    net_code = pad.net.number;
-                                    break;
-                                }
-                            }
-                            if (net_code !== undefined) break;
-                        }
-                    }
-                    // Resolve via copper uuid from the semantic index when present.
-                    if (net_code === undefined && request.uuids?.length) {
-                        const ids = new Set(request.uuids);
-                        for (const segment of board_viewer.board.segments) {
-                            const id = segment.uuid || segment.tstamp;
-                            if (id && ids.has(id) && segment.net) {
-                                net_code = segment.net;
-                                break;
-                            }
-                        }
-                        if (net_code === undefined) {
-                            for (const via of board_viewer.board.vias) {
-                                const id = via.uuid || via.tstamp;
-                                if (id && ids.has(id) && via.net) {
-                                    net_code = via.net;
-                                    break;
-                                }
-                            }
-                        }
-                    }
+                    const net_code = resolve_board_net(board_viewer.board, {
+                        name: request.net ?? value,
+                        netCode: request.netCode,
+                        uuids: request.uuids,
+                    });
                     if (net_code !== undefined) {
+                        // A cross-probe is a replace-of-one; tell the host so
+                        // a multi-net collection can follow.
                         board_viewer.focus_net(net_code, false);
+                        this.#emit_highlight_change("crossprobe");
                         return true;
                     }
                 } else {
@@ -3114,6 +3272,17 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         }
     }
 
+    /**
+     * Routing summary for a board net (length, layers, track and via counts).
+     * Resolves by net name first, then net code. `null` until the board has
+     * loaded or when the net is not on it.
+     */
+    public getNetStatistics(ref: NetStatisticsRef): NetStatistics | null {
+        const board = this.#safe_board_viewer()?.board;
+        if (!board) return null;
+        return net_statistics(board, ref);
+    }
+
     public setPcbLayerVisibility(name: string, visible: boolean): boolean {
         const changed =
             this.#safe_board_viewer()?.set_host_layer_visibility(
@@ -3155,7 +3324,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     public setPcbObjectVisibility(
-        kind: "references" | "values" | "footprintText" | "hiddenText",
+        kind: EcadPcbObjectVisibilityKind,
         visible: boolean,
     ): void {
         this.#safe_board_viewer()?.set_host_object_visibility(kind, visible);
@@ -3862,6 +4031,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             }
         }
         await Promise.all(loads);
+        // Apply the requested variant before the ready notification so the
+        // first visible scene of a new revision is already the right one.
+        this.#apply_variant_request();
         // Notify panels and any secondary consumers after the authoritative
         // awaited loads. Same-document app loads are a fast reveal-only path.
         this.#project.on_loaded();
@@ -3925,6 +4097,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             "files",
         );
         this.loading = true;
+        // Snapshot before the load: `Project.load` replaces `settings`
+        // wholesale, so afterwards there is nothing left to compare against.
+        const text_vars_before = this.#text_vars_snapshot();
         try {
             await this.#project.load({ urls: [], blobs });
             console.log(
@@ -3935,6 +4110,15 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             );
             // Notify existing viewers of the updated project without re-rendering
             this.#project.on_loaded();
+            if (
+                blobs.some((blob) => blob.filename.endsWith(".kicad_pro")) &&
+                this.#text_vars_changed(text_vars_before)
+            ) {
+                this.#repaint_for_new_project_settings();
+            }
+            // A late board or schematic can change the catalog; replay the
+            // selection so a requested name is validated against it.
+            this.#apply_variant_request();
         } catch (error) {
             console.error(
                 "[ECadViewer] Error while adding files to project:",
@@ -3942,6 +4126,72 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             );
         } finally {
             this.loading = false;
+        }
+    }
+
+    /**
+     * Repaint the mounted documents after project settings arrive late.
+     *
+     * A host need not have every file at once: Prism paints the root sheet
+     * first and appends the `.kicad_pro` when it arrives. Text variables are
+     * resolved during painting, so a document painted before its project had
+     * settings drew `${VAR}` verbatim -- and kept drawing it, because adding
+     * files deliberately does not re-render and re-issuing the same document
+     * to a DocumentViewer returns early. Only navigating away and back forced
+     * the repaint that made the values appear.
+     *
+     * Documents hold a reference to the project rather than a copy of its
+     * variables, so repainting is all that is needed. Both viewers are
+     * repainted: a board consults the project before falling back to the
+     * `(property ...)` copy KiCad writes into it, so it is stale in the same
+     * way whenever the two disagree, or shows nothing at all when the board
+     * carries no copy.
+     *
+     * Only a `.kicad_pro` triggers this, and only when it actually changed the
+     * project's text variables. Subsheets arrive on the same path and are far
+     * more numerous; repainting for each would rebuild the scene once per
+     * sheet on every load. The variables check matters just as much: most
+     * designs define none, and repainting for a project file that could not
+     * have changed anything cost about two seconds on a large board.
+     */
+    /**
+     * The project's text variables, flattened to a comparable string.
+     *
+     * Sorted so key order cannot make an unchanged map look changed --
+     * `ProjectSettings.load` rebuilds the object from JSON on every append, so
+     * the map is a different object each time even when its contents are
+     * identical.
+     */
+    #text_vars_snapshot(): string {
+        const vars = this.#project.settings.text_variables ?? {};
+        return JSON.stringify(
+            Object.keys(vars)
+                .sort()
+                .map((k) => [k, vars[k]]),
+        );
+    }
+
+    #text_vars_changed(before: string): boolean {
+        return this.#text_vars_snapshot() !== before;
+    }
+
+    #repaint_for_new_project_settings() {
+        for (const viewer of [
+            this.#safe_schematic_viewer(),
+            this.#safe_board_viewer(),
+        ]) {
+            if (!viewer?.document) continue;
+            try {
+                viewer.paint();
+                viewer.draw();
+            } catch (error) {
+                // A repaint is a correction, not the operation the caller
+                // asked for; failing it must not fail the append.
+                console.error(
+                    "[ECadViewer] Could not repaint for settings",
+                    error,
+                );
+            }
         }
     }
 
@@ -4008,13 +4258,32 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         let detail = normalize_board_selection(item, board);
         if (!detail) return;
         this.#attach_item_bounds_pcb(detail, item, viewer!);
+        detail.operation = select.detail.operation ?? "replace";
+        if (select.detail.modifiers) detail.modifiers = select.detail.modifiers;
         const intent = select.detail.intent ?? "select";
         if (intent === "crossprobe") {
             detail = promote_pad_to_net_detail(detail);
             this.dispatchEvent(new EcadCrossProbeEvent(detail));
+            // The viewer already replaced its set with this net.
+            this.#emit_highlight_change("crossprobe");
             return;
         }
+        // Without a host the element is the only owner of the set, so a
+        // shift-click toggles here. A host (source-mode="host") owns it and
+        // answers the relayed gesture with setHighlightedNets().
+        if (
+            detail.operation === "toggle" &&
+            detail.netCode &&
+            !this.#host_owns_highlights()
+        ) {
+            viewer!.toggle_highlighted_net(detail.netCode);
+            this.#emit_highlight_change("gesture");
+        }
         this.dispatchEvent(new EcadSemanticSelectionEvent(detail));
+    }
+
+    #host_owns_highlights(): boolean {
+        return this.getAttribute("source-mode") === "host";
     }
 
     #relay_schematic_selection(event: Event) {
@@ -4042,6 +4311,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         );
         if (!detail) return;
         this.#attach_item_bounds_sch(detail, item, viewer!);
+        detail.operation = select.detail.operation ?? "replace";
+        if (select.detail.modifiers) detail.modifiers = select.detail.modifiers;
         const intent = select.detail.intent ?? "select";
         if (intent === "crossprobe") {
             this.dispatchEvent(new EcadCrossProbeEvent(detail));

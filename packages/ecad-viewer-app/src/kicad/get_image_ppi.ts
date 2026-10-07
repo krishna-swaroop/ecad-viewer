@@ -30,8 +30,6 @@ export function get_image_ppi(data: string): number | null {
     return null;
 }
 
-
-
 function get_png_ppi(bytes: Uint8Array): number | null {
     let offset = 8; // Skip signature
     const view = new DataView(bytes.buffer);
@@ -90,6 +88,3 @@ function get_jpeg_ppi(bytes: Uint8Array): number | null {
 
     return null;
 }
-
-
-

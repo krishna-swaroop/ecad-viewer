@@ -2,6 +2,7 @@ import type {
     EcadOverlayAnchor,
     EcadOverlayPrimitive,
     EcadOverlayScene,
+    ResolvedOverlayAnchor,
 } from "../viewers/base/overlay-scene";
 
 export type EcadCommentContext = "SCH" | "PCB";
@@ -13,7 +14,23 @@ export type EcadCommentContext = "SCH" | "PCB";
  */
 export type EcadCommentAnchor =
     | { kind: "world"; x: number; y: number; page?: string }
-    | { kind: "source-item"; uuid: string; page?: string };
+    | {
+          kind: "source-item";
+          uuid: string;
+          page?: string;
+          relativePoint?: [number, number];
+      };
+
+export type EcadCommentAnchorResolution = {
+    id: string;
+    state: "resolved" | "missing" | "not-loaded";
+    location?: {
+        x: number;
+        y: number;
+        page?: string;
+        bounds?: [number, number, number, number];
+    };
+};
 
 export type EcadCommentOverlay = {
     id: string;
@@ -54,6 +71,41 @@ export const COMMENT_OVERLAY_CHANNELS: Record<EcadCommentContext, string> = {
     SCH: ":comments:SCH",
     PCB: ":comments:PCB",
 };
+
+/** Report every marker, including a UUID the loaded document cannot find. */
+export function resolve_comment_overlays(
+    request: EcadCommentOverlaySet,
+    resolve: (anchor: EcadCommentAnchor) => ResolvedOverlayAnchor | null,
+): EcadCommentAnchorResolution[] {
+    return request.comments.map(({ id, anchor }) => {
+        if (anchor.kind === "world") {
+            return {
+                id,
+                state: "resolved",
+                location: { x: anchor.x, y: anchor.y, page: anchor.page },
+            };
+        }
+        const found = resolve(anchor);
+        if (!found) return { id, state: "missing" };
+        return {
+            id,
+            state: "resolved",
+            location: {
+                x: found.point.x,
+                y: found.point.y,
+                page: found.page,
+                bounds: found.bounds
+                    ? [
+                          found.bounds.x,
+                          found.bounds.y,
+                          found.bounds.w,
+                          found.bounds.h,
+                      ]
+                    : undefined,
+            },
+        };
+    });
+}
 
 const COMMENT_AREA_SUFFIX = ":area";
 

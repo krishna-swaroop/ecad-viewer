@@ -10,7 +10,7 @@ import * as schematic_items from "../../../kicad/schematic";
 import { DocumentPainter, ItemPainter } from "../../base/painter";
 import { LayerNames, type ViewLayer } from "../layers";
 import type { SchematicPainter } from "../painter";
-import type { SymbolTransform } from "./symbol";
+import type { SymbolTransform } from "../../../kicad/symbol-transform";
 
 export abstract class BaseSchematicPainter extends DocumentPainter {
     override theme: SchematicTheme;
@@ -40,12 +40,23 @@ export abstract class SchematicItemPainter extends ItemPainter {
     }
 
     protected get is_dimmed() {
-        // KiCad passes the owner's DNP state down into every child it draws —
-        // a symbol's fields and pins, a sheet's fields and sheet pins.
-        return (
-            (this.view_painter.current_symbol?.dnp ?? false) ||
-            (this.view_painter.current_sheet?.dnp ?? false)
-        );
+        // KiCad passes the owner's effective DNP state down into every child
+        // it draws — a symbol's fields and pins, a sheet's fields and sheet
+        // pins. The state is resolved per occurrence under the active variant
+        // (VAR-04/VAR-05); the base flag is only the fallback for a document
+        // without a project.
+        const painter = this.view_painter;
+        if (painter.current_symbol) {
+            const symbol = painter.current_symbol;
+            return painter.active_instance_context?.dnp(symbol) ?? symbol.dnp;
+        }
+        if (painter.current_sheet) {
+            const sheet = painter.current_sheet;
+            return (
+                painter.active_instance_context?.sheet_dnp(sheet) ?? sheet.dnp
+            );
+        }
+        return false;
     }
 
     protected dim_color(color: Color) {

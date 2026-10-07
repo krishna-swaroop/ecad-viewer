@@ -5,7 +5,11 @@
 */
 
 import { Barrier } from "../../base/async";
-import { MoveAndZoom } from "../../base/dom/move-and-zoom";
+import {
+    MoveAndZoom,
+    type DragFilter,
+    type MoveAndZoomOptions,
+} from "../../base/dom/move-and-zoom";
 import { SizeObserver } from "../../base/dom/size-observer";
 import { Angle, BBox, Camera2, Matrix3, Vec2 } from "../../base/math";
 import { Renderer } from "../../graphics";
@@ -16,7 +20,7 @@ import { Renderer } from "../../graphics";
  */
 export class Viewport {
     #observer: SizeObserver;
-    #pan_and_zoom: MoveAndZoom;
+    #pan_and_zoom?: MoveAndZoom;
 
     width: number;
     height: number;
@@ -47,6 +51,8 @@ export class Viewport {
     }
 
     dispose() {
+        this.#pan_and_zoom?.dispose();
+        this.#pan_and_zoom = undefined;
         this.#observer.dispose();
     }
 
@@ -86,7 +92,9 @@ export class Viewport {
         min_zoom?: number,
         max_zoom?: number,
         is_active: () => boolean = () => true,
+        options?: MoveAndZoomOptions,
     ) {
+        this.#pan_and_zoom?.dispose();
         this.#pan_and_zoom = new MoveAndZoom(
             this.renderer.canvas,
             this.camera,
@@ -97,6 +105,7 @@ export class Viewport {
             max_zoom,
             undefined,
             is_active,
+            options,
         );
     }
 
@@ -114,6 +123,16 @@ export class Viewport {
     set bounds(bb: BBox) {
         if (this.#pan_and_zoom) {
             this.#pan_and_zoom.bounds = bb;
+        }
+    }
+
+    /**
+     * Let the host veto a drag-pan gesture, so a mode that owns a mouse button
+     * can claim it without disabling panning with the others.
+     */
+    set drag_filter(filter: DragFilter) {
+        if (this.#pan_and_zoom) {
+            this.#pan_and_zoom.drag_filter = filter;
         }
     }
 }

@@ -28,13 +28,8 @@
         "noImplicitOverride": true,
         "noPropertyAccessFromIndexSignature": true,
         "allowUnusedLabels": false,
-        "allowUnreachableCode": false
+        "allowUnreachableCode": false,
     },
-    "include": [
-        "./src/**/*"
-    ],
-    "exclude": [
-        "./node_modules",
-        "./**/node_modules/*"
-    ]
+    "include": ["./src/**/*"],
+    "exclude": ["./node_modules", "./**/node_modules/*"],
 }

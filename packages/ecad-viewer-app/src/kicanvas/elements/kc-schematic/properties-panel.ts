@@ -140,6 +140,10 @@ export class KCSchematicPropertiesPanelElement extends KCUIElement {
             title.title = "Symbol";
             const lib = it.lib_symbol;
             const context = this.viewer.instance_context;
+            const flags = context?.effective_flags(it);
+            const in_bom = !(flags?.exclude_from_bom ?? !it.in_bom);
+            const on_board = !(flags?.exclude_from_board ?? !it.on_board);
+            const populate = !(flags?.dnp ?? it.dnp);
 
             const properties = Array.from(it.properties.values()).map((v) => {
                 return entry(
@@ -180,9 +184,9 @@ export class KCSchematicPropertiesPanelElement extends KCUIElement {
                           ),
                       )
                     : ""}
-                ${entry("In BOM", checkbox(it.in_bom))}
-                ${entry("On board", checkbox(it.in_bom))}
-                ${entry("Populate", checkbox(!it.dnp))} ${header("Fields")}
+                ${entry("In BOM", checkbox(in_bom))}
+                ${entry("On board", checkbox(on_board))}
+                ${entry("Populate", checkbox(populate))} ${header("Fields")}
                 ${properties} ${header("Symbol properties")}
                 ${entry("Name", lib.name)}
                 ${entry("Description", lib.description)}

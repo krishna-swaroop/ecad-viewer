@@ -25,11 +25,39 @@ export class KiCanvasLoadEvent extends KiCanvasEvent<null> {
 
 export type KiCanvasSelectIntent = "select" | "crossprobe";
 
+/** Modifier keys observed on the click that produced a selection. */
+export interface SelectModifiers {
+    shift: boolean;
+    ctrl: boolean;
+    meta: boolean;
+    alt: boolean;
+}
+
+/**
+ * What the gesture asks the highlight set to do. `toggle` is a shift-click on
+ * a net-bearing item; plain clicks and double-clicks are `replace`.
+ */
+export type KiCanvasSelectOperation = "replace" | "toggle";
+
 interface SelectDetails {
     item: unknown;
     previous: unknown;
     /** Host policy: panel-only select vs full cross-probe. Defaults to select. */
     intent?: KiCanvasSelectIntent;
+    operation?: KiCanvasSelectOperation;
+    modifiers?: SelectModifiers;
+}
+
+export function select_modifiers(
+    event?: MouseEvent | KeyboardEvent,
+): SelectModifiers | undefined {
+    if (!event) return undefined;
+    return {
+        shift: event.shiftKey,
+        ctrl: event.ctrlKey,
+        meta: event.metaKey,
+        alt: event.altKey,
+    };
 }
 
 interface SelectedItems {
@@ -50,6 +78,30 @@ export class KiCanvasSelectEvent extends KiCanvasEvent<SelectDetails> {
 
     constructor(detail: SelectDetails) {
         super(KiCanvasSelectEvent.type, detail, true);
+    }
+}
+
+export type KiCanvasProbePhase = "hover" | "leave" | "activate" | "clear";
+export type KiCanvasProbeSource = "pin" | "pad";
+
+export type KiCanvasProbeDetail =
+    | {
+          phase: Exclude<KiCanvasProbePhase, "clear">;
+          source: KiCanvasProbeSource;
+          number: string;
+          index: string;
+          crossIndex: string;
+      }
+    | {
+          phase: "clear";
+      };
+
+/** Structured pin/pad interaction used by lightweight library render hosts. */
+export class KiCanvasProbeEvent extends KiCanvasEvent<KiCanvasProbeDetail> {
+    static readonly type = "kicanvas:probe";
+
+    constructor(detail: KiCanvasProbeDetail) {
+        super(KiCanvasProbeEvent.type, detail, true);
     }
 }
 
@@ -279,6 +331,20 @@ export class LabelClickEvent extends CustomEvent<LabelIndex> {
     }
 }
 
+/**
+ * Dispatched when the user clicks a schematic item that carries an embedded
+ * hyperlink (KiCad authors these as `(href "...")` on a text item's effects).
+ * The detail is the raw URL as written in the file: an absolute URL for web
+ * links, or a project-relative path for links to files within the repo.
+ */
+export class LinkClickEvent extends CustomEvent<string> {
+    static readonly type = "sch:link:click";
+
+    constructor(url: string) {
+        super(LinkClickEvent.type, { detail: url });
+    }
+}
+
 export class HierarchicalSheetPinClickEvent extends CustomEvent<LabelIndex> {
     static readonly type = "sch:hierarchical_sheet_pin:click";
 
@@ -422,6 +488,7 @@ export class LoadZipErrorEvent extends CustomEvent<string> {
 export interface KiCanvasEventMap {
     [KiCanvasLoadEvent.type]: KiCanvasLoadEvent;
     [KiCanvasSelectEvent.type]: KiCanvasSelectEvent;
+    [KiCanvasProbeEvent.type]: KiCanvasProbeEvent;
     [EcadOverlayClickEvent.type]: EcadOverlayClickEvent;
     [EcadOverlayHoverEvent.type]: EcadOverlayHoverEvent;
     [EcadOverlayLeaveEvent.type]: EcadOverlayLeaveEvent;
@@ -440,6 +507,7 @@ export interface KiCanvasEventMap {
     [Online3dViewerUrlReady.type]: Online3dViewerUrlReady;
     [Online3dViewerLoaded.type]: Online3dViewerLoaded;
     [LabelClickEvent.type]: LabelClickEvent;
+    [LinkClickEvent.type]: LinkClickEvent;
     [HierarchicalSheetPinClickEvent.type]: HierarchicalSheetPinClickEvent;
     [NetItemSelectEvent.type]: NetItemSelectEvent;
     [OpenBarrierEvent.type]: OpenBarrierEvent;
@@ -461,6 +529,7 @@ declare global {
         [Online3dViewerUrlReady.type]: Online3dViewerUrlReady;
         [Online3dViewerLoaded.type]: Online3dViewerLoaded;
         [LabelClickEvent.type]: LabelClickEvent;
+        [LinkClickEvent.type]: LinkClickEvent;
         [HierarchicalSheetPinClickEvent.type]: HierarchicalSheetPinClickEvent;
         [KiCanvasFitterMenuEvent.type]: KiCanvasFitterMenuEvent;
         [OpenBarrierEvent.type]: OpenBarrierEvent;
@@ -479,6 +548,7 @@ declare global {
         [Online3dViewerUrlReady.type]: Online3dViewerUrlReady;
         [Online3dViewerLoaded.type]: Online3dViewerLoaded;
         [LabelClickEvent.type]: LabelClickEvent;
+        [LinkClickEvent.type]: LinkClickEvent;
         [HierarchicalSheetPinClickEvent.type]: HierarchicalSheetPinClickEvent;
         [KiCanvasFitterMenuEvent.type]: KiCanvasFitterMenuEvent;
         [OpenBarrierEvent.type]: OpenBarrierEvent;

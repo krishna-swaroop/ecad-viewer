@@ -9,7 +9,12 @@ export type EcadOverlayPlacement = ExtensionLayerPlacement;
 export type EcadOverlayAnchor =
     | { kind: "world"; x: number; y: number; page?: string }
     | { kind: "bbox"; bounds: [number, number, number, number]; page?: string }
-    | { kind: "source-item"; uuid: string; page?: string }
+    | {
+          kind: "source-item";
+          uuid: string;
+          page?: string;
+          relativePoint?: [number, number];
+      }
     | {
           kind: "entity";
           reference?: string;

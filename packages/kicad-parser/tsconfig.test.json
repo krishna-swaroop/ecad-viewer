@@ -1,13 +1,10 @@
 {
-  "extends": "./tsconfig.json",
-  "compilerOptions": {
-    "esModuleInterop": true,
-    "verbatimModuleSyntax": false,
-    "isolatedModules": true,
-    "rootDir": ".",
-  },
-  "include": [
-    "./tests/**/*",
-    "./src/**/*"
-  ]
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "esModuleInterop": true,
+        "verbatimModuleSyntax": false,
+        "isolatedModules": true,
+        "rootDir": "."
+    },
+    "include": ["./tests/**/*", "./src/**/*"]
 }

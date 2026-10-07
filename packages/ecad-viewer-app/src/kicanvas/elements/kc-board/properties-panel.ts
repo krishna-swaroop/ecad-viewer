@@ -160,10 +160,14 @@ export class KCBoardPropertiesPanelElement extends KCUIElement {
     }
 
     getFootprintProperties(itm: Footprint) {
-        const properties = Object.entries(itm.properties).map(([k, v]) => {
+        const variant = this.viewer.get_variant();
+        const properties = Object.entries(
+            itm.effective_properties(variant),
+        ).map(([k, v]) => {
             return this.entry(k, v);
         });
         const bbox = itm.bbox;
+        const flags = itm.effective_flags(variant);
         return html`
             ${this.header("Basic properties")}
             ${this.entry("X", itm.at.position.x.toFixed(4), "mm")}
@@ -173,8 +177,8 @@ export class KCBoardPropertiesPanelElement extends KCUIElement {
             ${this.entry("Orientation", itm.at.rotation, "°")}
             ${this.entry("Layer", itm.layer)}
             ${this.header("Footprint properties")}
-            ${this.entry("Reference", itm.reference)}
-            ${this.entry("Value", itm.value)}
+            ${this.entry("Reference", itm.effective_reference(variant))}
+            ${this.entry("Value", itm.effective_value(variant))}
             ${this.entry(
                 "Type",
                 itm.attr.through_hole
@@ -192,13 +196,14 @@ export class KCBoardPropertiesPanelElement extends KCUIElement {
                 "Not in schematic",
                 this.checkbox(itm.attr.board_only),
             )}
+            ${this.entry("Do not populate", this.checkbox(flags.dnp))}
             ${this.entry(
                 "Exclude from position files",
-                this.checkbox(itm.attr.exclude_from_pos_files),
+                this.checkbox(flags.exclude_from_pos_files),
             )}
             ${this.entry(
                 "Exclude from BOM",
-                this.checkbox(itm.attr.exclude_from_bom),
+                this.checkbox(flags.exclude_from_bom),
             )}
             ${this.header("Overrides")}
             ${this.entry(

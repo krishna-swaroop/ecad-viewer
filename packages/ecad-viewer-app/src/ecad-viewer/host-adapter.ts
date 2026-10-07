@@ -24,9 +24,26 @@ import type { EcadBlob } from "../kicanvas/services/vfs";
 
 export type EcadHostContext = "SCH" | "PCB" | "3D" | "BOM";
 
+/** Modifier keys held during the click, as observed by the viewer. */
+export type EcadSelectionModifiers = {
+    shift: boolean;
+    ctrl: boolean;
+    meta: boolean;
+    alt: boolean;
+};
+
+/**
+ * What the gesture means for the highlighted-net set: a shift-click on a
+ * net-bearing item is `toggle`; everything else is `replace`. Hosts act on
+ * this field rather than reading the keyboard state later.
+ */
+export type EcadSelectionOperation = "replace" | "toggle";
+
 export type EcadSemanticSelectionDetail = {
     sourceContext: "SCH" | "PCB";
     itemType: string;
+    operation?: EcadSelectionOperation;
+    modifiers?: EcadSelectionModifiers;
     uuid?: string;
     reference?: string;
     pin?: string;

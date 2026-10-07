@@ -95,7 +95,11 @@ export const T = {
         const el = e as any[];
         return { x: el[1] || 0, y: el[2] || 0 };
     },
-    vec4(obj: Obj, name: string, e: ListOrAtom): { x: number; y: number; z: number; w: number } {
+    vec4(
+        obj: Obj,
+        name: string,
+        e: ListOrAtom,
+    ): { x: number; y: number; z: number; w: number } {
         const el = e as any[];
         return { x: el[1] || 0, y: el[2] || 0, z: el[3] || 0, w: el[4] || 0 };
     },

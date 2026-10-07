@@ -16,4 +16,24 @@ describe("common KiCad parser", () => {
 
         expect(effects.font.color).toEqual({ r: 1, g: 0, b: 0, a: 1 });
     });
+
+    it("captures an embedded hyperlink on text effects", () => {
+        const effects = parseEffects(`
+            (effects
+                (font (size 1.27 1.27) (color 255 0 0 1))
+                (justify left bottom)
+                (href "https://example.com/datasheet.pdf")
+            )
+        `);
+
+        expect(effects.href).toBe("https://example.com/datasheet.pdf");
+    });
+
+    it("omits href when the font has no hyperlink", () => {
+        const effects = parseEffects(`
+            (effects (font (size 1.27 1.27)))
+        `);
+
+        expect(effects.href).toBeUndefined();
+    });
 });

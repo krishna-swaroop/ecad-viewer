@@ -7,7 +7,11 @@
 import { Barrier } from "../../base/async";
 import { Disposables, type IDisposable } from "../../base/disposable";
 import { listen } from "../../base/events";
-import { Vec2, type CameraViewportInsets } from "../../base/math";
+import { BBox, Vec2, type CameraViewportInsets } from "../../base/math";
+import type {
+    MoveAndZoomOptions,
+    WheelNavigationMode,
+} from "../../base/dom/move-and-zoom";
 import { Renderer } from "../../graphics";
 import {
     EcadCommentAreaEvent,
@@ -32,6 +36,64 @@ export enum ViewerType {
     SCHEMATIC,
     PCB,
 }
+
+export type ViewerNavigationOptions = MoveAndZoomOptions;
+export type ViewerWheelMode = WheelNavigationMode;
+export type ProbeHighlightState = "hover" | "latched";
+
+export interface ViewerInteractionOptions {
+    selectable?: boolean;
+    navigation?: Partial<ViewerNavigationOptions>;
+}
+
+export type ViewerInteraction = boolean | ViewerInteractionOptions;
+
+const legacy_navigation: ViewerNavigationOptions = {
+    wheel: "direct",
+    pinch: true,
+    touchPan: true,
+    drag: true,
+};
+
+const disabled_navigation: ViewerNavigationOptions = {
+    wheel: "disabled",
+    pinch: false,
+    touchPan: false,
+    drag: false,
+};
+
+export function resolve_viewer_interaction(interaction: ViewerInteraction): {
+    selectable: boolean;
+    navigation: ViewerNavigationOptions;
+} {
+    if (typeof interaction === "boolean") {
+        return {
+            selectable: interaction,
+            navigation: interaction
+                ? { ...legacy_navigation }
+                : { ...disabled_navigation },
+        };
+    }
+    return {
+        selectable: interaction.selectable ?? false,
+        navigation: {
+            ...disabled_navigation,
+            ...interaction.navigation,
+        },
+    };
+}
+
+/** Whether any navigation gesture can move the camera. */
+function navigation_enabled(navigation: ViewerNavigationOptions): boolean {
+    return (
+        navigation.wheel !== "disabled" ||
+        navigation.pinch ||
+        navigation.touchPan ||
+        navigation.drag
+    );
+}
+
+const LIBRARY_CROSS_PROBE_CHANNEL = "library-crossprobe";
 
 const COMMENT_AREA_PREVIEW_CHANNEL = "__comment-area-preview__";
 const MIN_COMMENT_AREA_SIZE = 0.5;
@@ -75,10 +137,16 @@ export abstract class Viewer extends EventTarget {
 
     constructor(
         public canvas: HTMLCanvasElement,
-        protected interactive = true,
+        interaction: ViewerInteraction = true,
     ) {
         super();
+        this.interaction = resolve_viewer_interaction(interaction);
     }
+
+    protected readonly interaction: {
+        selectable: boolean;
+        navigation: ViewerNavigationOptions;
+    };
 
     dispose() {
         this.#active = false;
@@ -144,16 +212,34 @@ export abstract class Viewer extends EventTarget {
             }),
         );
 
-        if (this.interactive) {
+        const navigation = this.interaction.navigation;
+        if (navigation_enabled(navigation)) {
             this.viewport.enable_pan_and_zoom(
                 Viewer.MinZoom,
                 Viewer.MaxZoom,
                 () => this.#active,
+                navigation,
             );
+            // Comment mode draws its rubber band with the left button, so only
+            // that button is withheld from panning while it is on.
+            this.viewport.drag_filter = (e) =>
+                !(this.#comment_mode && e.button === 0);
+        }
 
+        if (this.interaction.selectable) {
             this.disposables.add(
                 listen(this.canvas, "mousemove", (e) => {
                     this.on_mouse_change(e);
+                }),
+            );
+
+            this.disposables.add(
+                listen(this.canvas, "mouseleave", () => {
+                    if (this.#hover_frame !== null) {
+                        cancelAnimationFrame(this.#hover_frame);
+                        this.#hover_frame = null;
+                    }
+                    this.on_pointer_leave();
                 }),
             );
 
@@ -226,9 +312,67 @@ export abstract class Viewer extends EventTarget {
         this.#cached_rect = null;
         if (!this.#active) return;
         this.#overlay_scenes?.refresh_screen_sized();
-        if (this.interactive) {
+        if (navigation_enabled(this.interaction.navigation)) {
             this.draw();
         }
+    }
+
+    public zoom_by(factor: number): void {
+        if (!Number.isFinite(factor) || factor <= 0 || !this.viewport) return;
+        this.viewport.camera.zoom = Math.min(
+            Viewer.MaxZoom,
+            Math.max(Viewer.MinZoom, this.viewport.camera.zoom * factor),
+        );
+        this.draw();
+    }
+
+    public reset_view(): void {
+        this.zoom_fit_top_item();
+    }
+
+    protected probe_bounds(_index: string): BBox[] {
+        return [];
+    }
+
+    public set_probe_highlight(
+        index: string,
+        state: ProbeHighlightState,
+    ): number {
+        const bounds = this.probe_bounds(index);
+        if (!bounds.length) {
+            this.clear_probe_highlight();
+            return 0;
+        }
+        this.set_overlay_scene({
+            channelId: LIBRARY_CROSS_PROBE_CHANNEL,
+            context: this.type === ViewerType.SCHEMATIC ? "SCH" : "PCB",
+            placement: "foreground",
+            visible: true,
+            primitives: bounds.map((bbox, position) => ({
+                id: `${index}:${position}`,
+                kind: "bbox" as const,
+                anchor: {
+                    kind: "bbox" as const,
+                    bounds: [bbox.x, bbox.y, bbox.w, bbox.h] as [
+                        number,
+                        number,
+                        number,
+                        number,
+                    ],
+                },
+                sizing: "screen" as const,
+                stroke: state === "latched" ? "#0891b2" : "#22d3ee",
+                opacity: state === "latched" ? 1 : 0.82,
+                strokeWidth: state === "latched" ? 3 : 2,
+                dash: state === "hover" ? [5, 3] : undefined,
+                padding: 3,
+            })),
+        });
+        return bounds.length;
+    }
+
+    public clear_probe_highlight(): void {
+        this.clear_overlay_scene(LIBRARY_CROSS_PROBE_CHANNEL);
     }
 
     public notify_viewport_change(): void {
@@ -355,6 +499,13 @@ export abstract class Viewer extends EventTarget {
         _anchor: EcadOverlayAnchor,
     ): ResolvedOverlayAnchor | null {
         return null;
+    }
+
+    /** Allow the host's narrow comment API to report missing source anchors. */
+    public resolve_overlay_anchor_for_host(
+        anchor: EcadOverlayAnchor,
+    ): ResolvedOverlayAnchor | null {
+        return this.resolve_overlay_anchor(anchor);
     }
 
     protected rebind_overlay_layers(
@@ -497,8 +648,18 @@ export abstract class Viewer extends EventTarget {
             return;
         }
 
-        // Render all layers in display order (back to front)
-        let depth = 0.01;
+        // Render all layers in display order (back to front). Allocate the
+        // available clip-space depth across the layers that will actually be
+        // drawn. A fixed increment overflows once zoom-dependent label layers
+        // take a dense board past 100 drawable layers, clipping late overlays
+        // such as the selected-net pass while leaving its dim pass visible.
+        const display_layers = Array.from(this.layers.in_display_order());
+        const drawable_layer_count = display_layers.reduce(
+            (count, layer) => count + (layer.visible && layer.graphics ? 1 : 0),
+            0,
+        );
+        const depth_step = 0.98 / Math.max(1, drawable_layer_count);
+        let depth = depth_step;
         const camera = this.viewport.camera.matrix;
         const should_dim = this.layers.is_any_layer_highlighted();
 
@@ -507,7 +668,7 @@ export abstract class Viewer extends EventTarget {
             .gl;
         let blend_off = false;
 
-        for (const layer of this.layers.in_display_order()) {
+        for (const layer of display_layers) {
             if (layer.visible && layer.graphics) {
                 let alpha = layer.opacity;
 
@@ -527,7 +688,7 @@ export abstract class Viewer extends EventTarget {
                 }
 
                 layer.graphics.render(camera, depth, alpha);
-                depth += 0.01;
+                depth += depth_step;
             }
         }
         if (blend_off && gl) {
@@ -575,6 +736,7 @@ export abstract class Viewer extends EventTarget {
     abstract move(pos: Vec2): void;
 
     abstract on_hover(pos: Vec2): void;
+    protected on_pointer_leave(): void {}
 
     abstract on_click(pos: Vec2, event?: MouseEvent): void;
 

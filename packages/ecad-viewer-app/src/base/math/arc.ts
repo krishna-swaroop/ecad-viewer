@@ -58,7 +58,14 @@ export class Arc {
         end: Vec2,
         width: number,
     ) {
-        console.log("MathArc.from_center_start_end: center", center, "start", start, "end", end);
+        console.log(
+            "MathArc.from_center_start_end: center",
+            center,
+            "start",
+            start,
+            "end",
+            end,
+        );
         // See EDA_SHAPE::CalcArcAngles - normalizes the start and end angle so
         // that start < end and their values are between -360 and +360.
         const radius = start.sub(center).magnitude;
@@ -83,7 +90,12 @@ export class Arc {
         }
 
         const res = new Arc(center, radius, start_angle, end_angle, width);
-        console.log("MathArc.from_center_start_end: result", res.start_point, res.mid_point, res.end_point);
+        console.log(
+            "MathArc.from_center_start_end: result",
+            res.start_point,
+            res.mid_point,
+            res.end_point,
+        );
         return res;
     }
 

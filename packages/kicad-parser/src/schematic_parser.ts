@@ -482,6 +482,46 @@ function parseLibSymbol(expr: Parseable): S.I_LibSymbol {
     ) as unknown as S.I_LibSymbol;
 }
 
+function parseVariantField(expr: Parseable): S.I_SchematicVariantField {
+    const parsed = parse_expr(
+        expr,
+        P.start("field"),
+        P.pair("name", T.string),
+        P.pair("value", T.string),
+    );
+    return {
+        name: parsed["name"] ?? "",
+        value: parsed["value"] ?? "",
+    };
+}
+
+/**
+ * Variant records live inside an instance `(path …)`. Each boolean token is
+ * optional and stays `undefined` when absent: KiCad elides tokens equal to
+ * the base attribute, and "absent" carries meaning the resolver needs.
+ */
+function parseVariant(expr: Parseable): S.I_SchematicVariant {
+    const parsed = parse_expr(
+        expr,
+        P.start("variant"),
+        P.pair("name", T.string),
+        P.pair("dnp", T.boolean),
+        P.pair("exclude_from_sim", T.boolean),
+        P.pair("in_bom", T.boolean),
+        P.pair("on_board", T.boolean),
+        P.pair("in_pos_files", T.boolean),
+        P.collection("fields", "field", T.item(parseVariantField)),
+    );
+    const variant: S.I_SchematicVariant = {
+        name: parsed["name"] ?? "",
+        fields: parsed["fields"] ?? [],
+    };
+    for (const token of ["dnp", "exclude_from_sim", "in_bom", "on_board", "in_pos_files"] as const) {
+        if (parsed[token] !== undefined) variant[token] = parsed[token];
+    }
+    return variant;
+}
+
 function parseSchematicSymbol(expr: Parseable): S.I_SchematicSymbol {
     const parsed = parse_expr(
         expr,
@@ -502,6 +542,7 @@ function parseSchematicSymbol(expr: Parseable): S.I_SchematicSymbol {
         P.pair("body_style", T.number),
         P.pair("in_bom", T.boolean),
         P.pair("on_board", T.boolean),
+        P.pair("in_pos_files", T.boolean),
         P.pair("dnp", T.boolean),
         P.atom("fields_autoplaced"),
         P.pair("uuid", T.string),
@@ -538,6 +579,7 @@ function parseSchematicSymbol(expr: Parseable): S.I_SchematicSymbol {
                             P.pair("value", T.string),
                             P.pair("unit", T.number),
                             P.pair("footprint", T.string),
+                            P.collection("variants", "variant", T.item(parseVariant)),
                         ),
                     ),
                 ),
@@ -597,6 +639,7 @@ function parseSchematicSheet(expr: Parseable): S.I_SchematicSheet {
                             P.start("path"),
                             P.positional("path", T.string),
                             P.pair("page", T.string),
+                            P.collection("variants", "variant", T.item(parseVariant)),
                         ),
                     ),
                 ),
@@ -694,17 +737,13 @@ export class SchematicParser {
             P.item("title_block", parseTitleBlock),
             // lib_symbols parsed as collection of symbols inside lib_symbols item
             P.item("lib_symbols", (e) => {
-        const parsed = parse_expr(
-            e,
-            P.start("lib_symbols"),
-            P.collection(
-                "symbols",
-                "symbol",
-                T.item(parseLibSymbol),
-            ),
-        ) as any;
-        return parsed["symbols"] ?? [];
-    }),
+                const parsed = parse_expr(
+                    e,
+                    P.start("lib_symbols"),
+                    P.collection("symbols", "symbol", T.item(parseLibSymbol)),
+                ) as any;
+                return parsed["symbols"] ?? [];
+            }),
             P.collection("wires", "wire", T.item(parseWire)),
             P.collection("buses", "bus", T.item(parseBus)),
             P.collection("bus_entries", "bus_entry", T.item(parseBusEntry)),
@@ -752,9 +791,10 @@ export class SchematicParser {
         return serializeSchematic(schematic);
     }
 
-    public parseLibSymbols(text: string): S.I_LibSymbol[] { 
+    public parseLibSymbols(text: string): S.I_LibSymbol[] {
         const expr = listify(text);
-        const root = expr.length === 1 && Array.isArray(expr[0]) ? expr[0] : expr;
+        const root =
+            expr.length === 1 && Array.isArray(expr[0]) ? expr[0] : expr;
 
         const parsed = parse_expr(
             root,
@@ -767,18 +807,18 @@ export class SchematicParser {
 
         return parsed["symbols"] ?? [];
     }
-    public saveLibSymbols(libSymbols: S.I_LibSymbol[]): string { 
+    public saveLibSymbols(libSymbols: S.I_LibSymbol[]): string {
         let result = "(kicad_symbol_lib\n";
         const indent = 1;
-        
+
         result += `${"\t".repeat(indent)}(version 20251024)\n`;
         result += `${"\t".repeat(indent)}(generator "kicad_symbol_editor")\n`;
         result += `${"\t".repeat(indent)}(generator_version "10.0")\n`;
-        
+
         for (const symbol of libSymbols) {
             result += serializeLibSymbol(symbol, indent);
         }
-        
+
         result += `)\n`;
         return result;
     }

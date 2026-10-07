@@ -34,9 +34,9 @@
         // inside node_modules that no source change could ever fix.
         "types": [],
         "paths": {
-            "kicad-parser": ["../kicad-parser/src"]
-        }
+            "kicad-parser": ["../kicad-parser/src"],
+        },
     },
     "include": ["./src/**/*"],
-    "exclude": ["./node_modules", "./**/node_modules/*"]
+    "exclude": ["./node_modules", "./**/node_modules/*"],
 }

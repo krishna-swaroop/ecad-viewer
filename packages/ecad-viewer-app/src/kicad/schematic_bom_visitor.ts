@@ -39,24 +39,32 @@ export class SchematicBomVisitor extends SchematicVisitorBase {
     }
 
     visitSchematicSymbol(node: SchematicSymbol) {
+        const context = this.#context;
+        const excluded_from_bom = context
+            ? context.excluded_from_bom(node)
+            : !node.in_bom;
         if (
-            (this.#context?.footprint(node) ?? node.footprint).length == 0 ||
-            !node.in_bom
+            (context?.footprint(node) ?? node.footprint).length == 0 ||
+            excluded_from_bom
         )
             return;
 
-        const value = this.#context?.value(node) ?? node.value;
-        const footprint = this.#context?.footprint(node) ?? node.footprint;
-        const reference = this.#context?.reference(node) ?? node.reference;
-        const unit = this.#context?.unit(node) ?? node.unit;
+        const value = context?.value(node) ?? node.value;
+        const footprint = context?.footprint(node) ?? node.footprint;
+        const reference = context?.reference(node) ?? node.reference;
+        const unit = context?.unit(node) ?? node.unit;
 
         const schematicSymbol: BomItem = {
             Reference: "",
             Name: value,
-            Description: node.get_property_text("Description") ?? "",
-            Datasheet: node.datasheet,
+            Description:
+                context?.property_text(node, "Description") ??
+                node.get_property_text("Description") ??
+                "",
+            Datasheet:
+                context?.property_text(node, "Datasheet") ?? node.datasheet,
             Footprint: footprint,
-            DNP: node.dnp,
+            DNP: context?.dnp(node) ?? node.dnp,
             Qty: 1,
             Price: 0,
         };

@@ -1,6 +1,6 @@
 import { Angle, Matrix3, Vec2 } from "../../base/math";
 import * as log from "../../base/log";
-import { Circle, Color, Polygon, Polyline } from "../../graphics";
+import { Circle, Polygon, Polyline } from "../../graphics";
 import * as board_items from "../../kicad/board";
 import {
     CopperVirtualLayerNames,
@@ -10,10 +10,19 @@ import {
 } from "./layers";
 import { BoardItemPainter } from "./painter-base";
 
+/**
+ * The copper layer whose colour a pad takes when repainted for emphasis:
+ * through-hole pads use the through-hole pad colour, SMD pads their side.
+ */
+function pad_copper_layer(pad: board_items.Pad): string {
+    if (pad.type === "thru_hole" || pad.type === "np_thru_hole")
+        return LayerNames.pad_holewalls;
+    if (pad.layers.includes(LayerNames.b_cu)) return LayerNames.b_cu;
+    return LayerNames.f_cu;
+}
+
 export class PadPainter extends BoardItemPainter {
     classes = [board_items.Pad];
-
-    color_cache: Color | null = null;
 
     layers_for(pad: board_items.Pad): string[] {
         // TODO: Port KiCAD's logic over.
@@ -77,13 +86,7 @@ export class PadPainter extends BoardItemPainter {
     }
 
     paint(layer: ViewLayer, pad: board_items.Pad) {
-        let color = layer.color;
-        if (!this.color_cache) this.color_cache = color;
-
-        if (this.filter_net) {
-            if (pad.net?.number === this.filter_net) color = this.color_cache;
-            else color = this.color_cache.grayscale;
-        }
+        const color = this.emphasis_color(layer, pad_copper_layer(pad));
 
         const position_mat = Matrix3.translation(
             pad.at.position.x,

@@ -10,8 +10,29 @@ const line_delta_multiplier = 8;
 const page_delta_multiplier = 24;
 const zoom_speed = 0.005;
 const pan_speed = 1;
+const drag_threshold = 3;
 
 export type MoveAndZoomCallback = () => void;
+
+export type WheelNavigationMode = "disabled" | "modifier" | "direct";
+
+export interface MoveAndZoomOptions {
+    wheel: WheelNavigationMode;
+    pinch: boolean;
+    touchPan: boolean;
+    /** Pan by dragging with a mouse or trackpad button held down. */
+    drag: boolean;
+}
+
+const default_options: MoveAndZoomOptions = {
+    wheel: "direct",
+    pinch: true,
+    touchPan: true,
+    drag: true,
+};
+
+/** A host veto on starting a drag; used to reserve a button for another mode. */
+export type DragFilter = (e: MouseEvent) => boolean;
 
 /**
  * Interactive Pan and Zoom helper
@@ -21,6 +42,29 @@ export class MoveAndZoom {
 
     #startDistance: number | null = null;
     #startPosition: TouchList | null = null;
+    #dragPosition: Vec2 | null = null;
+    #dragOrigin: Vec2 | null = null;
+    #suppressClick = false;
+    #clickResetTimer: number | null = null;
+
+    #disposed = false;
+
+    /**
+     * Veto for a drag gesture, consulted on mousedown.
+     *
+     * Comment mode reserves left-drag for its rubber band, but must keep
+     * right-drag panning, so the decision is per event rather than a flag.
+     */
+    public drag_filter: DragFilter = () => true;
+
+    readonly #wheel_listener = (e: WheelEvent) => this.#on_wheel(e);
+    readonly #touch_start_listener = (e: TouchEvent) => this.#on_touch_start(e);
+    readonly #touch_move_listener = (e: TouchEvent) => this.#on_touch_move(e);
+    readonly #touch_end_listener = () => this.#on_touch_end();
+    readonly #mouse_down_listener = (e: MouseEvent) => this.#on_mouse_down(e);
+    readonly #mouse_move_listener = (e: MouseEvent) => this.#on_mouse_move(e);
+    readonly #mouse_up_listener = () => this.#end_drag();
+    readonly #click_listener = (e: MouseEvent) => this.#on_click(e);
 
     /**
      * Create an interactive pan and zoom helper
@@ -38,57 +82,185 @@ export class MoveAndZoom {
         public max_zoom = 10,
         public bounds?: BBox,
         public is_active: () => boolean = () => true,
+        public options: MoveAndZoomOptions = default_options,
     ) {
-        this.target.addEventListener(
-            "wheel",
-            (e: WheelEvent) => this.#on_wheel(e),
-            { passive: false },
+        this.options = { ...default_options, ...options };
+        if (this.options.wheel !== "disabled") {
+            this.target.addEventListener("wheel", this.#wheel_listener, {
+                passive: false,
+            });
+        }
+        if (this.options.pinch || this.options.touchPan) {
+            this.target.addEventListener(
+                "touchstart",
+                this.#touch_start_listener,
+            );
+            this.target.addEventListener(
+                "touchmove",
+                this.#touch_move_listener,
+                { passive: false },
+            );
+            this.target.addEventListener("touchend", this.#touch_end_listener);
+            this.target.addEventListener(
+                "touchcancel",
+                this.#touch_end_listener,
+            );
+        }
+        if (this.options.drag) {
+            this.target.addEventListener(
+                "mousedown",
+                this.#mouse_down_listener,
+            );
+            this.target.addEventListener("click", this.#click_listener, true);
+        }
+    }
+
+    dispose() {
+        if (this.#disposed) return;
+        this.#disposed = true;
+        this.#end_drag();
+        this.target.removeEventListener("mousedown", this.#mouse_down_listener);
+        this.target.removeEventListener("click", this.#click_listener, true);
+        this.target.removeEventListener("wheel", this.#wheel_listener);
+        this.target.removeEventListener(
+            "touchstart",
+            this.#touch_start_listener,
         );
+        this.target.removeEventListener("touchmove", this.#touch_move_listener);
+        this.target.removeEventListener("touchend", this.#touch_end_listener);
+        this.target.removeEventListener(
+            "touchcancel",
+            this.#touch_end_listener,
+        );
+        this.#on_touch_end();
+        if (this.#clickResetTimer !== null) {
+            window.clearTimeout(this.#clickResetTimer);
+            this.#clickResetTimer = null;
+        }
+    }
 
-        this.target.addEventListener("touchstart", (e: TouchEvent) => {
-            if (!this.is_active()) return;
-            if (e.touches.length === 2) {
-                this.#startDistance = this.#getDistanceBetweenTouches(
-                    e.touches,
+    #on_touch_start(e: TouchEvent) {
+        if (!this.is_active()) return;
+        if (e.touches.length === 2 && this.options.pinch) {
+            this.#startDistance = this.#getDistanceBetweenTouches(e.touches);
+        } else if (e.touches.length === 1 && this.options.touchPan) {
+            this.#startPosition = e.touches;
+        }
+    }
+
+    #on_touch_move(e: TouchEvent) {
+        if (!this.is_active()) return;
+        if (
+            e.touches.length === 2 &&
+            this.options.pinch &&
+            this.#startDistance !== null
+        ) {
+            e.preventDefault();
+            const currentDistance = this.#getDistanceBetweenTouches(e.touches);
+            if (Math.abs(this.#startDistance - currentDistance) < 10) {
+                const scale = (currentDistance / this.#startDistance) * 5;
+                this.#handle_zoom(
+                    this.#startDistance < currentDistance ? scale * -1 : scale,
                 );
-            } else if (e.touches.length === 1) {
-                this.#startPosition = e.touches;
             }
-        });
+            this.#startDistance = currentDistance;
+        } else if (
+            e.touches.length === 1 &&
+            this.options.touchPan &&
+            this.#startPosition !== null
+        ) {
+            e.preventDefault();
+            const sx = this.#startPosition[0]?.clientX ?? 0;
+            const sy = this.#startPosition[0]?.clientY ?? 0;
+            const ex = e.touches[0]?.clientX ?? 0;
+            const ey = e.touches[0]?.clientY ?? 0;
+            this.#handle_pan(sx - ex, sy - ey);
+            this.#startPosition = e.touches;
+        }
+    }
 
-        this.target.addEventListener("touchmove", (e: TouchEvent) => {
-            if (!this.is_active()) return;
-            if (e.touches.length === 2) {
-                if (this.#startDistance !== null) {
-                    const currentDistance = this.#getDistanceBetweenTouches(
-                        e.touches,
-                    );
-                    if (Math.abs(this.#startDistance - currentDistance) < 10) {
-                        const scale =
-                            (currentDistance / this.#startDistance) * 5;
-                        if (this.#startDistance < currentDistance) {
-                            this.#handle_zoom(scale * -1);
-                        } else {
-                            this.#handle_zoom(scale);
-                        }
-                    }
-                    this.#startDistance = currentDistance;
-                }
-            } else if (e.touches.length === 1 && this.#startPosition !== null) {
-                const sx = this.#startPosition[0]?.clientX ?? 0;
-                const sy = this.#startPosition[0]?.clientY ?? 0;
-                const ex = e.touches[0]?.clientX ?? 0;
-                const ey = e.touches[0]?.clientY ?? 0;
-                this.#handle_pan(sx - ex, sy - ey);
+    #on_touch_end() {
+        this.#startDistance = null;
+        this.#startPosition = null;
+    }
 
-                this.#startPosition = e.touches;
-            }
-        });
+    /**
+     * Drag panning.
+     *
+     * The move and release listeners live on the window rather than the
+     * target, so a gesture that leaves the canvas keeps panning and still ends
+     * on release -- a small canvas, which a library preview is, would otherwise
+     * drop nearly every drag part way through.
+     */
+    #on_mouse_down(e: MouseEvent) {
+        if (!this.is_active()) return;
+        if (!this.drag_filter(e)) return;
+        if (this.#clickResetTimer !== null) {
+            window.clearTimeout(this.#clickResetTimer);
+            this.#clickResetTimer = null;
+        }
+        this.#suppressClick = false;
+        this.#dragPosition = new Vec2(e.clientX, e.clientY);
+        this.#dragOrigin = this.#dragPosition.copy();
+        window.addEventListener("mousemove", this.#mouse_move_listener);
+        window.addEventListener("mouseup", this.#mouse_up_listener);
+    }
 
-        this.target.addEventListener("touchend", () => {
-            this.#startDistance = null;
-            this.#startPosition = null;
-        });
+    #on_mouse_move(e: MouseEvent) {
+        if (this.#dragPosition === null) return;
+        if (!this.is_active()) {
+            this.#end_drag();
+            return;
+        }
+        // A release outside the window is not reported, so a move with no
+        // button held is the first evidence the gesture is over.
+        if (e.buttons === 0) {
+            this.#end_drag();
+            return;
+        }
+        if (
+            !this.#suppressClick &&
+            this.#dragOrigin !== null &&
+            Math.hypot(
+                this.#dragOrigin.x - e.clientX,
+                this.#dragOrigin.y - e.clientY,
+            ) < drag_threshold
+        ) {
+            return;
+        }
+        this.#suppressClick = true;
+        e.preventDefault();
+        this.#handle_pan(
+            this.#dragPosition.x - e.clientX,
+            this.#dragPosition.y - e.clientY,
+        );
+        this.#dragPosition = new Vec2(e.clientX, e.clientY);
+        this.#dispatch_panzoom(e);
+    }
+
+    #end_drag() {
+        if (this.#dragPosition === null) return;
+        this.#dragPosition = null;
+        this.#dragOrigin = null;
+        window.removeEventListener("mousemove", this.#mouse_move_listener);
+        window.removeEventListener("mouseup", this.#mouse_up_listener);
+        if (this.#suppressClick) {
+            this.#clickResetTimer = window.setTimeout(() => {
+                this.#suppressClick = false;
+                this.#clickResetTimer = null;
+            }, 0);
+        }
+    }
+
+    #on_click(e: MouseEvent) {
+        if (!this.#suppressClick) return;
+        this.#suppressClick = false;
+        if (this.#clickResetTimer !== null) {
+            window.clearTimeout(this.#clickResetTimer);
+            this.#clickResetTimer = null;
+        }
+        e.preventDefault();
+        e.stopImmediatePropagation();
     }
 
     #getDistanceBetweenTouches(touches: TouchList) {
@@ -102,6 +274,9 @@ export class MoveAndZoom {
 
     #on_wheel(e: WheelEvent) {
         if (!this.is_active()) return;
+        if (this.options.wheel === "modifier" && !e.ctrlKey && !e.metaKey) {
+            return;
+        }
         e.preventDefault();
 
         let dx = e.deltaX;
@@ -128,10 +303,15 @@ export class MoveAndZoom {
         this.#rect = this.target.getBoundingClientRect();
         this.#handle_zoom(dy, this.#relative_mouse_pos(e));
 
+        this.#dispatch_panzoom(e);
+    }
+
+    #dispatch_panzoom(e: MouseEvent) {
         this.target.dispatchEvent(
             new MouseEvent("panzoom", {
                 clientX: e.clientX,
                 clientY: e.clientY,
+                buttons: e.buttons,
             }),
         );
     }
