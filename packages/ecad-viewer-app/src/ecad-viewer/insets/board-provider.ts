@@ -15,6 +15,10 @@ export class BoardInsetProvider implements InsetProvider {
 
     constructor(private readonly viewer: () => BoardViewer | null) {}
 
+    ready() {
+        return !!this.viewer()?.board;
+    }
+
     async resolve(
         reference: string,
         number: string,

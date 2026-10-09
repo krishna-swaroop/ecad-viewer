@@ -4237,6 +4237,19 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             this.#inset_link = null;
             return;
         }
+        this.#ensure_inset_link().peer = peer;
+    }
+
+    /**
+     * Turn insets on for this element before a peer exists, so `I` and
+     * setInsetMode work while the other document is not loaded yet. Linking
+     * a peer later keeps the mode.
+     */
+    public enableInsets() {
+        this.#ensure_inset_link();
+    }
+
+    #ensure_inset_link(): InsetLink {
         this.#inset_link ??= new InsetLink({
             insetProvider: (kind) => this.insetProvider(kind),
             overlay_parent: () => this.shadowRoot,
@@ -4249,7 +4262,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 this.#emit_inset_mode(on);
             },
         });
-        this.#inset_link.peer = peer;
+        this.#inset_link.sync();
+        return this.#inset_link;
     }
 
     /**
@@ -4262,7 +4276,15 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     public setInsetMode(on: boolean) {
-        this.#inset_link?.set_mode(on);
+        this.#ensure_inset_link().set_mode(on);
+    }
+
+    /**
+     * Escape for insets: close the preview, else every inset. Returns
+     * whether anything closed, so a host can stop its own Escape there.
+     */
+    public escapeInsets(): boolean {
+        return this.#inset_link?.session.escape() ?? false;
     }
 
     /** InsetPeer: the other element changed the mode. */
