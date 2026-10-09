@@ -138,6 +138,80 @@
                 return out;
             };
 
+            // IN-51: several insets re-rendering in one frame (a net highlight
+            // change with pinned insets and a chain open). One canvas per
+            // inset, all rendered back to back, timed as a single frame.
+            window.bench_frame = async (pads, frames = 20) => {
+                const { setGpuSync } = el.constructor.insetDiagnostics;
+                const p = el.insetProvider("pcb");
+                const viewer =
+                    el.shadowRoot.querySelector("kc-board-app").viewer;
+                const gl = viewer.renderer.gl;
+                const ext = gl.getExtension("EXT_disjoint_timer_query_webgl2");
+                el.setActive(false);
+                const insets = [];
+                for (const [i, [reference, number]] of pads.entries()) {
+                    const t = await p.resolve(reference, number);
+                    if (!t) continue;
+                    const c = document.createElement("canvas");
+                    c.style.cssText = `position:fixed;left:${10 + (i % 3) * 310}px;top:${240 + Math.floor(i / 3) * 230}px;width:300px;height:220px;z-index:20`;
+                    document.body.append(c);
+                    insets.push({
+                        t,
+                        c,
+                        camera: {
+                            center: {
+                                x: t.focus.x + t.focus.w / 2,
+                                y: t.focus.y + t.focus.h / 2,
+                            },
+                            zoom: Math.min(
+                                300 / Math.max(t.focus.w * 2, 4),
+                                220 / Math.max(t.focus.h * 2, 4),
+                            ),
+                            rotation: 0,
+                            mirror: t.mirror,
+                        },
+                    });
+                }
+                const cpu = [];
+                const queries = [];
+                for (let f = 0; f < frames; f++) {
+                    const q = ext ? gl.createQuery() : null;
+                    if (q) gl.beginQuery(ext.TIME_ELAPSED_EXT, q);
+                    const t0 = performance.now();
+                    for (const inset of insets)
+                        p.render(inset.t, inset.camera, inset.c);
+                    cpu.push(performance.now() - t0);
+                    if (q) {
+                        gl.endQuery(ext.TIME_ELAPSED_EXT);
+                        queries.push(q);
+                    }
+                    await frame();
+                }
+                for (let i = 0; i < 20; i++) await frame();
+                const ns = queries
+                    .filter((q) =>
+                        gl.getQueryParameter(q, gl.QUERY_RESULT_AVAILABLE),
+                    )
+                    .map((q) => gl.getQueryParameter(q, gl.QUERY_RESULT));
+                queries.forEach((q) => gl.deleteQuery(q));
+                insets.forEach((i) => i.c.remove());
+                el.setActive(true);
+                cpu.sort((a, b) => a - b);
+                ns.sort((a, b) => a - b);
+                return {
+                    insets: insets.length,
+                    cpu_median_ms: +cpu[cpu.length >> 1].toFixed(2),
+                    cpu_max_ms: +cpu[cpu.length - 1].toFixed(2),
+                    gpu_median_ms: ns.length
+                        ? +(ns[ns.length >> 1] / 1e6).toFixed(2)
+                        : null,
+                    gpu_max_ms: ns.length
+                        ? +(ns[ns.length - 1] / 1e6).toFixed(2)
+                        : null,
+                };
+            };
+
             // FNV-1a of the full main-view pixels after a fresh draw.
             window.bench_pixels = () => {
                 const viewer =

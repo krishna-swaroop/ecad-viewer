@@ -25,11 +25,16 @@ const port = arg("port", "8016");
 const cull = arg("cull", "1");
 const pcb = arg("pcb");
 const steps = Number(arg("steps", 30));
+// --frame REF:PAD,...: render all of these in one frame (IN-51 gate).
+const frame_pads = (arg("frame", "") || "")
+    .split(",")
+    .filter(Boolean)
+    .map((p) => p.split(":"));
 const pads = (arg("pads", "") || "")
     .split(",")
     .filter(Boolean)
     .map((p) => p.split(":"));
-if (!pcb || !pads.length) {
+if (!pcb || (!pads.length && !frame_pads.length)) {
     console.error(
         "usage: bench-insets.mjs --pcb <url> --pads REF:PAD[,REF:PAD]",
     );
@@ -62,6 +67,11 @@ try {
                 number,
                 steps,
             ),
+        );
+    if (frame_pads.length)
+        result.frame = await page.evaluate(
+            (p) => window.bench_frame(p),
+            frame_pads,
         );
     result.main_view = await page.evaluate(() => window.bench_main());
     result.cull = cull !== "0";
