@@ -1,0 +1,370 @@
+/**
+ * Insets wired to viewers and elements (IN-04): probe events carry the
+ * designator and anchor, a hover opens a preview of the other document, and
+ * two <ecad-viewer> elements linked with setInsetPeer serve each other.
+ */
+import { expect } from "@esm-bundle/chai";
+
+import "../build/ecad-viewer.js";
+
+import { BBox, Vec2 } from "../src/base/math";
+import {
+    HOVER_CLOSE_DELAY_MS,
+    HOVER_OPEN_DELAY_MS,
+    InsetLink,
+    type InsetKind,
+    type InsetProvider,
+    type InsetTarget,
+} from "../src/ecad-viewer/insets";
+import {
+    KiCanvasProbeEvent,
+    type KiCanvasProbeDetail,
+} from "../src/viewers/base/events";
+import type { Viewer } from "../src/viewers/base/viewer";
+
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// --- InsetLink with fakes ---------------------------------------------------
+
+class FakeViewer extends EventTarget {
+    canvas = document.createElement("canvas");
+    viewport = {
+        camera: { world_to_screen: (p: Vec2) => new Vec2(p.x * 2, p.y * 2) },
+    };
+
+    constructor() {
+        super();
+        Object.assign(this.canvas.style, {
+            position: "fixed",
+            left: "10px",
+            top: "20px",
+            width: "600px",
+            height: "400px",
+        });
+        document.body.append(this.canvas);
+    }
+
+    override addEventListener(type: string, listener: EventListener) {
+        super.addEventListener(type, listener);
+        return { dispose: () => super.removeEventListener(type, listener) };
+    }
+
+    probe(detail: KiCanvasProbeDetail) {
+        this.dispatchEvent(new KiCanvasProbeEvent(detail));
+    }
+}
+
+function provider(kind: InsetKind, known: string[]): InsetProvider {
+    return {
+        kind,
+        async resolve(reference: string, number: string) {
+            if (!known.includes(reference)) return null;
+            const target: InsetTarget = {
+                kind,
+                reference,
+                number,
+                side: kind === "pcb" ? "top" : "sch",
+                focus: new BBox(0, 0, 10, 10),
+                anchor: new Vec2(5, 5),
+                mirror: false,
+            };
+            return target;
+        },
+        render() {},
+    };
+}
+
+const hover = (reference: string, number = "1"): KiCanvasProbeDetail => ({
+    phase: "hover",
+    source: "pin",
+    number,
+    index: `symbol_pin_${number}`,
+    crossIndex: `pad_${number}`,
+    reference,
+    anchor: { x: 30, y: 40 },
+});
+
+suite("inset link", () => {
+    let overlay: HTMLDivElement;
+    let viewer: FakeViewer;
+    let link: InsetLink;
+
+    setup(() => {
+        overlay = document.createElement("div");
+        Object.assign(overlay.style, {
+            position: "fixed",
+            left: "0px",
+            top: "0px",
+            width: "1200px",
+            height: "800px",
+        });
+        document.body.append(overlay);
+        viewer = new FakeViewer();
+        const own = provider("sch", ["R1"]);
+        link = new InsetLink({
+            insetProvider: (kind) => (kind === "sch" ? own : null),
+            overlay_parent: () => overlay,
+            source_viewers: () => ({ sch: viewer as unknown as Viewer }),
+        });
+        const pcb = provider("pcb", ["R1", "U1"]);
+        link.peer = {
+            insetProvider: (kind) => (kind === "pcb" ? pcb : null),
+        };
+    });
+
+    teardown(() => {
+        link.dispose();
+        viewer.canvas.remove();
+        overlay.remove();
+    });
+
+    test("a pin hover opens a PCB preview after the delay", async () => {
+        viewer.probe(hover("U1"));
+        expect(link.session.count).to.equal(0);
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        expect(link.session.count).to.equal(1);
+        const inset = link.session.preview!;
+        expect(inset.target.kind).to.equal("pcb");
+        expect(inset.target.reference).to.equal("U1");
+        // The leader starts at the pin, through the source viewer's camera.
+        link.session.flush();
+        const d = inset.leader.getAttribute("d")!;
+        expect(d.startsWith("M70,100 ")).to.equal(true);
+    });
+
+    test("virtual symbols (#PWR, #FLG) open nothing", async () => {
+        viewer.probe(hover("#PWR01"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        expect(link.session.count).to.equal(0);
+    });
+
+    test("leaving the pin closes the preview unless the pointer is on it", async () => {
+        viewer.probe(hover("U1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        viewer.probe({ ...hover("U1"), phase: "leave" } as KiCanvasProbeDetail);
+        await wait(HOVER_CLOSE_DELAY_MS + 50);
+        expect(link.session.count).to.equal(0);
+    });
+
+    test("a quick pass over a pin opens nothing", async () => {
+        viewer.probe(hover("U1"));
+        viewer.probe({ ...hover("U1"), phase: "leave" } as KiCanvasProbeDetail);
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        expect(link.session.count).to.equal(0);
+    });
+
+    test("a designator missing from the board opens a header-only inset", async () => {
+        viewer.probe(hover("J7", "3"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        const inset = link.session.preview!;
+        expect(inset.missing).to.equal(true);
+        expect(inset.panel.el.classList.contains("missing")).to.equal(true);
+        link.session.flush();
+        expect(inset.leader.style.display).to.equal("none");
+    });
+
+    test("without a peer, hovers do nothing", async () => {
+        link.peer = null;
+        viewer.probe(hover("U1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        expect(link.session.count).to.equal(0);
+    });
+
+    test("unlinking closes open insets", async () => {
+        viewer.probe(hover("U1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        link.peer = null;
+        expect(link.session.count).to.equal(0);
+    });
+});
+
+// --- Two real elements --------------------------------------------------------
+
+const ROOT_UUID = "00000000-0000-0000-0000-00000000r001";
+
+const SCHEMATIC = `
+(kicad_sch
+  (version 20250114)
+  (generator "eeschema")
+  (uuid "${ROOT_UUID}")
+  (paper "A4")
+  (lib_symbols
+    (symbol "Device:R"
+      (pin_numbers (hide yes))
+      (exclude_from_sim no) (in_bom yes) (on_board yes)
+      (property "Reference" "R" (at 2 0 90) (effects (font (size 1.27 1.27))))
+      (symbol "R_0_1"
+        (rectangle (start -1.016 -2.54) (end 1.016 2.54)
+          (stroke (width 0.254) (type default)) (fill (type none))))
+      (symbol "R_1_1"
+        (pin passive line (at 0 3.81 270) (length 1.27)
+          (name "~" (effects (font (size 1.27 1.27))))
+          (number "1" (effects (font (size 1.27 1.27)))))
+        (pin passive line (at 0 -3.81 90) (length 1.27)
+          (name "~" (effects (font (size 1.27 1.27))))
+          (number "2" (effects (font (size 1.27 1.27)))))
+      )
+    )
+  )
+  (symbol
+    (lib_id "Device:R") (at 100 100 0) (unit 1)
+    (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no)
+    (uuid "00000000-0000-0000-0000-0000000000r1")
+    (property "Reference" "R1" (at 103 100 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "10k" (at 105 100 0) (effects (font (size 1.27 1.27))))
+    (pin "1" (uuid "00000000-0000-0000-0000-0000000000p1"))
+    (pin "2" (uuid "00000000-0000-0000-0000-0000000000p2"))
+    (instances (project "insets" (path "/${ROOT_UUID}" (reference "R1") (unit 1))))
+  )
+)
+`;
+
+const BOARD = `
+(kicad_pcb
+  (version 20240108)
+  (generator "pcbnew")
+  (paper "A4")
+  (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))
+  (net 0 "")
+  (net 1 "VBUS")
+  (net 2 "GND")
+  (gr_rect (start 0 0) (end 40 30) (layer "Edge.Cuts") (width 0.1))
+  (footprint "R_0805" (layer "F.Cu") (at 10 10) (uuid "fp-r1")
+    (property "Reference" "R1" (at 0 -2 0) (layer "F.SilkS") (uuid "r1-ref") (effects (font (size 1 1) (thickness 0.15))))
+    (pad "1" smd rect (at -1 0) (size 1.2 1.2) (layers "F.Cu" "F.Paste" "F.Mask") (net 1 "VBUS") (uuid "r1-1"))
+    (pad "2" smd rect (at 1 0) (size 1.2 1.2) (layers "F.Cu" "F.Paste" "F.Mask") (net 2 "GND") (uuid "r1-2"))
+  )
+  (footprint "C_0805" (layer "B.Cu") (at 30 20) (uuid "fp-c1")
+    (property "Reference" "C1" (at 0 -2 0) (layer "B.SilkS") (uuid "c1-ref") (effects (font (size 1 1) (thickness 0.15))))
+    (pad "1" smd rect (at -1 0) (size 1.2 1.2) (layers "B.Cu" "B.Paste" "B.Mask") (net 1 "VBUS") (uuid "c1-1"))
+  )
+)
+`;
+
+type Host = HTMLElement & {
+    replaceSources(update: {
+        revisionKey: string;
+        sources: Array<{ filename: string; content: string }>;
+    }): Promise<void>;
+    setInsetPeer(peer: unknown): void;
+    closeInsets(): boolean;
+    readonly insetCount: number;
+};
+
+type AnyViewer = {
+    on_hover(pos: Vec2): void;
+    on_pointer_leave?: () => void;
+    layers: { query_item_bboxes(item: unknown): Iterator<BBox> };
+    schematic?: {
+        symbols: Map<string, { pins: Array<{ number: string }> }>;
+    };
+    board?: {
+        footprints: Array<{
+            reference: string;
+            pad_by_number(n: string): { bbox: BBox };
+        }>;
+    };
+};
+
+async function mount(filename: string, content: string): Promise<Host> {
+    const host = document.createElement("ecad-viewer") as Host;
+    host.setAttribute("source-mode", "host");
+    Object.assign(host.style, {
+        position: "fixed",
+        left: "0px",
+        top: "0px",
+        width: "900px",
+        height: "600px",
+    });
+    document.body.append(host);
+    await host.replaceSources({
+        revisionKey: "r1",
+        sources: [{ filename, content }],
+    });
+    return host;
+}
+
+function inner(host: Host, tag: string): AnyViewer {
+    const app = host.shadowRoot!.querySelector(tag) as
+        | (HTMLElement & { viewer?: AnyViewer })
+        | null;
+    expect(app?.viewer, tag).to.exist;
+    return app!.viewer!;
+}
+
+const centre = (b: BBox) => new Vec2(b.x + b.w / 2, b.y + b.h / 2);
+
+suite("inset elements", () => {
+    let sch: Host;
+    let pcb: Host;
+
+    setup(async () => {
+        sch = await mount("insets.kicad_sch", SCHEMATIC);
+        pcb = await mount("insets.kicad_pcb", BOARD);
+        sch.setInsetPeer(pcb);
+        pcb.setInsetPeer(sch);
+    });
+
+    teardown(() => {
+        sch.setInsetPeer(null);
+        pcb.setInsetPeer(null);
+        sch.remove();
+        pcb.remove();
+    });
+
+    const titles = (host: Host) =>
+        [...host.shadowRoot!.querySelectorAll(".inset-title")].map(
+            (el) => el.textContent,
+        );
+    const sides = (host: Host) =>
+        [...host.shadowRoot!.querySelectorAll(".inset-side")].map(
+            (el) => el.textContent,
+        );
+
+    test("hovering a schematic pin opens the PCB around its footprint", async () => {
+        const viewer = inner(sch, "kc-schematic-app");
+        const symbol = [...viewer.schematic!.symbols.values()][0]!;
+        const pin = symbol.pins.find((p) => p.number === "1")!;
+        const box = viewer.layers.query_item_bboxes(pin).next().value as BBox;
+        viewer.on_hover(centre(box));
+        await wait(HOVER_OPEN_DELAY_MS + 100);
+        expect(sch.insetCount).to.equal(1);
+        expect(titles(sch)).to.deep.equal(["R1 · 1 · VBUS"]);
+        expect(sides(sch)).to.deep.equal(["TOP"]);
+        expect(pcb.insetCount).to.equal(0);
+    });
+
+    test("hovering a PCB pad opens the schematic around its symbol", async () => {
+        const viewer = inner(pcb, "kc-board-app");
+        const fp = viewer.board!.footprints.find((f) => f.reference === "R1")!;
+        viewer.on_hover(centre(fp.pad_by_number("2").bbox));
+        await wait(HOVER_OPEN_DELAY_MS + 100);
+        expect(pcb.insetCount).to.equal(1);
+        expect(sides(pcb)).to.deep.equal(["SCH"]);
+        expect(titles(pcb)[0]).to.match(/^R1 · 2/);
+    });
+
+    test("a footprint with no symbol opens the header-only inset", async () => {
+        const viewer = inner(pcb, "kc-board-app");
+        const fp = viewer.board!.footprints.find((f) => f.reference === "C1")!;
+        viewer.on_hover(centre(fp.pad_by_number("1").bbox));
+        await wait(HOVER_OPEN_DELAY_MS + 100);
+        expect(pcb.insetCount).to.equal(1);
+        expect(pcb.shadowRoot!.querySelector(".inset.missing")).to.not.equal(
+            null,
+        );
+        expect(sides(pcb)).to.deep.equal(["—"]);
+    });
+
+    test("closeInsets reports whether anything closed", async () => {
+        expect(sch.closeInsets()).to.equal(false);
+        const viewer = inner(sch, "kc-schematic-app");
+        const symbol = [...viewer.schematic!.symbols.values()][0]!;
+        const pin = symbol.pins.find((p) => p.number === "1")!;
+        const box = viewer.layers.query_item_bboxes(pin).next().value as BBox;
+        viewer.on_hover(centre(box));
+        await wait(HOVER_OPEN_DELAY_MS + 100);
+        expect(sch.closeInsets()).to.equal(true);
+        expect(sch.insetCount).to.equal(0);
+    });
+});

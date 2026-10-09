@@ -539,6 +539,7 @@ export class BoardViewer extends DocumentViewer<
                     number: pad.number,
                     index: pad.index,
                     crossIndex: pad.cross_index,
+                    ...pad_identity(pad),
                 }),
             );
         } else {
@@ -1153,6 +1154,7 @@ export class BoardViewer extends DocumentViewer<
                     number: next.number,
                     index: next.index,
                     crossIndex: next.cross_index,
+                    ...pad_identity(next),
                 }),
             );
         }
@@ -1170,4 +1172,13 @@ export class BoardViewer extends DocumentViewer<
         }
         return matches;
     }
+}
+
+/** Designator and centre of a pad, for cross-document insets. */
+function pad_identity(pad: board_items.Pad) {
+    const box = pad.bbox;
+    return {
+        reference: pad.parent?.reference,
+        anchor: { x: box.x + box.w / 2, y: box.y + box.h / 2 },
+    };
 }

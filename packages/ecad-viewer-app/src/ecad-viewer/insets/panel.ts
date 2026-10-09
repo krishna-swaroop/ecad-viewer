@@ -44,6 +44,7 @@ const SIDE_LABEL: Record<InsetSide, string> = {
     top: "TOP",
     bottom: "BOT",
     sch: "SCH",
+    none: "—",
 };
 
 export const MIN_PANEL_WIDTH = 160;
@@ -231,6 +232,11 @@ export const INSET_STYLES = `
 .inset-toolbar button:hover { background: var(--inset-muted-bg, #f1f5f9); color: var(--inset-fg, #0f172a); }
 .inset-toolbar button.on { color: var(--inset-color); }
 .inset.preview .inset-toolbar button:not([data-action="pin"]) { display: none; }
+.inset.missing { height: auto !important; border-color: var(--inset-border, #cbd5e1); }
+.inset.missing .inset-dot { background: var(--inset-border, #cbd5e1); }
+.inset.missing .inset-canvas, .inset.missing .inset-grip,
+.inset.missing .inset-toolbar button:not([data-action="close"]) { display: none !important; }
+.inset.missing .inset-header { border-bottom: 0; }
 .inset-canvas { flex: 1; width: 100%; min-height: 0; display: block; cursor: grab; }
 .inset-grip { position: absolute; right: 0; bottom: 0; width: 12px; height: 12px; cursor: nwse-resize; }
 .inset.lens { border-radius: 50%; border-width: 2px; }

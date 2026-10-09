@@ -91,6 +91,10 @@ export type KiCanvasProbeDetail =
           number: string;
           index: string;
           crossIndex: string;
+          /** Owning symbol or footprint designator, for cross-document insets. */
+          reference?: string;
+          /** World-space centre of the pin or pad. */
+          anchor?: { x: number; y: number };
       }
     | {
           phase: "clear";
