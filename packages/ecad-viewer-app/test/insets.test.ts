@@ -1,6 +1,7 @@
 import { expect } from "@esm-bundle/chai";
 import { BBox, Vec2 } from "../src/base/math";
 import {
+    clamp_to_view,
     fit_camera,
     inset_to_world,
     InsetSession,
@@ -479,5 +480,100 @@ suite("inset session", () => {
         session.mount(other);
         expect(session.root.parentNode).to.equal(other);
         expect(session.count).to.equal(1);
+    });
+});
+
+suite("inset leader end", () => {
+    const view = { left: 100, top: 50, width: 200, height: 100 };
+
+    test("a point inside the view is left alone", () => {
+        const r = clamp_to_view(new Vec2(150, 80), view);
+        expect(r.clipped).to.equal(false);
+        close_to(r.point, new Vec2(150, 80));
+    });
+
+    test("a point outside moves to the edge along the line from the centre", () => {
+        // Centre (200,100); straight up out of the top edge.
+        const up = clamp_to_view(new Vec2(200, -500), view);
+        expect(up.clipped).to.equal(true);
+        close_to(up.point, new Vec2(200, 54));
+        // Diagonal: hits the nearer edge first, keeping the direction.
+        const diag = clamp_to_view(new Vec2(600, 300), view);
+        expect(diag.clipped).to.equal(true);
+        // Direction (400,200): the bottom edge (t = 46/200) comes first.
+        expect(diag.point.x).to.be.closeTo(292, 1e-6);
+        expect(diag.point.y).to.be.closeTo(146, 1e-6);
+    });
+
+    test("a lens clamps to its circle", () => {
+        const square = { left: 0, top: 0, width: 200, height: 200 };
+        // A corner of the square is outside the circle.
+        const r = clamp_to_view(new Vec2(190, 190), square, true);
+        expect(r.clipped).to.equal(true);
+        expect(Math.hypot(r.point.x - 100, r.point.y - 100)).to.be.closeTo(
+            96,
+            1e-6,
+        );
+        expect(
+            clamp_to_view(new Vec2(150, 100), square, true).clipped,
+        ).to.equal(false);
+    });
+});
+
+suite("inset leader with the pad out of view", () => {
+    test("zooming past the pad ends the leader on the inset's edge", async () => {
+        const host = document.createElement("div");
+        Object.assign(host.style, {
+            position: "fixed",
+            left: "0px",
+            top: "0px",
+            width: "1200px",
+            height: "800px",
+        });
+        document.body.append(host);
+        const session = new InsetSession();
+        const provider: InsetProvider = {
+            kind: "pcb",
+            resolve: async (reference, number) => ({
+                kind: "pcb",
+                reference,
+                number,
+                side: "top",
+                focus: new BBox(0, 0, 10, 10),
+                anchor: new Vec2(1, 1),
+                mirror: false,
+            }),
+            render() {},
+        };
+        session.register(provider);
+        session.mount(host);
+        try {
+            const inset = (await session.open({
+                kind: "pcb",
+                reference: "U1",
+                number: "2",
+                source: { world_to_client: () => new Vec2(100, 100) },
+                source_anchor: new Vec2(0, 0),
+            }))!;
+            session.flush();
+            expect(inset.ring.getAttribute("r")).to.equal("7");
+            // Zoom far in about the centre: (1,1) leaves the view.
+            inset.camera.zoom *= 40;
+            session.flush();
+            const rect = inset.panel.canvas.getBoundingClientRect();
+            const cx = Number(inset.ring.getAttribute("cx"));
+            const cy = Number(inset.ring.getAttribute("cy"));
+            expect(cx).to.be.within(rect.left, rect.right);
+            expect(cy).to.be.within(rect.top, rect.bottom);
+            expect(inset.ring.getAttribute("r")).to.equal("4");
+            expect(inset.ring.classList.contains("off-view")).to.equal(true);
+            // Back in view: the ring returns.
+            inset.fit();
+            session.flush();
+            expect(inset.ring.getAttribute("r")).to.equal("7");
+        } finally {
+            session.dispose();
+            host.remove();
+        }
     });
 });
