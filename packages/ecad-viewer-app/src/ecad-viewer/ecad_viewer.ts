@@ -2509,6 +2509,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.#apply_viewer_activity();
         if (active) this.#restart_diff_animation();
         else this.#cancel_diff_animation();
+        // A hidden tab drops its unpinned previews; a shown one lays its
+        // insets and leaders out again (the camera may have moved meanwhile).
+        if (active) this.#inset_link?.shown();
+        else this.#inset_link?.hidden();
     }
 
     /**
