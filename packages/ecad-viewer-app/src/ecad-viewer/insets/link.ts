@@ -29,6 +29,8 @@ export interface InsetPeer {
     insetProvider(kind: InsetKind): InsetProvider | null;
     /** Mirror an inset-mode change made on the other element. */
     syncInsetMode?(on: boolean): void;
+    /** The peer's current mode, adopted when the two are linked. */
+    readonly insetMode?: boolean;
 }
 
 export interface InsetLinkHost extends InsetPeer {
@@ -96,6 +98,11 @@ class LazyProvider implements InsetProvider {
         this.#owners.get(target)?.render(target, camera, canvas);
     }
 
+    ready() {
+        const provider = this.find();
+        return !!provider && (provider.ready?.() ?? true);
+    }
+
     release(target: InsetTarget) {
         this.#owners.get(target)?.release?.(target);
         this.#owners.delete(target);
@@ -144,6 +151,8 @@ export class InsetLink {
     set peer(peer: InsetPeer | null) {
         this.#peer = peer;
         if (!peer) this.session.close_all();
+        // Linking to an element already in inset mode joins that mode.
+        else if (peer.insetMode && !this.#mode) this.set_mode(true);
         this.sync();
     }
 
@@ -208,7 +217,8 @@ export class InsetLink {
             !event.shiftKey &&
             !event.repeat
         ) {
-            if (!this.#peer) return false;
+            // No peer yet is fine: the host may load the other document
+            // only once the mode is on (Prism mounts the PCB lazily).
             this.set_mode(!this.#mode);
             return true;
         }

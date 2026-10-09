@@ -204,8 +204,33 @@ suite("inset link", () => {
         expect(link.key_down(key("i"))).to.equal(true);
         expect(link.mode).to.equal(false);
         expect(modes).to.deep.equal([true, false]);
+        // No peer yet (the host loads the other document lazily): I still
+        // toggles, so the host can react to the mode.
         link.peer = null;
-        expect(link.key_down(key("i"))).to.equal(false);
+        expect(link.key_down(key("i"))).to.equal(true);
+        expect(link.mode).to.equal(true);
+    });
+
+    test("a provider still loading opens nothing rather than 'not on board'", async () => {
+        const loading: InsetProvider = {
+            ...provider("pcb", []),
+            ready: () => false,
+        };
+        link.peer = {
+            insetProvider: (kind) => (kind === "pcb" ? loading : null),
+        };
+        viewer.probe(hover("U1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        expect(link.session.count).to.equal(0);
+    });
+
+    test("linking to a peer already in inset mode joins it", () => {
+        link.set_mode(false, true);
+        link.peer = {
+            insetProvider: () => null,
+            insetMode: true,
+        };
+        expect(link.mode).to.equal(true);
     });
 
     test("holding Alt peeks: it opens at once and closes on release", async () => {
@@ -406,6 +431,8 @@ type Host = HTMLElement & {
     }): Promise<void>;
     setInsetPeer(peer: unknown): void;
     setInsetMode(on: boolean): void;
+    enableInsets(): void;
+    escapeInsets(): boolean;
     readonly insetMode: boolean;
     closeInsets(): boolean;
     readonly insetCount: number;
@@ -587,5 +614,72 @@ suite("inset elements", () => {
         expect(selects).to.equal(0);
         expect(sch.insetCount).to.equal(1);
         expect(sch.shadowRoot!.querySelector(".inset.preview")).to.equal(null);
+    });
+});
+
+suite("inset elements before a peer", () => {
+    test("enableInsets lets I toggle the mode with no peer; linking keeps it", async () => {
+        const sch = await mount("solo.kicad_sch", SCHEMATIC);
+        const seen: boolean[] = [];
+        sch.addEventListener("ecad-viewer:inset-mode", (e) =>
+            seen.push((e as CustomEvent<{ on: boolean }>).detail.on),
+        );
+        try {
+            sch.enableInsets();
+            window.dispatchEvent(
+                new KeyboardEvent("keydown", { key: "i", cancelable: true }),
+            );
+            expect(sch.insetMode).to.equal(true);
+            expect(seen).to.deep.equal([true]);
+            const pcb = await mount("solo.kicad_pcb", BOARD);
+            try {
+                pcb.setInsetPeer(sch);
+                sch.setInsetPeer(pcb);
+                expect(pcb.insetMode).to.equal(true);
+                expect(sch.insetMode).to.equal(true);
+            } finally {
+                pcb.setInsetPeer(null);
+                pcb.remove();
+            }
+        } finally {
+            sch.setInsetPeer(null);
+            sch.remove();
+        }
+    });
+
+    test("escapeInsets closes the preview first, then everything", async () => {
+        const sch = await mount("esc.kicad_sch", SCHEMATIC);
+        const pcb = await mount("esc.kicad_pcb", BOARD);
+        try {
+            sch.setInsetPeer(pcb);
+            pcb.setInsetPeer(sch);
+            sch.setInsetMode(true);
+            expect(sch.escapeInsets()).to.equal(false);
+            const viewer = inner(sch, "kc-schematic-app");
+            const symbol = [...viewer.schematic!.symbols.values()][0]!;
+            const pin = symbol.pins.find((p) => p.number === "1")!;
+            const box = viewer.layers.query_item_bboxes(pin).next()
+                .value as BBox;
+            viewer.on_hover(centre(box));
+            await wait(HOVER_OPEN_DELAY_MS + 100);
+            // Pin the first preview so the next hover opens a second inset.
+            viewer.canvas.dispatchEvent(new MouseEvent("click"));
+            const pin2 = symbol.pins.find((p) => p.number === "2")!;
+            const box2 = viewer.layers.query_item_bboxes(pin2).next()
+                .value as BBox;
+            viewer.on_hover(centre(box2));
+            await wait(HOVER_OPEN_DELAY_MS + 100);
+            expect(sch.insetCount).to.equal(2);
+            expect(sch.escapeInsets()).to.equal(true);
+            expect(sch.insetCount).to.equal(1);
+            expect(sch.escapeInsets()).to.equal(true);
+            expect(sch.insetCount).to.equal(0);
+            expect(sch.escapeInsets()).to.equal(false);
+        } finally {
+            sch.setInsetPeer(null);
+            pcb.setInsetPeer(null);
+            sch.remove();
+            pcb.remove();
+        }
     });
 });

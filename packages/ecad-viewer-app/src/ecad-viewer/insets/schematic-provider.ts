@@ -69,6 +69,10 @@ export class SchematicInsetProvider implements InsetProvider {
         return [...this.#scenes.keys()];
     }
 
+    ready() {
+        return this.host.pages().length > 0;
+    }
+
     async resolve(
         reference: string,
         number: string,

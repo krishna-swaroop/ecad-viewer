@@ -229,6 +229,8 @@ export class InsetSession {
             request.reference,
             request.number,
         );
+        // Still loading is not the same as absent: open nothing yet.
+        if (!target && provider.ready?.() === false) return null;
         const missing = !target;
         if (!target && !(request.show_missing && ticket === this.#request))
             return null;

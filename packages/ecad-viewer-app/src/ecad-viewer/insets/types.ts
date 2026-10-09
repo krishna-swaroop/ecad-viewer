@@ -47,6 +47,11 @@ export interface InsetProvider {
      * them here.
      */
     release?(target: InsetTarget): void;
+    /**
+     * False while the document is still loading. A null resolve from an
+     * unready provider means "not yet", not "not in this document".
+     */
+    ready?(): boolean;
 }
 
 /**
