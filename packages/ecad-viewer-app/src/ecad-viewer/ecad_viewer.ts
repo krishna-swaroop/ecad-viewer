@@ -438,7 +438,14 @@ import {
     board_view_stats,
     set_board_view_gpu_sync,
 } from "../viewers/board/board-view";
-import { BoardInsetProvider, type InsetProvider } from "./insets";
+import { schematic_view_stats } from "../viewers/schematic/schematic-view";
+import themes from "../kicanvas/themes";
+import {
+    BoardInsetProvider,
+    SchematicInsetProvider,
+    type InsetKind,
+    type InsetProvider,
+} from "./insets";
 
 export class ECadViewer extends KCUIElement implements InputContainer {
     static override styles = [
@@ -4201,23 +4208,50 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     #board_inset_provider: BoardInsetProvider | null = null;
+    #schematic_inset_provider: SchematicInsetProvider | null = null;
 
     /**
-     * Serves insets of this element's document to the other element's
-     * insets (the PCB around a footprint). Null until a board is loaded.
+     * Serves insets of this element's documents to the other element's
+     * insets: "pcb" is the board around a footprint, "sch" the schematic
+     * around a symbol. Null when this element holds no such document.
      */
-    public get insetProvider(): InsetProvider | null {
-        if (!this.has_pcb) return null;
-        this.#board_inset_provider ??= new BoardInsetProvider(() =>
-            this.#safe_board_viewer(),
-        );
-        return this.#board_inset_provider;
+    public insetProvider(kind: InsetKind): InsetProvider | null {
+        if (kind === "pcb") {
+            if (!this.has_pcb) return null;
+            this.#board_inset_provider ??= new BoardInsetProvider(() =>
+                this.#safe_board_viewer(),
+            );
+            return this.#board_inset_provider;
+        }
+        if (!this.has_sch) return null;
+        this.#schematic_inset_provider ??= new SchematicInsetProvider({
+            pages: () =>
+                this.#project.pages.flatMap((page) => {
+                    const document = page.document;
+                    return document instanceof KicadSch
+                        ? [
+                              {
+                                  key: page.project_path,
+                                  name: page.name ?? document.filename,
+                                  document,
+                                  context: page.schematic_context,
+                              },
+                          ]
+                        : [];
+                }),
+            theme: () =>
+                this.#safe_schematic_viewer()?.theme ??
+                themes.default.schematic,
+            container: () => this.shadowRoot ?? document.body,
+        });
+        return this.#schematic_inset_provider;
     }
 
     /** Inset render timings and the GPU-sync switch, for benchmarks. */
     static get insetDiagnostics() {
         return {
             board: board_view_stats,
+            schematic: schematic_view_stats,
             setGpuSync: set_board_view_gpu_sync,
         };
     }

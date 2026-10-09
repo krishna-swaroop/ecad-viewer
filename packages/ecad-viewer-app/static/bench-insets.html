@@ -55,7 +55,7 @@
             window.bench_ready = async () => {
                 const viewer = () =>
                     el.shadowRoot?.querySelector("kc-board-app")?.viewer;
-                while (!viewer()?.board || !el.insetProvider)
+                while (!viewer()?.board || !el.insetProvider("pcb"))
                     await new Promise((r) => setTimeout(r, 250));
                 await frame();
                 return true;
@@ -64,7 +64,7 @@
             // One pad: first frame, then `steps` zoom frames (one per rAF).
             window.bench_pad = async (reference, number, steps = 30) => {
                 const { board, setGpuSync } = el.constructor.insetDiagnostics;
-                const p = el.insetProvider;
+                const p = el.insetProvider("pcb");
                 const t = await p.resolve(reference, number);
                 if (!t) return { reference, number, error: "not found" };
                 const camera = {

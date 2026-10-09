@@ -215,10 +215,16 @@ export class InsetSession {
             request.reference,
             request.number,
         );
-        // A newer hover superseded this one while it resolved.
-        if (ticket !== this.#request || !target) return null;
-        if (request.parent && !this.#insets.includes(request.parent))
+        if (!target) return null;
+        // A newer hover superseded this one while it resolved, or the parent
+        // closed meanwhile.
+        if (
+            ticket !== this.#request ||
+            (request.parent && !this.#insets.includes(request.parent))
+        ) {
+            provider.release?.(target);
             return null;
+        }
 
         const preview = request.preview ?? true;
         if (preview && this.#preview) this.close(this.#preview);
@@ -315,6 +321,7 @@ export class InsetSession {
     /** Close `inset` and everything chained from it. */
     close(inset: Inset) {
         for (const child of [...inset.children]) this.close(child);
+        inset.provider.release?.(inset.target);
         inset.panel.dispose();
         inset.leader.remove();
         inset.ring.remove();

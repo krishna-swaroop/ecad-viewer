@@ -125,6 +125,7 @@ suite("inset camera", () => {
 
 class FakeProvider implements InsetProvider {
     renders = 0;
+    released: string[] = [];
     last_camera: InsetCamera | null = null;
     pending: Map<string, (t: InsetTarget | null) => void> = new Map();
     deferred = false;
@@ -156,6 +157,10 @@ class FakeProvider implements InsetProvider {
     render(_target: InsetTarget, camera: InsetCamera) {
         this.renders += 1;
         this.last_camera = { ...camera };
+    }
+
+    release(target: InsetTarget) {
+        this.released.push(target.reference);
     }
 }
 
@@ -240,6 +245,18 @@ suite("inset session", () => {
         expect(await first).to.equal(null);
         expect(session.count).to.equal(1);
         expect(session.insets[0]!.target.reference).to.equal("U2");
+    });
+
+    test("superseded and closed targets are released to their provider", async () => {
+        pcb.deferred = true;
+        const first = open("U1");
+        const second = open("U2");
+        pcb.pending.get("U2")!(pcb.target("U2", "1"));
+        pcb.pending.get("U1")!(pcb.target("U1", "1"));
+        await Promise.all([first, second]);
+        expect(pcb.released).to.deep.equal(["U1"]);
+        session.close_all();
+        expect(pcb.released).to.deep.equal(["U1", "U2"]);
     });
 
     test("children share the chain colour; closing a parent closes its subtree", async () => {

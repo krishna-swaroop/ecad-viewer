@@ -40,6 +40,12 @@ export interface InsetProvider {
         camera: InsetCamera,
         canvas: HTMLCanvasElement,
     ): void;
+    /**
+     * The inset showing `target` closed, or a resolved target was discarded
+     * (a newer hover won). Providers that hold resources per target free
+     * them here.
+     */
+    release?(target: InsetTarget): void;
 }
 
 /**
