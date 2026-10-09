@@ -169,14 +169,29 @@ export class InsetPanel {
         this.#resize_observer.observe(this.canvas);
     }
 
-    set title(value: { reference: string; number: string; detail?: string }) {
+    set title(value: {
+        reference: string;
+        number: string;
+        detail?: string;
+        /** Chained insets: the parent's "REF · PIN", shown as a breadcrumb. */
+        crumb?: string;
+    }) {
         const sub = [value.number, value.detail].filter(Boolean).join(" · ");
-        this.#title.replaceChildren(
+        const parts: Node[] = [];
+        if (value.crumb)
+            parts.push(
+                Object.assign(document.createElement("span"), {
+                    className: "inset-crumb",
+                    textContent: `${value.crumb} › `,
+                }),
+            );
+        parts.push(
             Object.assign(document.createElement("b"), {
                 textContent: value.reference,
             }),
             document.createTextNode(sub ? ` · ${sub}` : ""),
         );
+        this.#title.replaceChildren(...parts);
     }
 
     set side(side: InsetSide) {
@@ -291,6 +306,7 @@ export const INSET_STYLES = `
 .inset-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--inset-color); flex: none; }
 .inset-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--inset-muted, #64748b); }
 .inset-title b { color: var(--inset-fg, #0f172a); font-weight: 600; }
+.inset-crumb { color: var(--inset-muted, #64748b); }
 .inset-side { flex: none; font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 3px 5px; border-radius: 4px;
   background: var(--inset-muted-bg, #f1f5f9); color: var(--inset-muted, #64748b); }
 .inset-side.bottom { background: var(--inset-bottom-bg, #dbe7f7); color: var(--inset-bottom-fg, #29558f); }

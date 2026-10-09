@@ -1,6 +1,7 @@
 import { expect } from "@esm-bundle/chai";
 import { BBox, Vec2 } from "../src/base/math";
 import {
+    MAX_INSETS,
     clamp_to_view,
     fit_camera,
     inset_to_world,
@@ -471,6 +472,99 @@ suite("inset session", () => {
             size: { w: 320, h: 248 },
         }))!;
         expect(right.panel.el.offsetLeft).to.equal(1100 - 60 - 320);
+    });
+
+    test("a child's header names its parent as a breadcrumb", async () => {
+        const root = (await open("U1", { preview: false }))!;
+        const child = (await session.open({
+            kind: "sch",
+            reference: "R9",
+            number: "1",
+            source: root,
+            source_anchor: new Vec2(5, 5),
+            parent: root,
+            preview: false,
+        }))!;
+        const title = child.panel.el.querySelector(".inset-title")!;
+        expect(title.querySelector(".inset-crumb")!.textContent).to.equal(
+            "U1 · 1 › ",
+        );
+        expect(title.textContent).to.equal("U1 · 1 › R9 · 1 · VCC");
+        expect(root.panel.el.querySelector(".inset-crumb")).to.equal(null);
+    });
+
+    test("at most MAX_INSETS stay open; the least recently used goes first", async () => {
+        const opened = [];
+        for (let i = 0; i < MAX_INSETS; i++)
+            opened.push((await open(`U${i}`, { preview: false }))!);
+        // Touch the oldest so the second-oldest becomes least recently used.
+        opened[0]!.panel.el.dispatchEvent(new PointerEvent("pointerenter"));
+        await open("U99", { preview: false });
+        expect(session.count).to.equal(MAX_INSETS);
+        expect(session.insets).to.include(opened[0]);
+        expect(session.insets).to.not.include(opened[1]);
+    });
+
+    test("the cap never evicts the new inset's own ancestors", async () => {
+        const root = (await open("U0", { preview: false }))!;
+        let parent = root;
+        for (let i = 1; i < MAX_INSETS; i++)
+            parent = (await session.open({
+                kind: "pcb",
+                reference: `R${i}`,
+                number: "1",
+                source: parent,
+                source_anchor: new Vec2(5, 5),
+                parent,
+                preview: false,
+            }))!;
+        // All 8 form one chain: a ninth in the chain has nothing to evict.
+        const ninth = await session.open({
+            kind: "pcb",
+            reference: "R9",
+            number: "1",
+            source: parent,
+            source_anchor: new Vec2(5, 5),
+            parent,
+            preview: false,
+        });
+        expect(ninth).to.equal(null);
+        expect(session.count).to.equal(MAX_INSETS);
+        expect(session.insets).to.include(root);
+    });
+
+    test("a child opens beside its parent without covering it", async () => {
+        const root = (await open("U1", { preview: false }))!;
+        const child = (await session.open({
+            kind: "sch",
+            reference: "R9",
+            number: "1",
+            source: root,
+            source_anchor: new Vec2(5, 5),
+            parent: root,
+            preview: false,
+        }))!;
+        const a = root.panel.el.getBoundingClientRect();
+        const b = child.panel.el.getBoundingClientRect();
+        const overlaps =
+            a.left < b.right &&
+            b.left < a.right &&
+            a.top < b.bottom &&
+            b.top < a.bottom;
+        expect(overlaps).to.equal(false);
+    });
+
+    test("a second root avoids an inset already open at the same spot", async () => {
+        const first = (await open("U1", { preview: false }))!;
+        const second = (await open("U2", { preview: false }))!;
+        const a = first.panel.el.getBoundingClientRect();
+        const b = second.panel.el.getBoundingClientRect();
+        const overlaps =
+            a.left < b.right &&
+            b.left < a.right &&
+            a.top < b.bottom &&
+            b.top < a.bottom;
+        expect(overlaps).to.equal(false);
     });
 
     test("the overlay moves between hosts and keeps its insets", async () => {
