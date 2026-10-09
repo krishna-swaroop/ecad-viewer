@@ -108,7 +108,10 @@ export class Inset implements InsetSource {
             hit?.reference === this.hit?.reference &&
             hit?.number === this.hit?.number;
         this.hit = hit;
-        if (!same) this.session.schedule();
+        if (!same) {
+            this.session.schedule();
+            this.session.on_hit?.(this, hit);
+        }
     }
 
     /** Outline the target pad/pin and the hovered one over the canvas. */
@@ -214,6 +217,15 @@ export class InsetSession {
     #next_color = 0;
     #frame: number | null = null;
     #key_listening = false;
+
+    /**
+     * Chained insets (M5): the pin or pad under the pointer inside an inset
+     * changed, or the canvas was clicked without dragging. The host decides
+     * whether that opens or pins a child inset; on_click returns whether it
+     * used the click.
+     */
+    on_hit: ((inset: Inset, hit: InsetHit | null) => void) | null = null;
+    on_click: ((inset: Inset) => boolean) | null = null;
 
     constructor() {
         this.#root = document.createElement("div");
@@ -343,6 +355,7 @@ export class InsetSession {
             },
             touched: () => this.pin(inset),
             pointer: (cursor) => inset.hover_at(cursor),
+            click: () => void this.on_click?.(inset),
             hover: (on) => {
                 if (on) this.#hovered = inset;
                 else if (this.#hovered === inset) this.#hovered = null;

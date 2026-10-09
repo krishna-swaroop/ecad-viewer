@@ -32,6 +32,8 @@ export interface InsetPanelHandlers {
     touched(): void;
     /** The pointer entered (true) or left (false) the panel. */
     hover(on: boolean): void;
+    /** A press on the canvas released without dragging. */
+    click(): void;
 }
 
 /** Action, glyph, label and key (IN-11; keys act on the hovered inset). */
@@ -142,7 +144,11 @@ export class InsetPanel {
         this.#drag(grip, (dx, dy) => {
             this.set_size(this.el.offsetWidth + dx, this.el.offsetHeight + dy);
         });
-        this.#drag(this.canvas, (dx, dy) => handlers.pan(dx, dy));
+        this.#drag(
+            this.canvas,
+            (dx, dy) => handlers.pan(dx, dy),
+            () => handlers.click(),
+        );
         this.canvas.addEventListener(
             "wheel",
             (e) => {
@@ -215,7 +221,11 @@ export class InsetPanel {
         this.el.remove();
     }
 
-    #drag(target: HTMLElement, on_move: (dx: number, dy: number) => void) {
+    #drag(
+        target: HTMLElement,
+        on_move: (dx: number, dy: number) => void,
+        on_click?: () => void,
+    ) {
         target.addEventListener("pointerdown", (e) => {
             if (e.button !== 0) return;
             // Toolbar buttons take their own clicks. Capturing the pointer
@@ -230,18 +240,27 @@ export class InsetPanel {
                 /* drag still works while the pointer stays over the target */
             }
             let last = { x: e.clientX, y: e.clientY };
+            let travel = 0;
             const move = (ev: PointerEvent) => {
-                on_move(ev.clientX - last.x, ev.clientY - last.y);
+                const dx = ev.clientX - last.x;
+                const dy = ev.clientY - last.y;
+                travel += Math.abs(dx) + Math.abs(dy);
+                on_move(dx, dy);
                 last = { x: ev.clientX, y: ev.clientY };
             };
-            const up = () => {
+            const end = () => {
                 target.removeEventListener("pointermove", move);
                 target.removeEventListener("pointerup", up);
-                target.removeEventListener("pointercancel", up);
+                target.removeEventListener("pointercancel", end);
+            };
+            const up = () => {
+                end();
+                // Pointer jitter is not a drag.
+                if (travel < 4) on_click?.();
             };
             target.addEventListener("pointermove", move);
             target.addEventListener("pointerup", up);
-            target.addEventListener("pointercancel", up);
+            target.addEventListener("pointercancel", end);
             this.handlers.touched();
         });
     }

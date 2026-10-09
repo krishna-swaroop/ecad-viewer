@@ -12,6 +12,8 @@ import {
     HOVER_CLOSE_DELAY_MS,
     HOVER_OPEN_DELAY_MS,
     InsetLink,
+    world_to_inset,
+    type Inset,
     type InsetKind,
     type InsetProvider,
     type InsetTarget,
@@ -71,6 +73,12 @@ function provider(kind: InsetKind, known: string[]): InsetProvider {
             return target;
         },
         render() {},
+        // A pad at world (4,4)-(6,6) in every scene: R1 pad/pin 2.
+        hit_test(_target: InsetTarget, world: Vec2) {
+            return world.x >= 4 && world.x <= 6 && world.y >= 4 && world.y <= 6
+                ? { reference: "R1", number: "2", box: new BBox(4, 4, 2, 2) }
+                : null;
+        },
     };
 }
 
@@ -288,6 +296,97 @@ suite("inset link", () => {
 
     test("a click away from any pin is left to the viewer", () => {
         expect(click()).to.equal(false);
+    });
+
+    // --- Chained insets (IN-40) ---
+
+    /** Point the inset's pointer at a world point (or away with null). */
+    const hover_in = (inset: Inset, world: Vec2 | null) => {
+        if (!world) return inset.hover_at(null);
+        const { w, h } = inset.canvas_size;
+        inset.hover_at(world_to_inset(inset.camera, w, h, world));
+    };
+
+    test("hovering a pad inside an inset opens the other document as a child", async () => {
+        viewer.probe(hover("U1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        const root = link.session.preview!;
+        expect(root.target.kind).to.equal("pcb");
+        hover_in(root, new Vec2(5, 5));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        expect(link.session.count).to.equal(2);
+        const child = link.session.preview!;
+        expect(child.parent).to.equal(root);
+        expect(child.target.kind).to.equal("sch");
+        expect(child.target.reference).to.equal("R1");
+        expect(child.color).to.equal(root.color);
+        // The preview parent was pinned so the child could not replace it.
+        expect(root.pinned).to.equal(true);
+        // Its leader starts at the pad inside the parent.
+        link.session.flush();
+        const start = root.world_to_client(new Vec2(5, 5))!;
+        expect(
+            child.leader
+                .getAttribute("d")!
+                .startsWith(`M${start.x},${start.y} `),
+        ).to.equal(true);
+    });
+
+    test("the chain alternates documents", async () => {
+        viewer.probe(hover("U1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        const root = link.session.preview!;
+        hover_in(root, new Vec2(5, 5));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        const child = link.session.preview!;
+        hover_in(child, new Vec2(5, 5));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        const grandchild = link.session.preview!;
+        expect(grandchild.parent).to.equal(child);
+        expect(grandchild.target.kind).to.equal("pcb");
+        expect(link.session.count).to.equal(3);
+        // Closing the root closes the whole chain (D-IN-5).
+        link.session.close(root);
+        expect(link.session.count).to.equal(0);
+    });
+
+    test("leaving the pad closes the child preview", async () => {
+        viewer.probe(hover("U1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        const root = link.session.preview!;
+        hover_in(root, new Vec2(5, 5));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        hover_in(root, null);
+        await wait(HOVER_CLOSE_DELAY_MS + 50);
+        expect(link.session.count).to.equal(1);
+        expect(link.session.insets[0]).to.equal(root);
+    });
+
+    test("a click on a pad inside an inset pins its child", async () => {
+        viewer.probe(hover("U1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        const root = link.session.preview!;
+        hover_in(root, new Vec2(5, 5));
+        // Inside the hover delay: the click opens and pins at once.
+        expect(link.session.on_click!(root)).to.equal(true);
+        await wait(20);
+        const child = link.session.insets.find((i) => i.parent === root)!;
+        expect(child.pinned).to.equal(true);
+        // Clicking away from any pad is left to the panel (pan / pin).
+        hover_in(root, new Vec2(0.5, 0.5));
+        expect(link.session.on_click!(root)).to.equal(false);
+    });
+
+    test("with inset mode off nothing chains", async () => {
+        viewer.probe(hover("U1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        const root = link.session.preview!;
+        link.session.pin(root);
+        link.set_mode(false, true);
+        hover_in(root, new Vec2(5, 5));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        expect(link.session.count).to.equal(1);
+        expect(link.session.on_click!(root)).to.equal(false);
     });
 
     test("toolbar keys act on the inset under the pointer", async () => {
