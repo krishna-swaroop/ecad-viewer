@@ -828,3 +828,58 @@ suite("inset elements follow the main view", () => {
         }
     });
 });
+
+suite("inset elements across tabs (IN-42)", () => {
+    test("hiding a tab drops its previews and keeps pinned insets; showing it lays them out again", async () => {
+        const sch = await mount("tabs.kicad_sch", SCHEMATIC);
+        const pcb = await mount("tabs.kicad_pcb", BOARD);
+        try {
+            sch.setInsetPeer(pcb);
+            pcb.setInsetPeer(sch);
+            sch.setInsetMode(true);
+            const viewer = inner(sch, "kc-schematic-app");
+            const symbol = [...viewer.schematic!.symbols.values()][0]!;
+            const box1 = viewer.layers
+                .query_item_bboxes(symbol.pins.find((p) => p.number === "1")!)
+                .next().value as BBox;
+            const box2 = viewer.layers
+                .query_item_bboxes(symbol.pins.find((p) => p.number === "2")!)
+                .next().value as BBox;
+            // Pin pin 1's inset, then leave pin 2's as a preview.
+            viewer.on_hover(centre(box1));
+            await wait(HOVER_OPEN_DELAY_MS + 100);
+            viewer.canvas.dispatchEvent(new MouseEvent("click"));
+            viewer.on_hover(centre(box2));
+            await wait(HOVER_OPEN_DELAY_MS + 100);
+            expect(sch.insetCount).to.equal(2);
+
+            (sch as unknown as { setActive(a: boolean): void }).setActive(
+                false,
+            );
+            expect(sch.insetCount).to.equal(1);
+
+            const leader = sch.shadowRoot!.querySelector(
+                ".inset-root > svg path",
+            )!;
+            const before = leader.getAttribute("d");
+            // The camera moves while the tab is hidden...
+            const camera = (
+                viewer as unknown as {
+                    viewport: { camera: { center: { x: number; y: number } } };
+                }
+            ).viewport.camera;
+            camera.center.x += 5;
+            (sch as unknown as { setActive(a: boolean): void }).setActive(true);
+            await new Promise((r) => requestAnimationFrame(r));
+            await new Promise((r) => requestAnimationFrame(r));
+            // ...and the leader follows once it is shown again.
+            expect(leader.getAttribute("d")).to.not.equal(before);
+            expect(sch.insetCount).to.equal(1);
+        } finally {
+            sch.setInsetPeer(null);
+            pcb.setInsetPeer(null);
+            sch.remove();
+            pcb.remove();
+        }
+    });
+});

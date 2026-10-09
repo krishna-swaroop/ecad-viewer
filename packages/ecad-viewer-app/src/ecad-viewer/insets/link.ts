@@ -300,6 +300,20 @@ export class InsetLink {
         }
     }
 
+    /** The element's tab was hidden: drop previews and pending hovers. */
+    hidden() {
+        this.#clear_timers();
+        this.#hover = null;
+        this.#peeking = false;
+        this.session.close_previews();
+    }
+
+    /** The element's tab is back: re-attach, re-render, re-lay out. */
+    shown() {
+        this.sync();
+        this.session.refresh();
+    }
+
     /** A source viewer's camera moved; leaders must follow. */
     sources_moved() {
         this.session.sources_moved();
