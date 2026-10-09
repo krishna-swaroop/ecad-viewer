@@ -22,6 +22,11 @@ import {
 } from "../../kicad/schematic";
 import { SchematicViewer } from "../../viewers/schematic/viewer";
 import { inset_matrix, type InsetCamera } from "./camera";
+import {
+    SCHEMATIC_FOCUS_LIMIT,
+    SCHEMATIC_FOCUS_WINDOW,
+    local_focus,
+} from "./focus";
 import type { InsetHit, InsetProvider, InsetTarget } from "./types";
 
 export interface SchematicInsetPage {
@@ -125,7 +130,12 @@ export class SchematicInsetProvider implements InsetProvider {
             number,
             detail: found.page.name,
             side: "sch",
-            focus: symbol_box,
+            focus: local_focus(
+                symbol_box,
+                found.pin ? pin_box : undefined,
+                SCHEMATIC_FOCUS_LIMIT,
+                SCHEMATIC_FOCUS_WINDOW,
+            ),
             anchor: center(pin_box),
             anchor_box: found.pin ? pin_box : undefined,
             mirror: false,

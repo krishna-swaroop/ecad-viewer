@@ -13,6 +13,7 @@ import {
     BoardInsetProvider,
     InsetSession,
     inset_matrix,
+    local_focus,
     type InsetCamera,
 } from "../src/ecad-viewer/insets";
 import { board_view_stats } from "../src/viewers/board/board-view";
@@ -140,8 +141,14 @@ suite("board insets: provider", () => {
         expect(t.detail).to.equal("VBUS");
         expect(t.anchor.x).to.be.closeTo(9, 1e-6);
         expect(t.anchor.y).to.be.closeTo(10, 1e-6);
+        // The part with its pads.
         const fp = viewer.board.footprints.find((f) => f.reference === "R1")!;
-        expect(t.focus).to.deep.equal(fp.bbox);
+        for (const pad of fp.pads) {
+            expect(pad.bbox.x).to.be.at.least(t.focus.x - 1e-6);
+            expect(pad.bbox.x + pad.bbox.w).to.be.at.most(
+                t.focus.x + t.focus.w + 1e-6,
+            );
+        }
     });
 
     test("the target carries its pad box, and pads are hit-tested", async () => {
@@ -436,5 +443,102 @@ suite("board insets show labels at their own zoom (IN-31)", () => {
             if (without[i] !== with_labels[i]) changed++;
         expect(changed).to.be.greaterThan(0);
         provider.release(t);
+    });
+});
+
+suite("board insets: edge cases (IN-50)", () => {
+    test("local_focus keeps small parts whole and windows large ones on the pad", () => {
+        const small = new BBox(0, 0, 4, 2);
+        expect(local_focus(small, new BBox(0, 0, 1, 1), 15, 8)).to.equal(small);
+        const big = new BBox(0, 0, 40, 40);
+        const near_corner = local_focus(big, new BBox(1, 1, 1, 1), 15, 8);
+        // Centred on the pad but kept inside the part.
+        expect([
+            near_corner.x,
+            near_corner.y,
+            near_corner.w,
+            near_corner.h,
+        ]).to.deep.equal([0, 0, 8, 8]);
+        const middle = local_focus(big, new BBox(19.5, 19.5, 1, 1), 15, 8);
+        expect([middle.x, middle.y]).to.deep.equal([16, 16]);
+        expect(local_focus(big, undefined, 15, 8)).to.equal(big);
+    });
+
+    test("a large footprint opens on its pad's neighbourhood", async () => {
+        const big = BOARD.replace(
+            "  (segment",
+            `  (footprint "BGA" (layer "F.Cu") (at 70 70) (uuid "fp-u9")
+    (property "Reference" "U9" (at 0 -22 0) (layer "F.SilkS") (uuid "u9-ref") (effects (font (size 1 1) (thickness 0.15))))
+    (pad "A1" smd circle (at -19 -19) (size 0.5 0.5) (layers "F.Cu") (net 1 "VBUS") (uuid "u9-a1"))
+    (pad "T16" smd circle (at 19 19) (size 0.5 0.5) (layers "F.Cu") (net 2 "GND") (uuid "u9-t16"))
+  )
+  (segment`,
+        );
+        const canvas = document.createElement("canvas");
+        Object.assign(canvas.style, {
+            position: "fixed",
+            left: "0px",
+            top: "0px",
+            width: "400px",
+            height: "300px",
+        });
+        document.body.append(canvas);
+        const viewer = new BoardViewer(canvas, false, themes.default.board);
+        try {
+            await viewer.setup();
+            await viewer.load(
+                new KicadPCB(
+                    "big.kicad_pcb",
+                    new BoardParser().parse(big) as never,
+                ),
+            );
+            const provider = new BoardInsetProvider(() => viewer);
+            const t = (await provider.resolve("U9", "A1"))!;
+            expect(Math.max(t.focus.w, t.focus.h)).to.be.at.most(8);
+            // The focus window contains the pad it opened for.
+            expect(t.anchor.x).to.be.within(t.focus.x, t.focus.x + t.focus.w);
+            expect(t.anchor.y).to.be.within(t.focus.y, t.focus.y + t.focus.h);
+            // A small part still frames whole.
+            const r1 = (await provider.resolve("R1", "1"))!;
+            expect(Math.max(r1.focus.w, r1.focus.h)).to.be.lessThan(8);
+            expect(r1.focus.w).to.be.greaterThan(0);
+        } finally {
+            viewer.dispose();
+            canvas.remove();
+        }
+    });
+
+    test("a lost WebGL context draws nothing and keeps the inset's last image", async () => {
+        const viewer = await mount();
+        const target = inset_canvas();
+        try {
+            const camera = camera_on(viewer, "R1");
+            expect(
+                viewer.render_view(target, (w, h) =>
+                    inset_matrix(camera, w, h),
+                ),
+            ).to.equal(true);
+            const before = target
+                .getContext("2d")!
+                .getImageData(0, 0, target.width, target.height)
+                .data.slice();
+            const gl = gl_of(viewer);
+            gl.getExtension("WEBGL_lose_context")!.loseContext();
+            expect(
+                viewer.render_view(target, (w, h) =>
+                    inset_matrix(camera, w, h),
+                ),
+            ).to.equal(false);
+            const after = target
+                .getContext("2d")!
+                .getImageData(0, 0, target.width, target.height).data;
+            let differing = 0;
+            for (let i = 0; i < after.length; i++)
+                if (after[i] !== before[i]) differing++;
+            expect(differing).to.equal(0);
+        } finally {
+            unmount(viewer);
+            target.remove();
+        }
     });
 });

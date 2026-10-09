@@ -10,6 +10,7 @@ import { VIEWER_DRAW_REQUESTED } from "../../viewers/base/viewer";
 import type { NetLabelLayers } from "../../viewers/board/net-label-layers";
 import type { BoardViewer } from "../../viewers/board/viewer";
 import { inset_matrix, type InsetCamera } from "./camera";
+import { BOARD_FOCUS_LIMIT, BOARD_FOCUS_WINDOW, local_focus } from "./focus";
 import type { InsetHit, InsetProvider, InsetTarget } from "./types";
 
 const center = (box: BBox) => new Vec2(box.x + box.w / 2, box.y + box.h / 2);
@@ -73,7 +74,14 @@ export class BoardInsetProvider implements InsetProvider {
             number,
             detail: pad?.net?.name || undefined,
             side: bottom ? "bottom" : "top",
-            focus: fp.bbox,
+            focus: local_focus(
+                // Graphics plus pads: sparse fab/courtyard layers can leave
+                // the footprint's own box smaller than its pads.
+                BBox.combine([fp.bbox, ...fp.pads.map((p) => p.bbox)]),
+                pad?.bbox,
+                BOARD_FOCUS_LIMIT,
+                BOARD_FOCUS_WINDOW,
+            ),
             anchor: center(pad ? pad.bbox : fp.bbox),
             anchor_box: pad?.bbox,
             mirror: bottom,
