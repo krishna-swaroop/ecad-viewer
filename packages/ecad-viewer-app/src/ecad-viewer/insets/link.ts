@@ -26,6 +26,8 @@ import type {
 /** What a link needs from an element (its own, or its peer's). */
 export interface InsetPeer {
     insetProvider(kind: InsetKind): InsetProvider | null;
+    /** Mirror an inset-mode change made on the other element. */
+    syncInsetMode?(on: boolean): void;
 }
 
 export interface InsetLinkHost extends InsetPeer {
@@ -33,12 +35,16 @@ export interface InsetLinkHost extends InsetPeer {
     overlay_parent(): Node | null;
     /** The element's viewers that act as hover sources, by kind. */
     source_viewers(): Partial<Record<InsetKind, Viewer | null>>;
+    /** Inset mode changed here (key or API); the host tells its peer. */
+    mode_changed?(on: boolean): void;
 }
 
 export const HOVER_OPEN_DELAY_MS = 180;
 export const HOVER_CLOSE_DELAY_MS = 700;
 
 const OTHER: Record<InsetKind, InsetKind> = { sch: "pcb", pcb: "sch" };
+
+type HoverDetail = Exclude<KiCanvasProbeDetail, { phase: "clear" }>;
 
 /** Designators KiCad never places on a board (power and flag symbols). */
 const is_virtual = (reference: string) =>
@@ -95,6 +101,10 @@ export class InsetLink {
     >();
     #open_timer: number | null = null;
     #close_timer: number | null = null;
+    #mode = false;
+    #peeking = false;
+    /** The pin or pad under the pointer, whether or not an inset opened. */
+    #hover: { viewer: Viewer; detail: HoverDetail } | null = null;
 
     constructor(private readonly host: InsetLinkHost) {
         for (const kind of ["pcb", "sch"] as const) {
@@ -119,6 +129,73 @@ export class InsetLink {
         return this.#peer;
     }
 
+    /** Inset mode: hovers open previews and clicks pin them. */
+    get mode() {
+        return this.#mode;
+    }
+
+    /** Set the mode; `quiet` skips the host callback (peer sync). */
+    set_mode(on: boolean, quiet = false) {
+        if (on === this.#mode) return;
+        this.#mode = on;
+        if (!on && !this.#peeking) {
+            this.#clear_timers();
+            this.session.close_previews();
+        } else if (on && this.#hover) {
+            this.#schedule_open(this.#hover.viewer, this.#hover.detail, 0);
+        }
+        if (!quiet) this.host.mode_changed?.(on);
+    }
+
+    /** True while Alt is held with the mode off. */
+    get peeking() {
+        return this.#peeking;
+    }
+
+    /**
+     * Keyboard: `I` toggles the mode, holding Alt peeks. The element calls
+     * this after its own guards (active host, no dialog, not typing).
+     * Returns whether the key was used.
+     */
+    key_down(event: KeyboardEvent): boolean {
+        if (event.key === "Alt") {
+            if (!this.#peeking && !event.repeat) {
+                this.#peeking = true;
+                if (!this.#mode && this.#hover)
+                    this.#schedule_open(
+                        this.#hover.viewer,
+                        this.#hover.detail,
+                        0,
+                    );
+            }
+            return false;
+        }
+        if (
+            (event.key === "i" || event.key === "I") &&
+            !event.ctrlKey &&
+            !event.metaKey &&
+            !event.altKey &&
+            !event.shiftKey &&
+            !event.repeat
+        ) {
+            if (!this.#peer) return false;
+            this.set_mode(!this.#mode);
+            return true;
+        }
+        return false;
+    }
+
+    /** Releasing Alt (or losing focus) ends a peek. */
+    key_up(event: KeyboardEvent | null) {
+        if (event && event.key !== "Alt") return;
+        if (!this.#peeking) return;
+        this.#peeking = false;
+        if (!this.#mode) {
+            this.#clear_timers();
+            this.session.close_previews();
+        }
+    }
+
     /** Attach to the element's current viewers and overlay host. */
     sync() {
         const parent = this.host.overlay_parent();
@@ -139,9 +216,15 @@ export class InsetLink {
                 KiCanvasProbeEvent.type,
                 (event) => this.#on_probe(viewer, event.detail),
             );
+            const intercept = () => this.#on_click(viewer);
+            viewer.click_interceptor = intercept;
             this.#listeners.set(viewer, {
                 kind,
-                dispose: () => listener.dispose(),
+                dispose: () => {
+                    listener.dispose();
+                    if (viewer.click_interceptor === intercept)
+                        viewer.click_interceptor = null;
+                },
                 source: viewer_source(viewer),
             });
         }
@@ -164,28 +247,12 @@ export class InsetLink {
         if (detail.phase === "hover") {
             if (!detail.reference || !detail.anchor) return;
             if (is_virtual(detail.reference)) return;
-            const entry = this.#listeners.get(viewer);
-            if (!entry) return;
+            this.#hover = { viewer, detail };
             this.#cancel_close();
-            if (this.#open_timer !== null) clearTimeout(this.#open_timer);
-            const { reference, number } = detail;
-            const anchor = new Vec2(detail.anchor.x, detail.anchor.y);
-            this.#open_timer = window.setTimeout(() => {
-                this.#open_timer = null;
-                // The element may have re-rendered its shadow DOM.
-                const parent = this.host.overlay_parent();
-                if (parent) this.session.mount(parent);
-                void this.session.open({
-                    kind: OTHER[entry.kind],
-                    reference,
-                    number,
-                    source: entry.source,
-                    source_anchor: anchor,
-                    preview: true,
-                    show_missing: true,
-                });
-            }, HOVER_OPEN_DELAY_MS);
+            if (!this.#mode && !this.#peeking) return;
+            this.#schedule_open(viewer, detail, HOVER_OPEN_DELAY_MS);
         } else if (detail.phase === "leave" || detail.phase === "clear") {
+            this.#hover = null;
             if (this.#open_timer !== null) clearTimeout(this.#open_timer);
             this.#open_timer = null;
             this.#cancel_close();
@@ -197,6 +264,69 @@ export class InsetLink {
                     this.session.close(preview);
             }, HOVER_CLOSE_DELAY_MS);
         }
+    }
+
+    #schedule_open(viewer: Viewer, detail: HoverDetail, delay: number) {
+        const entry = this.#listeners.get(viewer);
+        if (!entry || !detail.reference || !detail.anchor) return;
+        if (this.#open_timer !== null) clearTimeout(this.#open_timer);
+        const reference = detail.reference;
+        const number = detail.number;
+        const anchor = new Vec2(detail.anchor.x, detail.anchor.y);
+        const open = () => {
+            this.#open_timer = null;
+            // The element may have re-rendered its shadow DOM.
+            const parent = this.host.overlay_parent();
+            if (parent) this.session.mount(parent);
+            return this.session.open({
+                kind: OTHER[entry.kind],
+                reference,
+                number,
+                source: entry.source,
+                source_anchor: anchor,
+                preview: true,
+                show_missing: true,
+            });
+        };
+        if (delay <= 0) {
+            this.#open_timer = null;
+            this.#pending = open();
+            return;
+        }
+        this.#open_timer = window.setTimeout(() => {
+            this.#pending = open();
+        }, delay);
+    }
+
+    /** The open still resolving, if any; a click waits for it to pin. */
+    #pending: Promise<unknown> | null = null;
+
+    /** In inset mode (or a peek), a click on a pin or pad pins its inset. */
+    #on_click(viewer: Viewer): boolean {
+        if (!this.#peer || (!this.#mode && !this.#peeking)) return false;
+        const hover = this.#hover;
+        if (!hover || hover.viewer !== viewer) return false;
+        const matches = () => {
+            const preview = this.session.preview;
+            return preview &&
+                preview.target.reference === hover.detail.reference &&
+                preview.target.number === hover.detail.number
+                ? preview
+                : null;
+        };
+        const pin_now = matches();
+        if (pin_now) {
+            this.session.pin(pin_now);
+            return true;
+        }
+        // Not open yet (inside the hover delay): open now and pin it.
+        this.#schedule_open(viewer, hover.detail, 0);
+        const pending = this.#pending;
+        void Promise.resolve(pending).then(() => {
+            const preview = matches();
+            if (preview) this.session.pin(preview);
+        });
+        return true;
     }
 
     #cancel_close() {

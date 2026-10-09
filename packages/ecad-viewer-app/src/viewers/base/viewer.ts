@@ -132,6 +132,12 @@ export abstract class Viewer extends EventTarget {
 
     public loaded = new Barrier();
 
+    /**
+     * Consulted before a click selects. Returning true consumes the click:
+     * no selection, probe activation or overlay click follows.
+     */
+    public click_interceptor: ((event: MouseEvent) => boolean) | null = null;
+
     abstract type: ViewerType;
 
     public static MinZoom = 0.5;
@@ -258,6 +264,8 @@ export abstract class Viewer extends EventTarget {
                 listen(this.canvas, "click", (e) => {
                     if (!this.#active) return;
                     if (this.#comment_mode) return;
+                    // A host feature (inset mode) may claim the click.
+                    if (this.click_interceptor?.(e)) return;
                     const overlay = this.#overlay_scenes?.hit_test(
                         this.#mouse_position,
                     );
