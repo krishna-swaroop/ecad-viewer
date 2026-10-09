@@ -42,7 +42,8 @@
             }
         </script>
         <script type="module">
-            const pcb = new URLSearchParams(location.search).get("pcb");
+            const params = new URLSearchParams(location.search);
+            const pcb = params.get("pcb");
             document.body.insertAdjacentHTML(
                 "afterbegin",
                 `<ecad-viewer id="pcb"><ecad-source src="${pcb}"></ecad-source></ecad-viewer>`,
@@ -103,8 +104,70 @@
                         );
                 }
                 setGpuSync(false);
+                // True GPU time with timer queries, when the driver has them.
+                const viewer =
+                    el.shadowRoot.querySelector("kc-board-app").viewer;
+                const gl = viewer.renderer.gl;
+                const ext = gl.getExtension("EXT_disjoint_timer_query_webgl2");
+                if (ext) {
+                    const queries = [];
+                    for (let i = 0; i < steps; i++) {
+                        camera.zoom *= i < steps / 2 ? 1.04 : 1 / 1.04;
+                        const q = gl.createQuery();
+                        gl.beginQuery(ext.TIME_ELAPSED_EXT, q);
+                        p.render(t, camera, canvas);
+                        gl.endQuery(ext.TIME_ELAPSED_EXT);
+                        queries.push(q);
+                        await frame();
+                    }
+                    for (let i = 0; i < 20; i++) await frame();
+                    const ns = queries
+                        .filter((q) =>
+                            gl.getQueryParameter(q, gl.QUERY_RESULT_AVAILABLE),
+                        )
+                        .map((q) => gl.getQueryParameter(q, gl.QUERY_RESULT));
+                    queries.forEach((q) => gl.deleteQuery(q));
+                    if (ns.length)
+                        out.gpu_query_ms = +(
+                            ns.reduce((a, b) => a + b, 0) /
+                            ns.length /
+                            1e6
+                        ).toFixed(3);
+                }
                 el.setActive(true);
                 return out;
+            };
+
+            // FNV-1a of the full main-view pixels after a fresh draw.
+            window.bench_pixels = () => {
+                const viewer =
+                    el.shadowRoot.querySelector("kc-board-app").viewer;
+                const gl = viewer.renderer.gl;
+                viewer.draw_now();
+                const { width, height } = viewer.canvas;
+                const px = new Uint8Array(width * height * 4);
+                gl.readPixels(
+                    0,
+                    0,
+                    width,
+                    height,
+                    gl.RGBA,
+                    gl.UNSIGNED_BYTE,
+                    px,
+                );
+                let h = 0x811c9dc5;
+                for (let i = 0; i < px.length; i++)
+                    h = Math.imul(h ^ px[i], 16777619) >>> 0;
+                return { size: [width, height], hash: h.toString(16) };
+            };
+
+            window.bench_cull = () => {
+                const { cullStats } = el.constructor.insetDiagnostics;
+                return {
+                    drawn: cullStats.drawn,
+                    held: cullStats.held,
+                    calls: cullStats.calls,
+                };
             };
 
             // Reference: one full main-view frame with GPU sync.
@@ -134,7 +197,12 @@
                     median_ms: +times[n >> 1].toFixed(2),
                 };
             };
-            await import("./ecad_viewer/ecad-viewer.js");
+            // ?cull=0 paints with view culling off (A/B against the old path).
+            const loaded = import("./ecad_viewer/ecad-viewer.js");
+            await customElements.whenDefined("ecad-viewer");
+            customElements.get("ecad-viewer").insetDiagnostics.cull.enabled =
+                params.get("cull") !== "0";
+            await loaded;
         </script>
     </body>
 </html>
