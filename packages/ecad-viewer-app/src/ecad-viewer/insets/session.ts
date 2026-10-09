@@ -42,6 +42,9 @@ export const CHAIN_COLORS = [
     "#eab308",
 ];
 
+/** At most this many insets are open; the least recently used goes first. */
+export const MAX_INSETS = 8;
+
 const ROTATE_STEP = Math.PI / 12;
 const WHEEL_ROTATE_STEP = Math.PI / 36;
 
@@ -69,6 +72,8 @@ export interface OpenInsetRequest {
 export class Inset implements InsetSource {
     readonly children: Inset[] = [];
     pinned = false;
+    /** Last interaction (open, hover, toolbar), for the open-inset cap. */
+    used = 0;
     /** The designator is not in the target document: header only. */
     missing = false;
     /** The pin or pad under the pointer inside this inset (IN-20). */
@@ -215,6 +220,7 @@ export class InsetSession {
     #hovered: Inset | null = null;
     #request = 0;
     #next_color = 0;
+    #clock = 0;
     #frame: number | null = null;
     #key_listening = false;
 
@@ -319,6 +325,10 @@ export class InsetSession {
 
         const preview = request.preview ?? true;
         if (preview && this.#preview) this.close(this.#preview);
+        if (!this.#make_room(request.parent ?? null)) {
+            if (target) provider.release?.(target);
+            return null;
+        }
 
         const color =
             request.parent?.color ??
@@ -357,11 +367,17 @@ export class InsetSession {
             pointer: (cursor) => inset.hover_at(cursor),
             click: () => void this.on_click?.(inset),
             hover: (on) => {
+                if (on) inset.used = ++this.#clock;
                 if (on) this.#hovered = inset;
                 else if (this.#hovered === inset) this.#hovered = null;
             },
         });
-        panel.title = shown;
+        panel.title = {
+            ...shown,
+            crumb: request.parent
+                ? `${request.parent.target.reference} · ${request.parent.target.number}`
+                : undefined,
+        };
         panel.side = shown.side;
         panel.mirrored = shown.mirror;
         panel.preview = preview;
@@ -398,6 +414,7 @@ export class InsetSession {
         );
         inset.pinned = !preview;
         inset.missing = missing;
+        inset.used = ++this.#clock;
         request.parent?.children.push(inset);
         this.#insets.push(inset);
         if (preview) this.#preview = inset;
@@ -493,6 +510,7 @@ export class InsetSession {
 
     /** Run a toolbar action on `inset` (buttons and keys). */
     act(inset: Inset, action: InsetAction) {
+        inset.used = ++this.#clock;
         switch (action) {
             case "rotate-ccw":
                 inset.rotate(-ROTATE_STEP);
@@ -519,22 +537,105 @@ export class InsetSession {
         }
     }
 
-    /** Beside the source anchor, on whichever side has room. */
+    /**
+     * Keep at most MAX_INSETS open: close the least recently used one (with
+     * its chain) that is not the new inset's ancestor. Returns false when
+     * nothing can make room.
+     */
+    #make_room(parent: Inset | null): boolean {
+        const protected_ = new Set<Inset>();
+        for (let p = parent; p; p = p.parent) protected_.add(p);
+        while (this.#insets.length >= MAX_INSETS) {
+            let victim: Inset | null = null;
+            for (const inset of this.#insets) {
+                if (protected_.has(inset)) continue;
+                if (!victim || inset.used < victim.used) victim = inset;
+            }
+            if (!victim) return false;
+            this.close(victim);
+        }
+        return true;
+    }
+
+    /**
+     * Beside the parent panel (chained) or the source point (root), on the
+     * side with the least overlap with other panels, inside the overlay.
+     */
     #place(inset: Inset, size: { w: number; h: number }) {
         const root = this.#root.getBoundingClientRect();
-        const anchor = inset.source.world_to_client(inset.source_anchor);
-        const sx = (anchor?.x ?? root.left + root.width / 2) - root.left;
-        const sy = (anchor?.y ?? root.top + root.height / 2) - root.top;
-        const gap = 60;
-        const x =
-            sx + gap + size.w <= root.width
-                ? sx + gap
-                : Math.max(8, sx - gap - size.w);
-        const y = Math.min(
-            Math.max(8, sy - size.h / 2),
-            Math.max(8, root.height - size.h - 8),
+        const { w, h } = size;
+        const candidates: [number, number][] = [];
+        const parent = inset.parent?.panel.el;
+        if (parent) {
+            const px = parent.offsetLeft;
+            const py = parent.offsetTop;
+            const pw = parent.offsetWidth;
+            const ph = parent.offsetHeight;
+            const gap = 16;
+            candidates.push(
+                [px + pw + gap, py],
+                [px, py + ph + gap],
+                [px - gap - w, py],
+                [px, py - gap - h],
+            );
+        } else {
+            const anchor = inset.source.world_to_client(inset.source_anchor);
+            const sx = (anchor?.x ?? root.left + root.width / 2) - root.left;
+            const sy = (anchor?.y ?? root.top + root.height / 2) - root.top;
+            const gap = 60;
+            candidates.push(
+                [sx + gap, sy - h / 2],
+                [sx - gap - w, sy - h / 2],
+                [sx - w / 2, sy + gap],
+                [sx - w / 2, sy - gap - h],
+            );
+        }
+        const others = this.#insets
+            .filter((other) => other !== inset)
+            .map((other) => other.panel.el)
+            .filter((el) => el.isConnected)
+            .map((el) => ({
+                x: el.offsetLeft,
+                y: el.offsetTop,
+                w: el.offsetWidth,
+                h: el.offsetHeight,
+            }));
+        const overlap = (
+            ax: number,
+            ay: number,
+            b: { x: number; y: number; w: number; h: number },
+        ) =>
+            Math.max(0, Math.min(ax + w, b.x + b.w) - Math.max(ax, b.x)) *
+            Math.max(0, Math.min(ay + h, b.y + b.h) - Math.max(ay, b.y));
+        const outside = (x: number, y: number) =>
+            w * h -
+            overlap(x, y, { x: 0, y: 0, w: root.width, h: root.height });
+        // Beside each open panel too, so a crowded spot still has a clear
+        // place; the nearest clear place to the first choice wins.
+        for (const other of others)
+            candidates.push(
+                [other.x + other.w + 16, other.y],
+                [other.x, other.y + other.h + 16],
+            );
+        const [fx, fy] = candidates[0]!;
+        let best = candidates[0]!;
+        let best_score = Infinity;
+        for (const [x, y] of candidates) {
+            let score = outside(x, y) * 4 + Math.hypot(x - fx, y - fy);
+            for (const other of others) score += overlap(x, y, other) * 2;
+            if (score < best_score) {
+                best_score = score;
+                best = [x, y];
+            }
+        }
+        const clamp = (v: number, size: number, max: number) =>
+            Math.min(Math.max(8, v), Math.max(8, max - size - 8));
+        inset.panel.place(
+            clamp(best[0], w, root.width),
+            clamp(best[1], h, root.height),
+            w,
+            h,
         );
-        inset.panel.place(x, y, size.w, size.h);
     }
 
     #layout_leader(inset: Inset, root: DOMRect) {
