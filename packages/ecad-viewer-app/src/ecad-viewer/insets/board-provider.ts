@@ -7,6 +7,7 @@ import { BBox, Vec2 } from "../../base/math";
 import { Pad } from "../../kicad/board";
 import { Depth } from "../../kicad/board_bbox_visitor";
 import { VIEWER_DRAW_REQUESTED } from "../../viewers/base/viewer";
+import type { NetLabelLayers } from "../../viewers/board/net-label-layers";
 import type { BoardViewer } from "../../viewers/board/viewer";
 import { inset_matrix, type InsetCamera } from "./camera";
 import type { InsetHit, InsetProvider, InsetTarget } from "./types";
@@ -17,6 +18,8 @@ export class BoardInsetProvider implements InsetProvider {
     readonly kind = "pcb" as const;
 
     #listeners = new Set<() => void>();
+    /** Each open inset's own labels, gated for its zoom (IN-31). */
+    #labels = new WeakMap<InsetTarget, NetLabelLayers>();
     #hooked: BoardViewer | null = null;
     #unhook: (() => void) | null = null;
 
@@ -98,11 +101,26 @@ export class BoardInsetProvider implements InsetProvider {
         camera: InsetCamera,
         canvas: HTMLCanvasElement,
     ) {
-        this.viewer()?.render_view(
-            canvas,
-            (w, h) => inset_matrix(camera, w, h),
+        const viewer = this.viewer();
+        if (!viewer) return;
+        let labels = this.#labels.get(target);
+        if (!labels) {
+            labels =
+                viewer.fork_net_labels({
+                    zoom: camera.zoom,
+                    bbox: target.focus,
+                }) ?? undefined;
+            if (labels) this.#labels.set(target, labels);
+        }
+        viewer.render_view(canvas, (w, h) => inset_matrix(camera, w, h), {
             // A bottom view shows the back side on top, KiCad's flip view.
-            { back_on_top: camera.mirror },
-        );
+            back_on_top: camera.mirror,
+            labels: labels ? { view: labels, zoom: camera.zoom } : undefined,
+        });
+    }
+
+    release(target: InsetTarget) {
+        this.#labels.get(target)?.dispose();
+        this.#labels.delete(target);
     }
 }

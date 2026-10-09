@@ -33,7 +33,7 @@ import type {
     ResolvedOverlayAnchor,
 } from "../base/overlay-scene";
 import { LayerNames, LayerSet, ViewLayer } from "./layers";
-import { NetLabelLayers } from "./net-label-layers";
+import { NetLabelLayers, type LabelCamera } from "./net-label-layers";
 import {
     DEFAULT_NET_LABEL_OPTIONS,
     type LabelLayout,
@@ -164,6 +164,18 @@ export class BoardViewer extends DocumentViewer<
             labels.update();
         }
         super.draw();
+    }
+
+    /**
+     * Labels for another view of this board (an inset): same candidates,
+     * options and emphasis as the main view, its own zoom-gated graphics.
+     * Null while the scene has no labels (no board, comparison view).
+     */
+    public fork_net_labels(camera: LabelCamera): NetLabelLayers | null {
+        const labels = this.#net_labels_for_current_scene();
+        if (!labels) return null;
+        labels.options = this.#net_label_options;
+        return labels.fork(camera);
     }
 
     public get net_label_options(): Readonly<NetLabelOptions> {
