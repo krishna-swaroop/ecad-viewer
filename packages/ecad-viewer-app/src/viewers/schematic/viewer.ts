@@ -247,6 +247,7 @@ export class SchematicViewer extends DocumentViewer<
                     number: ct.item.number,
                     index: ct.item.index,
                     crossIndex: ct.item.cross_index,
+                    ...this.#pin_identity(ct.item),
                 }),
             );
         } else {
@@ -428,9 +429,22 @@ export class SchematicViewer extends DocumentViewer<
                     number: next.number,
                     index: next.index,
                     crossIndex: next.cross_index,
+                    ...this.#pin_identity(next),
                 }),
             );
         }
+    }
+
+    /** Designator and painted centre of a pin, for cross-document insets. */
+    #pin_identity(pin: PinInstance) {
+        const box: BBox =
+            this.layers.query_item_bboxes(pin).next().value ?? pin.bbox;
+        return {
+            reference:
+                this.#instance_context?.reference(pin.parent) ??
+                pin.parent.reference,
+            anchor: { x: box.x + box.w / 2, y: box.y + box.h / 2 },
+        };
     }
 
     /**

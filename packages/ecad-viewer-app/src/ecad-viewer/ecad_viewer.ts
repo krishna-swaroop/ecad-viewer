@@ -442,8 +442,10 @@ import { schematic_view_stats } from "../viewers/schematic/schematic-view";
 import themes from "../kicanvas/themes";
 import {
     BoardInsetProvider,
+    InsetLink,
     SchematicInsetProvider,
     type InsetKind,
+    type InsetPeer,
     type InsetProvider,
 } from "./insets";
 
@@ -737,6 +739,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     #apply_viewport_insets(): void {
+        this.#inset_link?.sync();
         this.#safe_board_viewer()?.set_viewport_insets(this.#viewport_insets);
         this.#safe_schematic_viewer()?.set_viewport_insets(
             this.#viewport_insets,
@@ -2929,6 +2932,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         const orig = viewer.on_viewport_change.bind(viewer);
         viewer.on_viewport_change = () => {
             orig();
+            this.#inset_link?.sources_moved();
             if (viewer.active) this.#emit_camera_change();
         };
         viewer.__camerachange_hooked = true;
@@ -4205,6 +4209,40 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 );
             }
         }
+    }
+
+    #inset_link: InsetLink | null = null;
+
+    /**
+     * Link this element to the one holding the other document (schematic ↔
+     * PCB). Hovering a pin or pad here then opens an inset of the peer's
+     * document. Pass null to unlink and close this element's insets.
+     */
+    public setInsetPeer(peer: InsetPeer | null) {
+        if (!peer) {
+            this.#inset_link?.dispose();
+            this.#inset_link = null;
+            return;
+        }
+        this.#inset_link ??= new InsetLink({
+            insetProvider: (kind) => this.insetProvider(kind),
+            overlay_parent: () => this.shadowRoot,
+            source_viewers: () => ({
+                sch: this.has_sch ? this.#safe_schematic_viewer() : null,
+                pcb: this.has_pcb ? this.#safe_board_viewer() : null,
+            }),
+        });
+        this.#inset_link.peer = peer;
+    }
+
+    /** Close this element's insets. Returns whether any were open. */
+    public closeInsets(): boolean {
+        return this.#inset_link?.session.close_all() ?? false;
+    }
+
+    /** Open insets on this element; for hosts and tests. */
+    public get insetCount(): number {
+        return this.#inset_link?.session.count ?? 0;
     }
 
     #board_inset_provider: BoardInsetProvider | null = null;

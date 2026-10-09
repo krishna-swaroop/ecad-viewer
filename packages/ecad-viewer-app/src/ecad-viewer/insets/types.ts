@@ -8,7 +8,8 @@ import type { InsetCamera } from "./camera";
 export type InsetKind = "pcb" | "sch";
 
 /** Which face of the target an inset shows; drives the header badge. */
-export type InsetSide = "top" | "bottom" | "sch";
+/** `none`: the designator is not in that document (a header-only inset). */
+export type InsetSide = "top" | "bottom" | "sch" | "none";
 
 /** What a provider resolves a designator + pin/pad number to. */
 export interface InsetTarget {

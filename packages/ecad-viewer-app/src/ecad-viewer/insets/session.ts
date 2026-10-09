@@ -13,7 +13,7 @@
     view, a panel move, or a source viewer's camera (`sources_moved()`).
 */
 
-import { Vec2 } from "../../base/math";
+import { BBox, Vec2 } from "../../base/math";
 import {
     fit_camera,
     inset_to_world,
@@ -56,6 +56,11 @@ export interface OpenInsetRequest {
     parent?: Inset;
     /** Previews follow the hover; defaults to true. */
     preview?: boolean;
+    /**
+     * When the designator is not in the target document, open a header-only
+     * "not there" inset instead of nothing.
+     */
+    show_missing?: boolean;
     /** Panel size in CSS pixels (including the header). */
     size?: { w: number; h: number };
 }
@@ -63,6 +68,8 @@ export interface OpenInsetRequest {
 export class Inset implements InsetSource {
     readonly children: Inset[] = [];
     pinned = false;
+    /** The designator is not in the target document: header only. */
+    missing = false;
     #dirty = true;
     #rendered_size = { w: 0, h: 0 };
 
@@ -109,6 +116,7 @@ export class Inset implements InsetSource {
     }
 
     fit() {
+        if (this.missing) return;
         const { w, h } = this.canvas_size;
         fit_camera(this.camera, this.target.focus, w, h);
         this.invalidate();
@@ -132,7 +140,7 @@ export class Inset implements InsetSource {
 
     /** Render if the view changed since the last frame. */
     render(force = false) {
-        if (!this.#dirty && !force) return;
+        if (this.missing || (!this.#dirty && !force)) return;
         const { w, h } = this.canvas_size;
         if (!w || !h) return;
         this.#dirty = false;
@@ -215,16 +223,27 @@ export class InsetSession {
             request.reference,
             request.number,
         );
-        if (!target) return null;
+        const missing = !target;
+        if (!target && !(request.show_missing && ticket === this.#request))
+            return null;
         // A newer hover superseded this one while it resolved, or the parent
         // closed meanwhile.
         if (
             ticket !== this.#request ||
             (request.parent && !this.#insets.includes(request.parent))
         ) {
-            provider.release?.(target);
+            if (target) provider.release?.(target);
             return null;
         }
+        const shown: InsetTarget = target ?? {
+            kind: request.kind,
+            reference: request.reference,
+            number: request.number,
+            side: "none",
+            focus: new BBox(0, 0, 0, 0),
+            anchor: new Vec2(0, 0),
+            mirror: false,
+        };
 
         const preview = request.preview ?? true;
         if (preview && this.#preview) this.close(this.#preview);
@@ -236,7 +255,7 @@ export class InsetSession {
             center: new Vec2(0, 0),
             zoom: 1,
             rotation: 0,
-            mirror: target.mirror,
+            mirror: shown.mirror,
         };
         let inset!: Inset;
         const panel = new InsetPanel(color, {
@@ -264,10 +283,11 @@ export class InsetSession {
             },
             touched: () => this.pin(inset),
         });
-        panel.title = target;
-        panel.side = target.side;
-        panel.mirrored = target.mirror;
+        panel.title = shown;
+        panel.side = shown.side;
+        panel.mirrored = shown.mirror;
         panel.preview = preview;
+        panel.el.classList.toggle("missing", missing);
 
         const leader = document.createElementNS(SVG_NS, "path");
         leader.setAttribute("fill", "none");
@@ -287,7 +307,7 @@ export class InsetSession {
         inset = new Inset(
             this,
             provider,
-            target,
+            shown,
             request.source,
             request.source_anchor,
             request.parent ?? null,
@@ -299,6 +319,7 @@ export class InsetSession {
             camera,
         );
         inset.pinned = !preview;
+        inset.missing = missing;
         request.parent?.children.push(inset);
         this.#insets.push(inset);
         if (preview) this.#preview = inset;
@@ -306,7 +327,7 @@ export class InsetSession {
         this.#root.append(panel.el);
         this.#svg.append(leader, ring, origin);
         this.#place(inset, request.size ?? { w: 320, h: 248 });
-        inset.fit();
+        if (!missing) inset.fit();
         this.#listen_keys(true);
         return inset;
     }
@@ -321,7 +342,7 @@ export class InsetSession {
     /** Close `inset` and everything chained from it. */
     close(inset: Inset) {
         for (const child of [...inset.children]) this.close(child);
-        inset.provider.release?.(inset.target);
+        if (!inset.missing) inset.provider.release?.(inset.target);
         inset.panel.dispose();
         inset.leader.remove();
         inset.ring.remove();
@@ -434,7 +455,9 @@ export class InsetSession {
 
     #layout_leader(inset: Inset, root: DOMRect) {
         const a = inset.source.world_to_client(inset.source_anchor);
-        const b = inset.world_to_client(inset.target.anchor);
+        const b = inset.missing
+            ? null
+            : inset.world_to_client(inset.target.anchor);
         const visible = !!a && !!b;
         for (const el of [inset.leader, inset.ring, inset.origin])
             el.style.display = visible ? "" : "none";
