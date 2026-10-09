@@ -347,17 +347,25 @@ suite("inset link", () => {
         expect(link.session.hovered).to.equal(null);
     });
 
-    test("toolbar buttons name their keys", async () => {
+    test("toolbar buttons show a styled tooltip with their key", async () => {
         viewer.probe(hover("U1"));
         await wait(HOVER_OPEN_DELAY_MS + 50);
         const inset = link.session.preview!;
-        expect(inset.panel.button("rotate-cw").title).to.equal(
-            "Rotate +15° · R",
+        const tip = (action: Parameters<typeof inset.panel.button>[0]) => {
+            const t = inset.panel.button(action).querySelector(".inset-tip")!;
+            return [
+                t.firstChild!.textContent,
+                t.querySelector("kbd")!.textContent,
+            ];
+        };
+        expect(tip("rotate-cw")).to.deep.equal(["Rotate +15°", "R"]);
+        expect(tip("rotate-ccw")).to.deep.equal(["Rotate −15°", "⇧R"]);
+        expect(tip("close")).to.deep.equal(["Close", "X"]);
+        // No second, native tooltip; the accessible name stays the label.
+        expect(inset.panel.button("close").title).to.equal("");
+        expect(inset.panel.button("close").getAttribute("aria-label")).to.equal(
+            "Close",
         );
-        expect(inset.panel.button("rotate-ccw").title).to.equal(
-            "Rotate −15° · ⇧R",
-        );
-        expect(inset.panel.button("close").title).to.equal("Close · X");
     });
 });
 
