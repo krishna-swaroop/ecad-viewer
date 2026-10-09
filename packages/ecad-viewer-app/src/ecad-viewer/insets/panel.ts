@@ -28,16 +28,19 @@ export interface InsetPanelHandlers {
     wheel(cursor: Vec2, delta_y: number, shift: boolean): void;
     /** The user grabbed the panel (header, grip or canvas). */
     touched(): void;
+    /** The pointer entered (true) or left (false) the panel. */
+    hover(on: boolean): void;
 }
 
-const TOOLBAR: [InsetAction, string, string][] = [
-    ["rotate-ccw", "↺", "Rotate −15°"],
-    ["rotate-cw", "↻", "Rotate +15°"],
-    ["mirror", "⇋", "Mirror"],
-    ["lens", "◯", "Lens"],
-    ["refit", "⌂", "Refit"],
-    ["pin", "📌", "Pin"],
-    ["close", "✕", "Close"],
+/** Action, glyph, label and key (IN-11; keys act on the hovered inset). */
+export const TOOLBAR: [InsetAction, string, string, string][] = [
+    ["rotate-ccw", "↺", "Rotate −15°", "⇧R"],
+    ["rotate-cw", "↻", "Rotate +15°", "R"],
+    ["mirror", "⇋", "Mirror", "M"],
+    ["lens", "◯", "Lens", "L"],
+    ["refit", "⌂", "Refit", "Home"],
+    ["pin", "📌", "Pin", "P"],
+    ["close", "✕", "Close", "X"],
 ];
 
 const SIDE_LABEL: Record<InsetSide, string> = {
@@ -76,11 +79,12 @@ export class InsetPanel {
         this.#side.className = "inset-side";
         const toolbar = document.createElement("span");
         toolbar.className = "inset-toolbar";
-        for (const [action, glyph, label] of TOOLBAR) {
+        for (const [action, glyph, label, key] of TOOLBAR) {
             const button = document.createElement("button");
             button.type = "button";
             button.textContent = glyph;
-            button.title = label;
+            button.title = `${label} · ${key}`;
+            button.dataset["key"] = key;
             button.setAttribute("aria-label", label);
             button.dataset["action"] = action;
             button.addEventListener("click", (e) => {
@@ -121,6 +125,8 @@ export class InsetPanel {
             },
             { passive: false },
         );
+        this.el.addEventListener("pointerenter", () => handlers.hover(true));
+        this.el.addEventListener("pointerleave", () => handlers.hover(false));
         this.#resize_observer = new ResizeObserver(() => handlers.resized());
         this.#resize_observer.observe(this.canvas);
     }

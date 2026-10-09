@@ -15,6 +15,7 @@ import {
 } from "../../viewers/base/events";
 import type { Viewer } from "../../viewers/base/viewer";
 import type { InsetCamera } from "./camera";
+import type { InsetAction } from "./panel";
 import { InsetSession } from "./session";
 import type {
     InsetKind,
@@ -49,6 +50,27 @@ type HoverDetail = Exclude<KiCanvasProbeDetail, { phase: "clear" }>;
 /** Designators KiCad never places on a board (power and flag symbols). */
 const is_virtual = (reference: string) =>
     !reference.trim() || reference.startsWith("#");
+
+/** Toolbar keys (IN-11). Shift only changes R's direction. */
+function key_action(event: KeyboardEvent): InsetAction | null {
+    const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+    if (event.shiftKey && key !== "r") return null;
+    switch (key) {
+        case "r":
+            return event.shiftKey ? "rotate-ccw" : "rotate-cw";
+        case "m":
+            return "mirror";
+        case "l":
+            return "lens";
+        case "Home":
+            return "refit";
+        case "p":
+            return "pin";
+        case "x":
+            return "close";
+    }
+    return null;
+}
 
 /** A provider that finds the current real one on every call. */
 class LazyProvider implements InsetProvider {
@@ -158,6 +180,14 @@ export class InsetLink {
      * Returns whether the key was used.
      */
     key_down(event: KeyboardEvent): boolean {
+        const hovered = this.session.hovered;
+        if (hovered && !event.ctrlKey && !event.metaKey && !event.altKey) {
+            const action = key_action(event);
+            if (action) {
+                this.session.act(hovered, action);
+                return true;
+            }
+        }
         if (event.key === "Alt") {
             if (!this.#peeking && !event.repeat) {
                 this.#peeking = true;
@@ -260,7 +290,7 @@ export class InsetLink {
                 this.#close_timer = null;
                 const preview = this.session.preview;
                 // The pointer reached the preview: leave it for pinning.
-                if (preview && !preview.panel.el.matches(":hover"))
+                if (preview && this.session.hovered !== preview)
                     this.session.close(preview);
             }, HOVER_CLOSE_DELAY_MS);
         }
