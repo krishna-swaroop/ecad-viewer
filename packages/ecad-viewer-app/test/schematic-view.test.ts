@@ -204,6 +204,19 @@ suite("schematic insets", () => {
         expect(p.hit_test(b, new Vec2(-500, -500))).to.equal(null);
     });
 
+    test("a variant change reaches every scene and its listeners", async () => {
+        const p = make();
+        await p.resolve("U51", "1");
+        await p.resolve("U38", "2");
+        let heard = 0;
+        p.subscribe(() => heard++);
+        p.set_variant("Lite");
+        expect(heard).to.equal(1);
+        expect(p.scene_variants).to.deep.equal(["Lite", "Lite"]);
+        p.set_variant(null);
+        expect(p.scene_variants).to.deep.equal([null, null]);
+    });
+
     test("an unknown reference resolves to null and holds no scene", async () => {
         const p = make();
         expect(await p.resolve("U99", "1")).to.equal(null);

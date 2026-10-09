@@ -248,6 +248,11 @@ export class InsetSession {
 
     register(provider: InsetProvider) {
         this.#providers.set(provider.kind, provider);
+        // The scene behind this provider changed: its insets re-render.
+        provider.subscribe?.(() => {
+            for (const inset of this.#insets)
+                if (inset.provider === provider) inset.invalidate();
+        });
     }
 
     provider(kind: InsetKind): InsetProvider | undefined {

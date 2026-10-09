@@ -698,6 +698,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.#requested_variant = resolution.requested;
         this.#reflect_variant(resolution.requested);
         this.#apply_variant_request();
+        this.#schematic_inset_provider?.set_variant(this.getVariant());
         return resolution.known;
     }
 
@@ -4350,6 +4351,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 this.#safe_schematic_viewer()?.theme ??
                 themes.default.schematic,
             container: () => this.shadowRoot ?? document.body,
+            variant: () => this.getVariant(),
         });
         return this.#schematic_inset_provider;
     }

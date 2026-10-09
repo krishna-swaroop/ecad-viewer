@@ -77,14 +77,34 @@ function key_action(event: KeyboardEvent): InsetAction | null {
 /** A provider that finds the current real one on every call. */
 class LazyProvider implements InsetProvider {
     #owners = new WeakMap<InsetTarget, InsetProvider>();
+    #listeners = new Set<() => void>();
+    #subscribed = new WeakSet<InsetProvider>();
 
     constructor(
         readonly kind: InsetKind,
         private readonly find: () => InsetProvider | null,
     ) {}
 
+    /** Forwarded to whichever real provider appears (documents load late). */
+    subscribe(listener: () => void) {
+        this.#listeners.add(listener);
+        this.#attach(this.find());
+        return () => {
+            this.#listeners.delete(listener);
+        };
+    }
+
+    #attach(provider: InsetProvider | null) {
+        if (!provider?.subscribe || this.#subscribed.has(provider)) return;
+        this.#subscribed.add(provider);
+        provider.subscribe(() => {
+            for (const listener of this.#listeners) listener();
+        });
+    }
+
     async resolve(reference: string, number: string) {
         const provider = this.find();
+        this.#attach(provider);
         const target = (await provider?.resolve(reference, number)) ?? null;
         if (target && provider) this.#owners.set(target, provider);
         return target;

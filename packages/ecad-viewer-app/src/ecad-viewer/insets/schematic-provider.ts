@@ -38,6 +38,8 @@ export interface SchematicInsetHost {
     theme(): SchematicTheme;
     /** Where the scenes' hidden canvases live (the element's shadow root). */
     container(): Node;
+    /** The design variant the main view shows; scenes follow it. */
+    variant?(): string | null;
 }
 
 interface Scene {
@@ -59,6 +61,7 @@ export class SchematicInsetProvider implements InsetProvider {
     #scenes = new Map<string, Scene>();
     #targets = new WeakMap<InsetTarget, string>();
     #clock = 0;
+    #listeners = new Set<() => void>();
 
     constructor(
         private readonly host: SchematicInsetHost,
@@ -70,8 +73,30 @@ export class SchematicInsetProvider implements InsetProvider {
         return [...this.#scenes.keys()];
     }
 
+    /** Each scene's applied variant; for tests and diagnostics. */
+    get scene_variants(): (string | null)[] {
+        return [...this.#scenes.values()].map((s) => s.viewer.get_variant());
+    }
+
     ready() {
         return this.host.pages().length > 0;
+    }
+
+    subscribe(listener: () => void) {
+        this.#listeners.add(listener);
+        return () => {
+            this.#listeners.delete(listener);
+        };
+    }
+
+    /**
+     * The main view switched design variant: every scene follows (DNP and
+     * fitted state come from the variant) and open insets re-render.
+     */
+    set_variant(name: string | null) {
+        for (const scene of this.#scenes.values())
+            scene.viewer.set_variant(name);
+        for (const listener of this.#listeners) listener();
     }
 
     async resolve(
@@ -199,6 +224,8 @@ export class SchematicInsetProvider implements InsetProvider {
             const ready = (async () => {
                 await viewer.setup();
                 if (page.context) viewer.set_instance_context(page.context);
+                const variant = this.host.variant?.();
+                if (variant !== undefined) viewer.set_variant(variant);
                 await viewer.load(page.document);
             })();
             scene = {

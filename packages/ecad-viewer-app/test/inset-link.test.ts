@@ -691,3 +691,41 @@ suite("inset elements before a peer", () => {
         }
     });
 });
+
+suite("inset elements follow the main view", () => {
+    test("highlighting nets on the PCB re-renders the PCB inset on the schematic tab", async () => {
+        const sch = await mount("follow.kicad_sch", SCHEMATIC);
+        const pcb = await mount("follow.kicad_pcb", BOARD);
+        const diagnostics = (
+            customElements.get("ecad-viewer") as unknown as {
+                insetDiagnostics: { board: { frames: number; reset(): void } };
+            }
+        ).insetDiagnostics;
+        try {
+            sch.setInsetPeer(pcb);
+            pcb.setInsetPeer(sch);
+            sch.setInsetMode(true);
+            const viewer = inner(sch, "kc-schematic-app");
+            const symbol = [...viewer.schematic!.symbols.values()][0]!;
+            const pin = symbol.pins.find((p) => p.number === "1")!;
+            const box = viewer.layers.query_item_bboxes(pin).next()
+                .value as BBox;
+            viewer.on_hover(centre(box));
+            await wait(HOVER_OPEN_DELAY_MS + 150);
+            expect(sch.insetCount).to.equal(1);
+            diagnostics.board.reset();
+            (
+                pcb as unknown as {
+                    setHighlightedNets(nets: Array<{ name: string }>): void;
+                }
+            ).setHighlightedNets([{ name: "VBUS" }]);
+            await wait(100);
+            expect(diagnostics.board.frames).to.be.greaterThan(0);
+        } finally {
+            sch.setInsetPeer(null);
+            pcb.setInsetPeer(null);
+            sch.remove();
+            pcb.remove();
+        }
+    });
+});
