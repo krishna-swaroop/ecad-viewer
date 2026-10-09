@@ -88,6 +88,7 @@ suite("inset link", () => {
     let overlay: HTMLDivElement;
     let viewer: FakeViewer;
     let link: InsetLink;
+    let modes: boolean[];
 
     setup(() => {
         overlay = document.createElement("div");
@@ -105,11 +106,14 @@ suite("inset link", () => {
             insetProvider: (kind) => (kind === "sch" ? own : null),
             overlay_parent: () => overlay,
             source_viewers: () => ({ sch: viewer as unknown as Viewer }),
+            mode_changed: (on) => modes.push(on),
         });
         const pcb = provider("pcb", ["R1", "U1"]);
+        modes = [];
         link.peer = {
             insetProvider: (kind) => (kind === "pcb" ? pcb : null),
         };
+        link.set_mode(true, true);
     });
 
     teardown(() => {
@@ -175,6 +179,90 @@ suite("inset link", () => {
         await wait(HOVER_OPEN_DELAY_MS + 50);
         link.peer = null;
         expect(link.session.count).to.equal(0);
+    });
+    const key = (key: string, init: KeyboardEventInit = {}) =>
+        new KeyboardEvent("keydown", { key, ...init });
+    const click = () =>
+        (viewer as unknown as Viewer).click_interceptor!(
+            new MouseEvent("click"),
+        );
+
+    test("with the mode off, a hover opens nothing", async () => {
+        link.set_mode(false, true);
+        viewer.probe(hover("U1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        expect(link.session.count).to.equal(0);
+        expect(click()).to.equal(false);
+    });
+
+    test("I toggles the mode and tells the host; modifiers are ignored", () => {
+        link.set_mode(false, true);
+        expect(link.key_down(key("i"))).to.equal(true);
+        expect(link.mode).to.equal(true);
+        expect(link.key_down(key("I", { ctrlKey: true }))).to.equal(false);
+        expect(link.key_down(key("i", { metaKey: true }))).to.equal(false);
+        expect(link.key_down(key("i"))).to.equal(true);
+        expect(link.mode).to.equal(false);
+        expect(modes).to.deep.equal([true, false]);
+        link.peer = null;
+        expect(link.key_down(key("i"))).to.equal(false);
+    });
+
+    test("holding Alt peeks: it opens at once and closes on release", async () => {
+        link.set_mode(false, true);
+        viewer.probe(hover("U1"));
+        link.key_down(key("Alt"));
+        await wait(20);
+        expect(link.peeking).to.equal(true);
+        expect(link.session.count).to.equal(1);
+        link.key_up(new KeyboardEvent("keyup", { key: "Alt" }));
+        expect(link.session.count).to.equal(0);
+    });
+
+    test("a peek pinned before Alt is released stays", async () => {
+        link.set_mode(false, true);
+        link.key_down(key("Alt"));
+        viewer.probe(hover("U1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        expect(click()).to.equal(true);
+        link.key_up(null);
+        expect(link.session.count).to.equal(1);
+        expect(link.session.insets[0]!.pinned).to.equal(true);
+    });
+
+    test("turning the mode on over a pin opens at once; off closes previews only", async () => {
+        link.set_mode(false, true);
+        viewer.probe(hover("U1"));
+        link.set_mode(true, true);
+        await wait(20);
+        expect(link.session.count).to.equal(1);
+        link.session.pin(link.session.insets[0]!);
+        viewer.probe(hover("R1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        expect(link.session.count).to.equal(2);
+        link.set_mode(false, true);
+        expect(link.session.count).to.equal(1);
+        expect(link.session.insets[0]!.pinned).to.equal(true);
+    });
+
+    test("a click on the hovered pin pins its preview and is consumed", async () => {
+        viewer.probe(hover("U1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        expect(click()).to.equal(true);
+        expect(link.session.insets[0]!.pinned).to.equal(true);
+        expect(link.session.preview).to.equal(null);
+    });
+
+    test("a click inside the hover delay opens and pins at once", async () => {
+        viewer.probe(hover("U1"));
+        expect(click()).to.equal(true);
+        await wait(20);
+        expect(link.session.count).to.equal(1);
+        expect(link.session.insets[0]!.pinned).to.equal(true);
+    });
+
+    test("a click away from any pin is left to the viewer", () => {
+        expect(click()).to.equal(false);
     });
 });
 
@@ -247,11 +335,14 @@ type Host = HTMLElement & {
         sources: Array<{ filename: string; content: string }>;
     }): Promise<void>;
     setInsetPeer(peer: unknown): void;
+    setInsetMode(on: boolean): void;
+    readonly insetMode: boolean;
     closeInsets(): boolean;
     readonly insetCount: number;
 };
 
-type AnyViewer = {
+type AnyViewer = EventTarget & {
+    canvas: HTMLCanvasElement;
     on_hover(pos: Vec2): void;
     on_pointer_leave?: () => void;
     layers: { query_item_bboxes(item: unknown): Iterator<BBox> };
@@ -303,6 +394,7 @@ suite("inset elements", () => {
         pcb = await mount("insets.kicad_pcb", BOARD);
         sch.setInsetPeer(pcb);
         pcb.setInsetPeer(sch);
+        sch.setInsetMode(true);
     });
 
     teardown(() => {
@@ -366,5 +458,64 @@ suite("inset elements", () => {
         await wait(HOVER_OPEN_DELAY_MS + 100);
         expect(sch.closeInsets()).to.equal(true);
         expect(sch.insetCount).to.equal(0);
+    });
+    const hover_r1_pin = () => {
+        const viewer = inner(sch, "kc-schematic-app");
+        const symbol = [...viewer.schematic!.symbols.values()][0]!;
+        const pin = symbol.pins.find((p) => p.number === "1")!;
+        const box = viewer.layers.query_item_bboxes(pin).next().value as BBox;
+        viewer.on_hover(centre(box));
+        return viewer;
+    };
+
+    test("setInsetMode on one element is mirrored on its peer", () => {
+        expect(sch.insetMode).to.equal(true);
+        expect(pcb.insetMode).to.equal(true);
+        pcb.setInsetMode(false);
+        expect(sch.insetMode).to.equal(false);
+    });
+
+    test("one press of I toggles the mode once for both elements", () => {
+        const seen: boolean[] = [];
+        sch.addEventListener("ecad-viewer:inset-mode", (e) =>
+            seen.push((e as CustomEvent<{ on: boolean }>).detail.on),
+        );
+        // Both elements listen on window; the first to handle the key marks
+        // it handled, so the second does not toggle it back.
+        const event = new KeyboardEvent("keydown", {
+            key: "i",
+            cancelable: true,
+        });
+        window.dispatchEvent(event);
+        expect(event.defaultPrevented).to.equal(true);
+        expect(sch.insetMode).to.equal(false);
+        expect(pcb.insetMode).to.equal(false);
+        expect(seen).to.deep.equal([false]);
+    });
+
+    test("I typed into an input is ignored", () => {
+        const input = document.createElement("input");
+        document.body.append(input);
+        input.focus();
+        input.dispatchEvent(
+            new KeyboardEvent("keydown", {
+                key: "i",
+                bubbles: true,
+                composed: true,
+            }),
+        );
+        input.remove();
+        expect(sch.insetMode).to.equal(true);
+    });
+
+    test("in inset mode a click on the hovered pin pins it instead of selecting", async () => {
+        const viewer = hover_r1_pin();
+        await wait(HOVER_OPEN_DELAY_MS + 100);
+        let selects = 0;
+        viewer.addEventListener("kicanvas:select", () => selects++);
+        viewer.canvas.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        expect(selects).to.equal(0);
+        expect(sch.insetCount).to.equal(1);
+        expect(sch.shadowRoot!.querySelector(".inset.preview")).to.equal(null);
     });
 });

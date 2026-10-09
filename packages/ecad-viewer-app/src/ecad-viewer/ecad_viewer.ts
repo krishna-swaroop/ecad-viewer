@@ -568,6 +568,14 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 this.#handle_host_keydown(event as KeyboardEvent);
             }),
         );
+        this.addDisposable(
+            listen(window, "keyup", (event) => {
+                this.#inset_link?.key_up(event as KeyboardEvent);
+            }),
+        );
+        this.addDisposable(
+            listen(window, "blur", () => this.#inset_link?.key_up(null)),
+        );
     }
 
     get input() {
@@ -3217,8 +3225,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     #handle_host_keydown(event: KeyboardEvent) {
-        if (!this.#host_active || !this.has_sch || event.defaultPrevented)
-            return;
+        if (!this.#host_active || event.defaultPrevented) return;
         if (document.querySelector('[role="dialog"][data-state="open"]'))
             return;
         const target = event.composedPath()[0];
@@ -3228,6 +3235,12 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             (target instanceof HTMLElement && target.isContentEditable)
         )
             return;
+
+        if (this.#inset_link?.key_down(event)) {
+            event.preventDefault();
+            return;
+        }
+        if (!this.has_sch) return;
 
         const direction =
             event.key === "[" || event.code === "BracketLeft"
@@ -4231,8 +4244,42 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 sch: this.has_sch ? this.#safe_schematic_viewer() : null,
                 pcb: this.has_pcb ? this.#safe_board_viewer() : null,
             }),
+            mode_changed: (on) => {
+                this.#inset_link?.peer?.syncInsetMode?.(on);
+                this.#emit_inset_mode(on);
+            },
         });
         this.#inset_link.peer = peer;
+    }
+
+    /**
+     * Inset mode: hovering a pin or pad opens a preview of the other
+     * document and clicking pins it. `I` toggles it; holding Alt peeks while
+     * it is off. A linked peer follows.
+     */
+    public get insetMode(): boolean {
+        return this.#inset_link?.mode ?? false;
+    }
+
+    public setInsetMode(on: boolean) {
+        this.#inset_link?.set_mode(on);
+    }
+
+    /** InsetPeer: the other element changed the mode. */
+    public syncInsetMode(on: boolean) {
+        if (!this.#inset_link || this.#inset_link.mode === on) return;
+        this.#inset_link.set_mode(on, true);
+        this.#emit_inset_mode(on);
+    }
+
+    #emit_inset_mode(on: boolean) {
+        this.dispatchEvent(
+            new CustomEvent("ecad-viewer:inset-mode", {
+                detail: { on },
+                bubbles: true,
+                composed: true,
+            }),
+        );
     }
 
     /** Close this element's insets. Returns whether any were open. */
