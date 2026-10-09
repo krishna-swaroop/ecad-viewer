@@ -469,13 +469,20 @@ export class InsetSession {
 
     #layout_leader(inset: Inset, root: DOMRect) {
         const a = inset.source.world_to_client(inset.source_anchor);
-        const b = inset.missing
+        const raw = inset.missing
             ? null
             : inset.world_to_client(inset.target.anchor);
-        const visible = !!a && !!b;
+        const visible = !!a && !!raw;
         for (const el of [inset.leader, inset.ring, inset.origin])
             el.style.display = visible ? "" : "none";
-        if (!a || !b) return;
+        if (!a || !raw) return;
+        // Panned or zoomed so the pad is out of view: end the leader at the
+        // inset's edge, pointing at it, and mark the edge instead.
+        const lens = inset.panel.lens;
+        const view = (
+            lens ? inset.panel.el : inset.panel.canvas
+        ).getBoundingClientRect();
+        const { point: b, clipped } = clamp_to_view(raw, view, lens);
         const ax = a.x - root.left;
         const ay = a.y - root.top;
         const bx = b.x - root.left;
@@ -487,6 +494,9 @@ export class InsetSession {
         );
         inset.ring.setAttribute("cx", `${bx}`);
         inset.ring.setAttribute("cy", `${by}`);
+        inset.ring.setAttribute("r", clipped ? "4" : "7");
+        inset.ring.setAttribute("fill", clipped ? inset.color : "none");
+        inset.ring.classList.toggle("off-view", clipped);
         inset.origin.setAttribute("cx", `${ax}`);
         inset.origin.setAttribute("cy", `${ay}`);
     }
@@ -514,4 +524,43 @@ function is_typing_target(e: Event) {
         target instanceof HTMLTextAreaElement ||
         target instanceof HTMLSelectElement
     );
+}
+
+const EDGE_MARGIN = 4;
+
+/**
+ * Keep a leader end inside the inset's view: the canvas rectangle, or the
+ * circle of a lens. A point outside moves to the edge along the line from
+ * the view's centre, so the leader still points at the pad.
+ */
+export function clamp_to_view(
+    point: Vec2,
+    view: { left: number; top: number; width: number; height: number },
+    circle = false,
+): { point: Vec2; clipped: boolean } {
+    const cx = view.left + view.width / 2;
+    const cy = view.top + view.height / 2;
+    const dx = point.x - cx;
+    const dy = point.y - cy;
+    if (circle) {
+        const r = Math.max(
+            0,
+            Math.min(view.width, view.height) / 2 - EDGE_MARGIN,
+        );
+        const d = Math.hypot(dx, dy);
+        if (d <= r) return { point, clipped: false };
+        return {
+            point: new Vec2(cx + (dx / d) * r, cy + (dy / d) * r),
+            clipped: true,
+        };
+    }
+    const hx = Math.max(0, view.width / 2 - EDGE_MARGIN);
+    const hy = Math.max(0, view.height / 2 - EDGE_MARGIN);
+    if (Math.abs(dx) <= hx && Math.abs(dy) <= hy)
+        return { point, clipped: false };
+    const t = Math.min(
+        dx ? hx / Math.abs(dx) : Infinity,
+        dy ? hy / Math.abs(dy) : Infinity,
+    );
+    return { point: new Vec2(cx + dx * t, cy + dy * t), clipped: true };
 }
