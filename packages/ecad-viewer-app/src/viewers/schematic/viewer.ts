@@ -4,7 +4,7 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import { BBox, Vec2 } from "../../base/math";
+import { BBox, Matrix3, Vec2 } from "../../base/math";
 import { Color, Polygon, Polyline, Renderer } from "../../graphics";
 import { Canvas2DRenderer } from "../../graphics/canvas2d";
 import { NullRenderer } from "../../graphics/null-renderer";
@@ -31,6 +31,7 @@ import {
 import { ViewerType } from "../base/viewer";
 import { LayerNames, LayerSet } from "./layers";
 import { SchematicPainter } from "./painter";
+import { render_schematic_view } from "./schematic-view";
 import { get_symbol_transform } from "../../kicad/symbol-transform";
 import { apply_schematic_render_defaults } from "./render-state";
 import { StrokeFont, TextAttributes } from "../../kicad/text";
@@ -197,6 +198,17 @@ export class SchematicViewer extends DocumentViewer<
             await super.load(src);
         }
         this.dispatchEvent(new SheetLoadEvent(src.filename));
+    }
+
+    /**
+     * Render this sheet through another camera into `target`, a 2D canvas.
+     * Used by insets; see schematic-view.ts.
+     */
+    public render_view(
+        target: HTMLCanvasElement,
+        camera: (css_w: number, css_h: number) => Matrix3,
+    ): boolean {
+        return render_schematic_view(this, target, camera);
     }
 
     find_item(pos: Vec2) {
