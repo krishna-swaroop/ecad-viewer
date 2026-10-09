@@ -162,6 +162,7 @@ export class InsetSession {
     readonly #providers = new Map<InsetKind, InsetProvider>();
     #insets: Inset[] = [];
     #preview: Inset | null = null;
+    #hovered: Inset | null = null;
     #request = 0;
     #next_color = 0;
     #frame: number | null = null;
@@ -191,6 +192,11 @@ export class InsetSession {
 
     get preview(): Inset | null {
         return this.#preview;
+    }
+
+    /** The inset under the pointer; toolbar keys act on it. */
+    get hovered(): Inset | null {
+        return this.#hovered;
     }
 
     register(provider: InsetProvider) {
@@ -259,7 +265,7 @@ export class InsetSession {
         };
         let inset!: Inset;
         const panel = new InsetPanel(color, {
-            action: (action) => this.#act(inset, action),
+            action: (action) => this.act(inset, action),
             moved: () => this.schedule(),
             resized: () => inset.resized(),
             pan: (dx, dy) => {
@@ -282,6 +288,10 @@ export class InsetSession {
                 inset.invalidate();
             },
             touched: () => this.pin(inset),
+            hover: (on) => {
+                if (on) this.#hovered = inset;
+                else if (this.#hovered === inset) this.#hovered = null;
+            },
         });
         panel.title = shown;
         panel.side = shown.side;
@@ -354,6 +364,7 @@ export class InsetSession {
             if (index >= 0) siblings.splice(index, 1);
         }
         if (this.#preview === inset) this.#preview = null;
+        if (this.#hovered === inset) this.#hovered = null;
         if (!this.#insets.length) this.#listen_keys(false);
     }
 
@@ -408,7 +419,8 @@ export class InsetSession {
         this.#root.remove();
     }
 
-    #act(inset: Inset, action: InsetAction) {
+    /** Run a toolbar action on `inset` (buttons and keys). */
+    act(inset: Inset, action: InsetAction) {
         switch (action) {
             case "rotate-ccw":
                 inset.rotate(-ROTATE_STEP);

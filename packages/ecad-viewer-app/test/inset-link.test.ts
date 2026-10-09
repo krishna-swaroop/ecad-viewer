@@ -264,6 +264,76 @@ suite("inset link", () => {
     test("a click away from any pin is left to the viewer", () => {
         expect(click()).to.equal(false);
     });
+
+    test("toolbar keys act on the inset under the pointer", async () => {
+        viewer.probe(hover("U1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        const inset = link.session.preview!;
+        const press = (k: string, init: KeyboardEventInit = {}) =>
+            link.key_down(new KeyboardEvent("keydown", { key: k, ...init }));
+        // Nothing hovered: keys fall through.
+        expect(press("r")).to.equal(false);
+        inset.panel.el.dispatchEvent(new PointerEvent("pointerenter"));
+        expect(link.session.hovered).to.equal(inset);
+        expect(press("r")).to.equal(true);
+        expect(inset.camera.rotation).to.be.closeTo(Math.PI / 12, 1e-9);
+        expect(press("R", { shiftKey: true })).to.equal(true);
+        expect(press("R", { shiftKey: true })).to.equal(true);
+        expect(inset.camera.rotation).to.be.closeTo(-Math.PI / 12, 1e-9);
+        expect(press("m")).to.equal(true);
+        expect(inset.camera.mirror).to.equal(true);
+        expect(press("l")).to.equal(true);
+        expect(inset.panel.lens).to.equal(true);
+        inset.fit();
+        const fitted = inset.camera.zoom;
+        inset.camera.zoom *= 5;
+        expect(press("Home")).to.equal(true);
+        expect(inset.camera.zoom).to.be.closeTo(fitted, 1e-9);
+        expect(press("r", { ctrlKey: true })).to.equal(false);
+        expect(press("m", { shiftKey: true })).to.equal(false);
+        expect(press("p")).to.equal(true);
+        expect(inset.pinned).to.equal(true);
+        expect(press("x")).to.equal(true);
+        expect(link.session.count).to.equal(0);
+        expect(link.session.hovered).to.equal(null);
+    });
+
+    test("I still toggles the mode while an inset is hovered", async () => {
+        viewer.probe(hover("U1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        link.session.preview!.panel.el.dispatchEvent(
+            new PointerEvent("pointerenter"),
+        );
+        expect(
+            link.key_down(new KeyboardEvent("keydown", { key: "i" })),
+        ).to.equal(true);
+        expect(link.mode).to.equal(false);
+    });
+
+    test("a preview under the pointer survives leaving its pin", async () => {
+        viewer.probe(hover("U1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        const inset = link.session.preview!;
+        inset.panel.el.dispatchEvent(new PointerEvent("pointerenter"));
+        viewer.probe({ ...hover("U1"), phase: "leave" } as KiCanvasProbeDetail);
+        await wait(HOVER_CLOSE_DELAY_MS + 50);
+        expect(link.session.count).to.equal(1);
+        inset.panel.el.dispatchEvent(new PointerEvent("pointerleave"));
+        expect(link.session.hovered).to.equal(null);
+    });
+
+    test("toolbar buttons name their keys", async () => {
+        viewer.probe(hover("U1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        const inset = link.session.preview!;
+        expect(inset.panel.button("rotate-cw").title).to.equal(
+            "Rotate +15° · R",
+        );
+        expect(inset.panel.button("rotate-ccw").title).to.equal(
+            "Rotate −15° · ⇧R",
+        );
+        expect(inset.panel.button("close").title).to.equal("Close · X");
+    });
 });
 
 // --- Two real elements --------------------------------------------------------
