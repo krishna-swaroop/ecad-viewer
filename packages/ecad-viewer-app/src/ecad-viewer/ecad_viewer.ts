@@ -439,6 +439,7 @@ import {
     set_board_view_gpu_sync,
 } from "../viewers/board/board-view";
 import { schematic_view_stats } from "../viewers/schematic/schematic-view";
+import { cull_settings, cull_stats } from "../graphics/webgl/cull";
 import themes from "../kicanvas/themes";
 import {
     BoardInsetProvider,
@@ -4362,6 +4363,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             board: board_view_stats,
             schematic: schematic_view_stats,
             setGpuSync: set_board_view_gpu_sync,
+            cull: cull_settings,
+            cullStats: cull_stats,
         };
     }
 

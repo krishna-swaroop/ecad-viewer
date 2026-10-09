@@ -22,6 +22,7 @@ const arg = (name, fallback) => {
     return i >= 0 ? argv[i + 1] : fallback;
 };
 const port = arg("port", "8016");
+const cull = arg("cull", "1");
 const pcb = arg("pcb");
 const steps = Number(arg("steps", 30));
 const pads = (arg("pads", "") || "")
@@ -48,7 +49,7 @@ try {
     page.on("pageerror", (e) => console.error("pageerror:", e.message));
     const t0 = Date.now();
     await page.goto(
-        `http://127.0.0.1:${port}/bench-insets.html?pcb=${encodeURIComponent(pcb)}`,
+        `http://127.0.0.1:${port}/bench-insets.html?pcb=${encodeURIComponent(pcb)}&cull=${cull}`,
     );
     await page.waitForFunction(() => typeof window.bench_ready === "function");
     await page.evaluate(() => window.bench_ready());
@@ -63,6 +64,8 @@ try {
             ),
         );
     result.main_view = await page.evaluate(() => window.bench_main());
+    result.cull = cull !== "0";
+    result.pixels = await page.evaluate(() => window.bench_pixels());
     console.log(JSON.stringify(result, null, 1));
 } finally {
     await browser.close();
