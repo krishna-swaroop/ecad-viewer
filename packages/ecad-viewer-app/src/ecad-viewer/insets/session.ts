@@ -24,6 +24,7 @@ import {
 } from "./camera";
 import { INSET_STYLES, InsetPanel, type InsetAction } from "./panel";
 import type {
+    InsetHit,
     InsetKind,
     InsetProvider,
     InsetSource,
@@ -70,6 +71,10 @@ export class Inset implements InsetSource {
     pinned = false;
     /** The designator is not in the target document: header only. */
     missing = false;
+    /** The pin or pad under the pointer inside this inset (IN-20). */
+    hit: InsetHit | null = null;
+    readonly target_outline = document.createElementNS(SVG_NS, "polygon");
+    readonly hover_outline = document.createElementNS(SVG_NS, "polygon");
     #dirty = true;
     #rendered_size = { w: 0, h: 0 };
 
@@ -87,6 +92,48 @@ export class Inset implements InsetSource {
         readonly origin: SVGCircleElement,
         readonly camera: InsetCamera,
     ) {}
+
+    /** Hover at a canvas point (or none): find what is under it. */
+    hover_at(cursor: Vec2 | null) {
+        let hit: InsetHit | null = null;
+        if (cursor && !this.missing && this.provider.hit_test) {
+            const { w, h } = this.canvas_size;
+            if (w && h)
+                hit = this.provider.hit_test(
+                    this.target,
+                    inset_to_world(this.camera, w, h, cursor),
+                );
+        }
+        const same =
+            hit?.reference === this.hit?.reference &&
+            hit?.number === this.hit?.number;
+        this.hit = hit;
+        if (!same) this.session.schedule();
+    }
+
+    /** Outline the target pad/pin and the hovered one over the canvas. */
+    layout_marks() {
+        const { w, h } = this.canvas_size;
+        const polygon = (el: SVGPolygonElement, box: BBox | undefined) => {
+            if (!box || !w || !h) {
+                el.style.display = "none";
+                return;
+            }
+            const corners = [
+                new Vec2(box.x, box.y),
+                new Vec2(box.x + box.w, box.y),
+                new Vec2(box.x + box.w, box.y + box.h),
+                new Vec2(box.x, box.y + box.h),
+            ].map((p) => world_to_inset(this.camera, w, h, p));
+            el.setAttribute(
+                "points",
+                corners.map((p) => `${p.x},${p.y}`).join(" "),
+            );
+            el.style.display = "";
+        };
+        polygon(this.target_outline, this.target.anchor_box);
+        polygon(this.hover_outline, this.hit?.box);
+    }
 
     get canvas_size() {
         return {
@@ -290,6 +337,7 @@ export class InsetSession {
                 inset.invalidate();
             },
             touched: () => this.pin(inset),
+            pointer: (cursor) => inset.hover_at(cursor),
             hover: (on) => {
                 if (on) this.#hovered = inset;
                 else if (this.#hovered === inset) this.#hovered = null;
@@ -336,6 +384,9 @@ export class InsetSession {
         this.#insets.push(inset);
         if (preview) this.#preview = inset;
 
+        inset.target_outline.classList.add("target");
+        inset.hover_outline.classList.add("hover");
+        panel.marks.append(inset.target_outline, inset.hover_outline);
         this.#root.append(panel.el);
         this.#svg.append(leader, ring, origin);
         this.#place(inset, request.size ?? { w: 320, h: 248 });
@@ -408,6 +459,7 @@ export class InsetSession {
         const root = this.#root.getBoundingClientRect();
         for (const inset of this.#insets) {
             inset.render();
+            inset.layout_marks();
             this.#layout_leader(inset, root);
         }
     }

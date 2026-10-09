@@ -26,6 +26,8 @@ export interface InsetPanelHandlers {
     pan(dx: number, dy: number): void;
     /** Wheel on the canvas; `cursor` is in canvas CSS pixels. */
     wheel(cursor: Vec2, delta_y: number, shift: boolean): void;
+    /** Pointer over the canvas (canvas CSS pixels), or null when it left. */
+    pointer(cursor: Vec2 | null): void;
     /** The user grabbed the panel (header, grip or canvas). */
     touched(): void;
     /** The pointer entered (true) or left (false) the panel. */
@@ -56,6 +58,8 @@ export const MIN_PANEL_HEIGHT = 120;
 export class InsetPanel {
     readonly el: HTMLDivElement;
     readonly canvas: HTMLCanvasElement;
+    /** Outlines drawn over the canvas, in canvas pixels; clipped with it. */
+    readonly marks: SVGSVGElement;
     #title: HTMLSpanElement;
     #side: HTMLSpanElement;
     #buttons = new Map<InsetAction, HTMLButtonElement>();
@@ -109,7 +113,26 @@ export class InsetPanel {
         this.canvas.className = "inset-canvas";
         const grip = document.createElement("div");
         grip.className = "inset-grip";
-        this.el.append(header, this.canvas, grip);
+        this.marks = document.createElementNS(
+            "http://www.w3.org/2000/svg",
+            "svg",
+        );
+        this.marks.classList.add("inset-marks");
+        const view = document.createElement("div");
+        view.className = "inset-view";
+        view.append(this.canvas, this.marks);
+        this.el.append(header, view, grip);
+        this.canvas.addEventListener("pointermove", (e) => {
+            // Panning is not hovering.
+            if (e.buttons) return;
+            const rect = this.canvas.getBoundingClientRect();
+            handlers.pointer(
+                new Vec2(e.clientX - rect.left, e.clientY - rect.top),
+            );
+        });
+        this.canvas.addEventListener("pointerleave", () =>
+            handlers.pointer(null),
+        );
 
         this.#drag(header, (dx, dy) => {
             this.el.style.left = `${this.el.offsetLeft + dx}px`;
@@ -267,11 +290,16 @@ export const INSET_STYLES = `
 .inset.preview .inset-toolbar button:not([data-action="pin"]) { display: none; }
 .inset.missing { height: auto !important; border-color: var(--inset-border, #cbd5e1); border-style: solid; }
 .inset.missing .inset-dot { background: var(--inset-border, #cbd5e1); }
-.inset.missing .inset-canvas, .inset.missing .inset-grip,
+.inset.missing .inset-view, .inset.missing .inset-grip,
 .inset.missing .inset-toolbar button:not([data-action="close"]) { display: none !important; }
 .inset.missing .inset-header { border-bottom: 0; }
 .inset.missing .inset-tip { display: none !important; }
-.inset-canvas { flex: 1; width: 100%; min-height: 0; display: block; cursor: grab; }
+.inset-view { position: relative; flex: 1; min-height: 0; }
+.inset-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+.inset-marks { position: absolute; inset: 0; width: 100%; height: 100%; overflow: hidden; pointer-events: none; }
+.inset-marks .target { fill: none; stroke: var(--inset-color); stroke-width: 2; }
+.inset-marks .hover { fill: color-mix(in srgb, var(--inset-color) 14%, transparent); stroke: var(--inset-color);
+  stroke-width: 1.5; stroke-dasharray: 4 3; }
 .inset-canvas:active { cursor: grabbing; }
 .inset-grip { position: absolute; right: 0; bottom: 0; width: 12px; height: 12px; cursor: nwse-resize; }
 .inset.lens { border-radius: 50%; border-width: 2px; }
