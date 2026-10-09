@@ -577,3 +577,135 @@ suite("inset leader with the pad out of view", () => {
         }
     });
 });
+
+suite("inset hover outlines", () => {
+    let host: HTMLDivElement;
+    let session: InsetSession;
+    let renders: number;
+    let hit_at: Vec2 | null;
+
+    setup(() => {
+        host = document.createElement("div");
+        Object.assign(host.style, {
+            position: "fixed",
+            left: "0px",
+            top: "0px",
+            width: "1200px",
+            height: "800px",
+        });
+        document.body.append(host);
+        session = new InsetSession();
+        renders = 0;
+        hit_at = null;
+        const provider: InsetProvider = {
+            kind: "pcb",
+            resolve: async (reference, number) => ({
+                kind: "pcb",
+                reference,
+                number,
+                side: "top",
+                focus: new BBox(0, 0, 10, 10),
+                anchor: new Vec2(2, 2),
+                anchor_box: new BBox(1, 1, 2, 2),
+                mirror: false,
+            }),
+            render: () => {
+                renders += 1;
+            },
+            hit_test: (_target, world) => {
+                hit_at = world;
+                // A pad occupying world x 6..8, y 6..8.
+                return world.x >= 6 &&
+                    world.x <= 8 &&
+                    world.y >= 6 &&
+                    world.y <= 8
+                    ? {
+                          reference: "R2",
+                          number: "1",
+                          box: new BBox(6, 6, 2, 2),
+                      }
+                    : null;
+            },
+        };
+        session.register(provider);
+        session.mount(host);
+    });
+
+    teardown(() => {
+        session.dispose();
+        host.remove();
+    });
+
+    const open_inset = () =>
+        session.open({
+            kind: "pcb",
+            reference: "U1",
+            number: "1",
+            source: { world_to_client: () => new Vec2(100, 100) },
+            source_anchor: new Vec2(0, 0),
+        });
+
+    const points = (el: SVGPolygonElement) =>
+        el
+            .getAttribute("points")!
+            .split(" ")
+            .map((p) => p.split(",").map(Number));
+
+    test("the target pad is outlined through the inset's camera", async () => {
+        const inset = (await open_inset())!;
+        session.flush();
+        const { w, h } = inset.canvas_size;
+        const expected = world_to_inset(inset.camera, w, h, new Vec2(1, 1));
+        const [first] = points(inset.target_outline);
+        expect(first![0]).to.be.closeTo(expected.x, 1e-3);
+        expect(first![1]).to.be.closeTo(expected.y, 1e-3);
+        expect(points(inset.target_outline)).to.have.length(4);
+        expect(inset.target_outline.style.display).to.equal("");
+        expect(inset.hover_outline.style.display).to.equal("none");
+        // Rotated insets rotate the outline with the scene.
+        inset.rotate(Math.PI / 4);
+        session.flush();
+        const [a, b] = points(inset.target_outline);
+        expect(Math.abs(a![1] - b![1])).to.be.greaterThan(1);
+    });
+
+    test("hovering a pad inside the inset outlines it without re-rendering", async () => {
+        const inset = (await open_inset())!;
+        await new Promise((r) => requestAnimationFrame(r));
+        await new Promise((r) => requestAnimationFrame(r));
+        const before = renders;
+        const { w, h } = inset.canvas_size;
+        const over = world_to_inset(inset.camera, w, h, new Vec2(7, 7));
+        const rect = inset.panel.canvas.getBoundingClientRect();
+        inset.panel.canvas.dispatchEvent(
+            new PointerEvent("pointermove", {
+                clientX: rect.left + over.x,
+                clientY: rect.top + over.y,
+            }),
+        );
+        close_to(hit_at!, new Vec2(7, 7));
+        expect(inset.hit?.reference).to.equal("R2");
+        session.flush();
+        expect(inset.hover_outline.style.display).to.equal("");
+        expect(renders).to.equal(before);
+        // Off the pad: the outline goes away.
+        inset.panel.canvas.dispatchEvent(new PointerEvent("pointerleave"));
+        expect(inset.hit).to.equal(null);
+        session.flush();
+        expect(inset.hover_outline.style.display).to.equal("none");
+        expect(renders).to.equal(before);
+    });
+
+    test("a pointer move while panning is not a hover", async () => {
+        const inset = (await open_inset())!;
+        hit_at = null;
+        inset.panel.canvas.dispatchEvent(
+            new PointerEvent("pointermove", {
+                clientX: 10,
+                clientY: 10,
+                buttons: 1,
+            }),
+        );
+        expect(hit_at).to.equal(null);
+    });
+});

@@ -14,15 +14,15 @@
 
 import { BBox, Vec2 } from "../../base/math";
 import type { SchematicTheme } from "../../kicad";
-import type {
-    KicadSch,
+import {
     PinInstance,
-    SchematicInstanceContext,
-    SchematicSymbol,
+    type KicadSch,
+    type SchematicInstanceContext,
+    type SchematicSymbol,
 } from "../../kicad/schematic";
 import { SchematicViewer } from "../../viewers/schematic/viewer";
 import { inset_matrix, type InsetCamera } from "./camera";
-import type { InsetProvider, InsetTarget } from "./types";
+import type { InsetHit, InsetProvider, InsetTarget } from "./types";
 
 export interface SchematicInsetPage {
     /** Unique per sheet instance (Project page `project_path`). */
@@ -42,6 +42,7 @@ export interface SchematicInsetHost {
 
 interface Scene {
     key: string;
+    page: SchematicInsetPage;
     viewer: SchematicViewer;
     canvas: HTMLCanvasElement;
     ready: Promise<void>;
@@ -101,10 +102,29 @@ export class SchematicInsetProvider implements InsetProvider {
             side: "sch",
             focus: symbol_box,
             anchor: center(pin_box),
+            anchor_box: found.pin ? pin_box : undefined,
             mirror: false,
         };
         this.#targets.set(target, scene.key);
         return target;
+    }
+
+    hit_test(target: InsetTarget, world: Vec2): InsetHit | null {
+        const key = this.#targets.get(target);
+        const scene = key ? this.#scenes.get(key) : undefined;
+        if (!scene?.viewer.document) return null;
+        // find_item's inferred type narrows `item` to null; it is any item.
+        const { item, bbox } = scene.viewer.find_item(world) as {
+            item: unknown;
+            bbox: BBox | null;
+        };
+        if (!(item instanceof PinInstance) || !item.number.trim()) return null;
+        const context = scene.page.context;
+        return {
+            reference: context?.reference(item.parent) ?? item.parent.reference,
+            number: item.number,
+            box: bbox ?? item.bbox,
+        };
     }
 
     render(
@@ -183,6 +203,7 @@ export class SchematicInsetProvider implements InsetProvider {
             })();
             scene = {
                 key: page.key,
+                page,
                 viewer,
                 canvas,
                 ready,

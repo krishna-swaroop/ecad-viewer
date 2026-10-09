@@ -194,6 +194,16 @@ suite("schematic insets", () => {
         expect(without.anchor.y).to.be.closeTo(g.y + g.h / 2, 1e-6);
     });
 
+    test("pins inside a schematic inset are hit-tested with instance references", async () => {
+        const p = make();
+        const b = (await p.resolve("U38", "2"))!;
+        expect(b.anchor_box).to.not.equal(undefined);
+        const hit = p.hit_test(b, b.anchor)!;
+        expect(hit.reference).to.equal("U38");
+        expect(hit.number).to.equal("2");
+        expect(p.hit_test(b, new Vec2(-500, -500))).to.equal(null);
+    });
+
     test("an unknown reference resolves to null and holds no scene", async () => {
         const p = make();
         expect(await p.resolve("U99", "1")).to.equal(null);

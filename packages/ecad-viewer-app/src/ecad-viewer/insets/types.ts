@@ -24,8 +24,18 @@ export interface InsetTarget {
     focus: BBox;
     /** World point the leader ends at: the matching pad or pin. */
     anchor: Vec2;
+    /** World box of that pad or pin, outlined in the chain colour. */
+    anchor_box?: BBox;
     /** Open mirrored (bottom-side footprint). */
     mirror: boolean;
+}
+
+/** A pin or pad under the pointer inside an inset. */
+export interface InsetHit {
+    reference: string;
+    number: string;
+    /** World box, for the hover outline. */
+    box: BBox;
 }
 
 /**
@@ -52,6 +62,8 @@ export interface InsetProvider {
      * unready provider means "not yet", not "not in this document".
      */
     ready?(): boolean;
+    /** The pin or pad at a world point of `target`'s scene, if any. */
+    hit_test?(target: InsetTarget, world: Vec2): InsetHit | null;
 }
 
 /**

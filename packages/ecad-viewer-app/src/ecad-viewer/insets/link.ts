@@ -98,6 +98,10 @@ class LazyProvider implements InsetProvider {
         this.#owners.get(target)?.render(target, camera, canvas);
     }
 
+    hit_test(target: InsetTarget, world: Vec2) {
+        return this.#owners.get(target)?.hit_test?.(target, world) ?? null;
+    }
+
     ready() {
         const provider = this.find();
         return !!provider && (provider.ready?.() ?? true);

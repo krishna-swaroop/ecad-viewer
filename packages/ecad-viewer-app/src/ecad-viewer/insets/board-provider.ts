@@ -4,9 +4,11 @@
 */
 
 import { BBox, Vec2 } from "../../base/math";
+import { Pad } from "../../kicad/board";
+import { Depth } from "../../kicad/board_bbox_visitor";
 import type { BoardViewer } from "../../viewers/board/viewer";
 import { inset_matrix, type InsetCamera } from "./camera";
-import type { InsetProvider, InsetTarget } from "./types";
+import type { InsetHit, InsetProvider, InsetTarget } from "./types";
 
 const center = (box: BBox) => new Vec2(box.x + box.w / 2, box.y + box.h / 2);
 
@@ -37,8 +39,25 @@ export class BoardInsetProvider implements InsetProvider {
             side: bottom ? "bottom" : "top",
             focus: fp.bbox,
             anchor: center(pad ? pad.bbox : fp.bbox),
+            anchor_box: pad?.bbox,
             mirror: bottom,
         };
+    }
+
+    hit_test(_target: InsetTarget, world: Vec2): InsetHit | null {
+        const viewer = this.viewer();
+        if (!viewer?.board) return null;
+        for (const entry of viewer.find_items_under_pos(world)) {
+            const item = entry.item;
+            if (entry.depth !== Depth.PAD || !(item instanceof Pad)) continue;
+            if (!item.number.trim()) continue;
+            return {
+                reference: item.parent.reference,
+                number: item.number,
+                box: item.bbox,
+            };
+        }
+        return null;
     }
 
     render(

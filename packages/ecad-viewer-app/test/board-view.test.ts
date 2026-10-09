@@ -143,6 +143,16 @@ suite("board insets: provider", () => {
         expect(t.focus).to.deep.equal(fp.bbox);
     });
 
+    test("the target carries its pad box, and pads are hit-tested", async () => {
+        const t = (await provider.resolve("R1", "1"))!;
+        const fp = viewer.board.footprints.find((f) => f.reference === "R1")!;
+        expect(t.anchor_box).to.deep.equal(fp.pad_by_number("1").bbox);
+        const hit = provider.hit_test(t, new Vec2(11, 10))!;
+        expect(hit.reference).to.equal("R1");
+        expect(hit.number).to.equal("2");
+        expect(provider.hit_test(t, new Vec2(20, 2))).to.equal(null);
+    });
+
     test("a bottom-side footprint opens mirrored", async () => {
         const t = (await provider.resolve("C1", "2"))!;
         expect(t.side).to.equal("bottom");
