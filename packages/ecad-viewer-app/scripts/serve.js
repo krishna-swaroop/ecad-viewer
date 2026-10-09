@@ -45,7 +45,7 @@ if (existsSync(glyphSrc)) {
 let { host, port } = await context.serve({
     servedir: resolve(APP_DIR, "static"),
     host: "127.0.0.1",
-    port: 8012,
+    port: Number(process.env.ECAD_VIEWER_PORT ?? 8012),
 });
 
 console.log(`[serve] listening at http://${host}:${port}`);

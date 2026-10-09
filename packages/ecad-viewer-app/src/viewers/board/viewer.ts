@@ -6,7 +6,7 @@
 
 import type { CrossHightAble } from "../../base/cross_highlight_able";
 import { Logger } from "../../base/log";
-import { BBox, Vec2 } from "../../base/math";
+import { BBox, Matrix3, Vec2 } from "../../base/math";
 import { Color, Renderer } from "../../graphics";
 import { WebGL2Renderer } from "../../graphics/webgl";
 import type { BoardTheme } from "../../kicad";
@@ -40,6 +40,7 @@ import {
     type NetLabelOptions,
 } from "./net-label-painter";
 import { BoardPainter } from "./painter";
+import { render_board_view, type BoardViewOptions } from "./board-view";
 import {
     diff_selection_copper_layers,
     type BoardDiffSelectionEntry,
@@ -359,6 +360,18 @@ export class BoardViewer extends DocumentViewer<
             this.#zones_visibility.clear();
             this.draw();
         }
+    }
+
+    /**
+     * Render this board through another camera into `target`, a 2D canvas.
+     * Used by insets; see board-view.ts for how the shared context is used.
+     */
+    public render_view(
+        target: HTMLCanvasElement,
+        camera: (css_w: number, css_h: number) => Matrix3,
+        options?: BoardViewOptions,
+    ): boolean {
+        return render_board_view(this, target, camera, options);
     }
 
     public highlight_fp(fp: board_items.Footprint) {
