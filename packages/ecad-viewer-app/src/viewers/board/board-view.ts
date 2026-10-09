@@ -12,7 +12,7 @@
     inset is larger than the main canvas.
 */
 
-import { Matrix3 } from "../../base/math";
+import { BBox, Matrix3, Vec2 } from "../../base/math";
 import type { WebGL2Renderer } from "../../graphics/webgl";
 import type { ViewLayerSet } from "../base/view-layers";
 
@@ -26,7 +26,19 @@ export interface BoardViewHost {
     draw_now(): void;
 }
 
+/** An inset's own labels (a NetLabelLayers fork). */
+export interface BoardViewLabels {
+    camera: { zoom: number; bbox: BBox };
+    update(): void;
+    with_graphics<T>(fn: () => T): T;
+}
+
 export interface BoardViewOptions {
+    /**
+     * Pad numbers and net names gated for this view's zoom and region, not
+     * the main view's. `zoom` is the view's CSS pixels per world unit.
+     */
+    labels?: { view: BoardViewLabels; zoom: number };
     /**
      * Bottom-side view: draw the back layers above the front, dimming the
      * front, the way an isolated-layer highlight does. Skipped when the user
@@ -119,8 +131,26 @@ export function render_board_view(
             }
         }
     }
+    const matrix = camera(css_w, css_h);
+    const labels = options.labels;
+    if (labels) {
+        // The world box this view shows (rotation and mirror included).
+        const inverse = matrix.inverse();
+        const corners = [
+            new Vec2(0, 0),
+            new Vec2(css_w, 0),
+            new Vec2(css_w, css_h),
+            new Vec2(0, css_h),
+        ].map((corner) => inverse.transform(corner));
+        labels.view.camera = {
+            zoom: labels.zoom,
+            bbox: BBox.from_points(corners),
+        };
+        labels.view.update();
+    }
     try {
-        host.render_layers(camera(css_w, css_h));
+        if (labels) labels.view.with_graphics(() => host.render_layers(matrix));
+        else host.render_layers(matrix);
     } finally {
         for (const layer of raised) layer.highlighted = false;
     }

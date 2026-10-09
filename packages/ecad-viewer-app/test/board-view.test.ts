@@ -5,7 +5,7 @@
 import { expect } from "@esm-bundle/chai";
 import { BoardParser } from "kicad-parser";
 
-import { Matrix3, Vec2 } from "../src/base/math";
+import { BBox, Matrix3, Vec2 } from "../src/base/math";
 import type { WebGL2Renderer } from "../src/graphics/webgl";
 import { KicadPCB } from "../src/kicad";
 import themes from "../src/kicanvas/themes";
@@ -360,5 +360,81 @@ suite("board insets follow the main view (IN-21)", () => {
             session.dispose();
             host.remove();
         }
+    });
+});
+
+suite("board insets show labels at their own zoom (IN-31)", () => {
+    let viewer: BoardViewer;
+    let target: HTMLCanvasElement;
+    setup(async () => {
+        viewer = await mount();
+        target = inset_canvas(240, 180);
+        // Main view far out: its pad labels are gated off.
+        viewer.viewport.camera.zoom = 0.5;
+        viewer.draw_now();
+    });
+    teardown(() => {
+        unmount(viewer);
+        target.remove();
+    });
+
+    const close_camera = (): InsetCamera => ({
+        center: new Vec2(10, 10),
+        zoom: 60,
+        rotation: 0,
+        mirror: false,
+    });
+
+    test("a forked label set gates by its own zoom", () => {
+        expect(viewer.net_label_layouts().size).to.equal(0);
+        const fork = viewer.fork_net_labels({
+            zoom: 60,
+            bbox: new BBox(5, 5, 10, 10),
+        })!;
+        const layouts = fork.layouts();
+        const total = [...layouts.values()].reduce((n, l) => n + l.length, 0);
+        expect(total).to.be.greaterThan(0);
+        // The main view's gating is untouched.
+        expect(viewer.net_label_layouts().size).to.equal(0);
+        fork.dispose();
+    });
+
+    test("an inset draws pad labels the main view does not, and leaves its labels alone", async () => {
+        const provider = new BoardInsetProvider(() => viewer);
+        const t = (await provider.resolve("R1", "1"))!;
+        const label_layers = [...viewer.layers.in_display_order()].filter((l) =>
+            /NetNames/.test(l.name),
+        );
+        const before = label_layers.map((l) => l.graphics);
+        viewer.draw_now();
+        const main_before = read_main(viewer);
+
+        provider.render(t, close_camera(), target);
+        const with_labels = target
+            .getContext("2d")!
+            .getImageData(0, 0, target.width, target.height)
+            .data.slice();
+
+        // The main view's label graphics are the same objects as before.
+        expect(label_layers.map((l) => l.graphics)).to.deep.equal(before);
+        viewer.draw_now();
+        const main_after = read_main(viewer);
+        let differing = 0;
+        for (let i = 0; i < main_before.length; i++)
+            if (main_before[i] !== main_after[i]) differing++;
+        expect(differing).to.equal(0);
+
+        // Turning the labels off changes the inset: they were drawn.
+        viewer.set_net_label_option("padNumbers", false);
+        viewer.set_net_label_option("padNetNames", false);
+        provider.render(t, close_camera(), target);
+        const without = target
+            .getContext("2d")!
+            .getImageData(0, 0, target.width, target.height).data;
+        let changed = 0;
+        for (let i = 0; i < without.length; i++)
+            if (without[i] !== with_labels[i]) changed++;
+        expect(changed).to.be.greaterThan(0);
+        provider.release(t);
     });
 });
