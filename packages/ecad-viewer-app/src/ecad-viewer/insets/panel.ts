@@ -83,8 +83,17 @@ export class InsetPanel {
             const button = document.createElement("button");
             button.type = "button";
             button.textContent = glyph;
-            button.title = `${label} · ${key}`;
             button.dataset["key"] = key;
+            button.dataset["label"] = label;
+            // Styled tooltip with the key cap (mockup 02); a native title
+            // would show a second, unstyled one.
+            const tip = document.createElement("span");
+            tip.className = "inset-tip";
+            tip.setAttribute("aria-hidden", "true");
+            const kbd = document.createElement("kbd");
+            kbd.textContent = key;
+            tip.append(label, kbd);
+            button.append(tip);
             button.setAttribute("aria-label", label);
             button.dataset["action"] = action;
             button.addEventListener("click", (e) => {
@@ -215,39 +224,60 @@ export class InsetPanel {
     }
 }
 
+/*
+    Theme: every colour and metric is a custom property with a light
+    fallback. Custom properties inherit into the shadow root, so a host
+    themes insets by setting them on <ecad-viewer> (Prism maps its tokens,
+    which also switch for dark mode).
+
+    --inset-bg, --inset-fg, --inset-muted, --inset-muted-bg, --inset-border,
+    --inset-shadow, --inset-radius, --inset-font, --inset-bottom-bg,
+    --inset-bottom-fg, --inset-tip-bg, --inset-tip-fg, --inset-focus
+*/
 export const INSET_STYLES = `
 .inset-root { position: absolute; inset: 0; pointer-events: none; z-index: 30; overflow: hidden; }
 .inset-root svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; z-index: 2; pointer-events: none; }
 .inset { position: absolute; z-index: 1; pointer-events: auto; display: flex; flex-direction: column;
   background: var(--inset-bg, #fff); color: var(--inset-fg, #0f172a);
   border: 1.5px solid var(--inset-color); border-radius: var(--inset-radius, 8px);
-  box-shadow: 0 8px 24px rgb(15 23 42 / 18%); overflow: hidden;
+  box-shadow: var(--inset-shadow, 0 8px 24px rgb(15 23 42 / 18%)); overflow: hidden;
   font: 12px/1.3 var(--inset-font, system-ui, sans-serif); }
-.inset.preview { border-style: dashed; }
-.inset-header { display: flex; align-items: center; gap: 6px; height: 28px; flex: none; padding: 0 4px 0 8px;
-  border-bottom: 1px solid var(--inset-border, #e2e8f0); cursor: move; user-select: none; white-space: nowrap; }
+.inset.preview { border-style: dashed; box-shadow: var(--inset-shadow, 0 4px 14px rgb(15 23 42 / 14%)); }
+.inset-header { position: relative; display: flex; align-items: center; gap: 6px; height: 28px; flex: none;
+  padding: 0 4px 0 8px; border-bottom: 1px solid var(--inset-border, #e2e8f0); background: var(--inset-bg, #fff);
+  cursor: move; user-select: none; white-space: nowrap; z-index: 1; }
 .inset-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--inset-color); flex: none; }
 .inset-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--inset-muted, #64748b); }
-.inset-title b { color: var(--inset-fg, #0f172a); }
-.inset-side { font: 600 10px/1 ui-monospace, monospace; padding: 3px 5px; border-radius: 4px;
+.inset-title b { color: var(--inset-fg, #0f172a); font-weight: 600; }
+.inset-side { flex: none; font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 3px 5px; border-radius: 4px;
   background: var(--inset-muted-bg, #f1f5f9); color: var(--inset-muted, #64748b); }
-.inset-side.bottom { background: #dbe7f7; color: #29558f; }
-.inset-toolbar { display: flex; gap: 1px; }
-.inset-toolbar button { all: unset; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
-  border-radius: 5px; color: var(--inset-muted, #64748b); cursor: pointer; font-size: 13px; }
+.inset-side.bottom { background: var(--inset-bottom-bg, #dbe7f7); color: var(--inset-bottom-fg, #29558f); }
+.inset-toolbar { display: flex; gap: 1px; flex: none; }
+.inset-toolbar button { all: unset; position: relative; width: 22px; height: 22px; display: flex; align-items: center;
+  justify-content: center; border-radius: 5px; color: var(--inset-muted, #64748b); cursor: pointer; font-size: 13px; }
 .inset-toolbar button:hover { background: var(--inset-muted-bg, #f1f5f9); color: var(--inset-fg, #0f172a); }
-.inset-toolbar button.on { color: var(--inset-color); }
+.inset-toolbar button:focus-visible { outline: 2px solid var(--inset-focus, var(--inset-color)); outline-offset: 1px; }
+.inset-toolbar button.on { color: var(--inset-color); background: color-mix(in srgb, var(--inset-color) 12%, transparent); }
+.inset-tip { position: absolute; top: calc(100% + 6px); right: 0; display: none; align-items: center; gap: 6px;
+  padding: 4px 6px; border-radius: 6px; background: var(--inset-tip-bg, #0f172a); color: var(--inset-tip-fg, #fff);
+  font: 500 11px/1.2 var(--inset-font, system-ui, sans-serif); white-space: nowrap; pointer-events: none; z-index: 3; }
+.inset-tip kbd { font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 2px 4px; border-radius: 4px;
+  border: 1px solid color-mix(in srgb, var(--inset-tip-fg, #fff) 35%, transparent); color: inherit; }
+.inset-toolbar button:hover .inset-tip, .inset-toolbar button:focus-visible .inset-tip { display: flex; }
 .inset.preview .inset-toolbar button:not([data-action="pin"]) { display: none; }
-.inset.missing { height: auto !important; border-color: var(--inset-border, #cbd5e1); }
+.inset.missing { height: auto !important; border-color: var(--inset-border, #cbd5e1); border-style: solid; }
 .inset.missing .inset-dot { background: var(--inset-border, #cbd5e1); }
 .inset.missing .inset-canvas, .inset.missing .inset-grip,
 .inset.missing .inset-toolbar button:not([data-action="close"]) { display: none !important; }
 .inset.missing .inset-header { border-bottom: 0; }
+.inset.missing .inset-tip { display: none !important; }
 .inset-canvas { flex: 1; width: 100%; min-height: 0; display: block; cursor: grab; }
+.inset-canvas:active { cursor: grabbing; }
 .inset-grip { position: absolute; right: 0; bottom: 0; width: 12px; height: 12px; cursor: nwse-resize; }
 .inset.lens { border-radius: 50%; border-width: 2px; }
-.inset.lens .inset-header { position: absolute; top: 9%; left: 18%; right: 18%; height: 24px; z-index: 1;
-  background: var(--inset-bg, #fff); border: 1px solid var(--inset-border, #e2e8f0); border-radius: 6px; }
+.inset.lens .inset-header { position: absolute; top: 9%; left: 18%; right: 18%; height: 24px;
+  border: 1px solid var(--inset-border, #e2e8f0); border-radius: 6px; box-shadow: 0 1px 4px rgb(0 0 0 / 10%); }
 .inset.lens .inset-title, .inset.lens .inset-side { display: none; }
+.inset.lens .inset-toolbar { margin-left: auto; }
 .inset.lens .inset-grip { right: 14%; bottom: 14%; }
 `;
