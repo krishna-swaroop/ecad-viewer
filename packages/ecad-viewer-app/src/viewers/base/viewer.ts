@@ -7,7 +7,12 @@
 import { Barrier } from "../../base/async";
 import { Disposables, type IDisposable } from "../../base/disposable";
 import { listen } from "../../base/events";
-import { BBox, Vec2, type CameraViewportInsets } from "../../base/math";
+import {
+    BBox,
+    Matrix3,
+    Vec2,
+    type CameraViewportInsets,
+} from "../../base/math";
 import type {
     MoveAndZoomOptions,
     WheelNavigationMode,
@@ -647,6 +652,16 @@ export abstract class Viewer extends EventTarget {
         if (!this.layers) {
             return;
         }
+        this.render_layers(this.viewport.camera.matrix);
+    }
+
+    /**
+     * Draw every visible layer through `camera` into whatever target the
+     * renderer is bound to. The main frame passes its own camera; insets pass
+     * theirs.
+     */
+    public render_layers(camera: Matrix3) {
+        if (!this.layers) return;
 
         // Render all layers in display order (back to front). Allocate the
         // available clip-space depth across the layers that will actually be
@@ -660,7 +675,6 @@ export abstract class Viewer extends EventTarget {
         );
         const depth_step = 0.98 / Math.max(1, drawable_layer_count);
         let depth = depth_step;
-        const camera = this.viewport.camera.matrix;
         const should_dim = this.layers.is_any_layer_highlighted();
 
         // Skip blending for fully-opaque layers (same visual, less GPU work).

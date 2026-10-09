@@ -434,6 +434,11 @@ import { length } from "../base/iterator";
 import { PRISM_LOGO } from "../kc-ui/prism_logo";
 import type { BoardViewer } from "../viewers/board/viewer";
 import { SchematicViewer } from "../viewers/schematic/viewer";
+import {
+    board_view_stats,
+    set_board_view_gpu_sync,
+} from "../viewers/board/board-view";
+import { BoardInsetProvider, type InsetProvider } from "./insets";
 
 export class ECadViewer extends KCUIElement implements InputContainer {
     static override styles = [
@@ -4193,6 +4198,28 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 );
             }
         }
+    }
+
+    #board_inset_provider: BoardInsetProvider | null = null;
+
+    /**
+     * Serves insets of this element's document to the other element's
+     * insets (the PCB around a footprint). Null until a board is loaded.
+     */
+    public get insetProvider(): InsetProvider | null {
+        if (!this.has_pcb) return null;
+        this.#board_inset_provider ??= new BoardInsetProvider(() =>
+            this.#safe_board_viewer(),
+        );
+        return this.#board_inset_provider;
+    }
+
+    /** Inset render timings and the GPU-sync switch, for benchmarks. */
+    static get insetDiagnostics() {
+        return {
+            board: board_view_stats,
+            setGpuSync: set_board_view_gpu_sync,
+        };
     }
 
     #safe_board_viewer(): BoardViewer | null {

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <title>Inset benchmark</title>
+        <link rel="stylesheet" href="./style.css" />
+        <style>
+            html,
+            body {
+                height: 100%;
+                margin: 0;
+            }
+            ecad-viewer {
+                position: absolute;
+                inset: 0;
+            }
+            #inset {
+                position: fixed;
+                right: 8px;
+                top: 8px;
+                width: 300px;
+                height: 220px;
+                z-index: 10;
+                border: 1px solid #999;
+            }
+        </style>
+    </head>
+    <body>
+        <!--
+            Board inset benchmark (scripts/bench-insets.mjs drives it).
+            ?pcb=<url of a .kicad_pcb served under static/>
+        -->
+        <canvas id="inset"></canvas>
+        <script type="importmap">
+            {
+                "imports": {
+                    "three": "./three/three.module.js",
+                    "three/addons/": "./three/addons/",
+                    "3d-viewer": "./ecad_viewer/3d-viewer.js",
+                    "glyph-full": "./ecad_viewer/glyph-full.js"
+                }
+            }
+        </script>
+        <script type="module">
+            const pcb = new URLSearchParams(location.search).get("pcb");
+            document.body.insertAdjacentHTML(
+                "afterbegin",
+                `<ecad-viewer id="pcb"><ecad-source src="${pcb}"></ecad-source></ecad-viewer>`,
+            );
+            const el = document.getElementById("pcb");
+            const canvas = document.getElementById("inset");
+            const frame = () =>
+                new Promise((r) => requestAnimationFrame(() => r()));
+
+            window.bench_ready = async () => {
+                const viewer = () =>
+                    el.shadowRoot?.querySelector("kc-board-app")?.viewer;
+                while (!viewer()?.board || !el.insetProvider)
+                    await new Promise((r) => setTimeout(r, 250));
+                await frame();
+                return true;
+            };
+
+            // One pad: first frame, then `steps` zoom frames (one per rAF).
+            window.bench_pad = async (reference, number, steps = 30) => {
+                const { board, setGpuSync } = el.constructor.insetDiagnostics;
+                const p = el.insetProvider;
+                const t = await p.resolve(reference, number);
+                if (!t) return { reference, number, error: "not found" };
+                const camera = {
+                    center: {
+                        x: t.focus.x + t.focus.w / 2,
+                        y: t.focus.y + t.focus.h / 2,
+                    },
+                    zoom: Math.min(
+                        300 / Math.max(t.focus.w * 2, 4),
+                        220 / Math.max(t.focus.h * 2, 4),
+                    ),
+                    rotation: 0,
+                    mirror: t.mirror,
+                };
+                const out = { reference, number, side: t.side };
+                // As in the Visualizer: board insets render while the PCB
+                // tab is hidden and inactive, so no main redraw follows.
+                el.setActive(false);
+                board.reset();
+                p.render(t, camera, canvas);
+                out.first_ms = +board.ms.toFixed(2);
+                await frame();
+                for (const sync of [false, true]) {
+                    setGpuSync(sync);
+                    board.reset();
+                    for (let i = 0; i < steps; i++) {
+                        camera.zoom *= i < steps / 2 ? 1.04 : 1 / 1.04;
+                        p.render(t, camera, canvas);
+                        await frame();
+                    }
+                    if (sync)
+                        out.gpu_ms = +(board.gpu_ms / board.frames).toFixed(2);
+                    else
+                        out.main_thread_ms = +(board.ms / board.frames).toFixed(
+                            2,
+                        );
+                }
+                setGpuSync(false);
+                el.setActive(true);
+                return out;
+            };
+
+            // Reference: one full main-view frame with GPU sync.
+            window.bench_main = async (n = 10) => {
+                const viewer =
+                    el.shadowRoot.querySelector("kc-board-app").viewer;
+                const gl = viewer.renderer.gl;
+                const times = [];
+                for (let i = 0; i < n; i++) {
+                    const t0 = performance.now();
+                    viewer.draw_now();
+                    gl.readPixels(
+                        0,
+                        0,
+                        1,
+                        1,
+                        gl.RGBA,
+                        gl.UNSIGNED_BYTE,
+                        new Uint8Array(4),
+                    );
+                    times.push(performance.now() - t0);
+                    await frame();
+                }
+                times.sort((a, b) => a - b);
+                return {
+                    canvas: [viewer.canvas.width, viewer.canvas.height],
+                    median_ms: +times[n >> 1].toFixed(2),
+                };
+            };
+            await import("./ecad_viewer/ecad-viewer.js");
+        </script>
+    </body>
+</html>
