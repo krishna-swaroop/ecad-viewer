@@ -103,6 +103,9 @@ const LIBRARY_CROSS_PROBE_CHANNEL = "library-crossprobe";
 const COMMENT_AREA_PREVIEW_CHANNEL = "__comment-area-preview__";
 const MIN_COMMENT_AREA_SIZE = 0.5;
 
+/** Fired by Viewer.draw() each time it schedules a frame. */
+export const VIEWER_DRAW_REQUESTED = "ecad-viewer:draw-requested";
+
 export abstract class Viewer extends EventTarget {
     public renderer: Renderer;
     public viewport: Viewport;
@@ -736,6 +739,9 @@ export abstract class Viewer extends EventTarget {
             if (this.disposables.isDisposed) return;
             this.on_draw();
         });
+        // Something on screen changed (state, highlight, camera): views that
+        // borrow this scene, like insets, redraw on their next frame too.
+        this.dispatchEvent(new Event(VIEWER_DRAW_REQUESTED));
     }
 
     /** Immediate draw — used after unhide + zoom-fit so the first frame is not zoom=0. */

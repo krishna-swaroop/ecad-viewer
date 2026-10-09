@@ -11,6 +11,7 @@ import { KicadPCB } from "../src/kicad";
 import themes from "../src/kicanvas/themes";
 import {
     BoardInsetProvider,
+    InsetSession,
     inset_matrix,
     type InsetCamera,
 } from "../src/ecad-viewer/insets";
@@ -300,5 +301,64 @@ suite("board insets: render_view", () => {
             viewer.render_view(hidden, (w, h) => inset_matrix(camera, w, h)),
         ).to.equal(false);
         hidden.remove();
+    });
+});
+
+suite("board insets follow the main view (IN-21)", () => {
+    let viewer: BoardViewer;
+    setup(async () => {
+        viewer = await mount();
+    });
+    teardown(() => unmount(viewer));
+
+    test("subscribers hear every draw the board viewer requests", async () => {
+        const provider = new BoardInsetProvider(() => viewer);
+        let heard = 0;
+        const off = provider.subscribe(() => heard++);
+        await new Promise((r) => requestAnimationFrame(r));
+        heard = 0;
+        viewer.draw();
+        expect(heard).to.equal(1);
+        // Coalesced: a second request in the same frame schedules nothing new.
+        viewer.draw();
+        expect(heard).to.equal(1);
+        off();
+        await new Promise((r) => requestAnimationFrame(r));
+        viewer.draw();
+        expect(heard).to.equal(1);
+    });
+
+    test("an open board inset re-renders after a net highlight in the main view", async () => {
+        const host = document.createElement("div");
+        Object.assign(host.style, {
+            position: "fixed",
+            left: "0px",
+            top: "0px",
+            width: "1200px",
+            height: "800px",
+        });
+        document.body.append(host);
+        const session = new InsetSession();
+        session.register(new BoardInsetProvider(() => viewer));
+        session.mount(host);
+        try {
+            await session.open({
+                kind: "pcb",
+                reference: "R1",
+                number: "1",
+                source: { world_to_client: () => new Vec2(50, 50) },
+                source_anchor: new Vec2(0, 0),
+            });
+            for (let i = 0; i < 3; i++)
+                await new Promise((r) => requestAnimationFrame(r));
+            board_view_stats.reset();
+            viewer.set_highlighted_nets([1]);
+            for (let i = 0; i < 3; i++)
+                await new Promise((r) => requestAnimationFrame(r));
+            expect(board_view_stats.frames).to.be.greaterThan(0);
+        } finally {
+            session.dispose();
+            host.remove();
+        }
     });
 });

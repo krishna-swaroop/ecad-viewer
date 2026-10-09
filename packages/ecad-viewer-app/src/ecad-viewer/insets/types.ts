@@ -64,6 +64,11 @@ export interface InsetProvider {
     ready?(): boolean;
     /** The pin or pad at a world point of `target`'s scene, if any. */
     hit_test?(target: InsetTarget, world: Vec2): InsetHit | null;
+    /**
+     * Call `listener` when the scene insets show changed (layer visibility,
+     * highlights, selection, variant). Returns an unsubscribe function.
+     */
+    subscribe?(listener: () => void): () => void;
 }
 
 /**

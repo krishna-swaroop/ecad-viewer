@@ -6,6 +6,7 @@
 import { BBox, Vec2 } from "../../base/math";
 import { Pad } from "../../kicad/board";
 import { Depth } from "../../kicad/board_bbox_visitor";
+import { VIEWER_DRAW_REQUESTED } from "../../viewers/base/viewer";
 import type { BoardViewer } from "../../viewers/board/viewer";
 import { inset_matrix, type InsetCamera } from "./camera";
 import type { InsetHit, InsetProvider, InsetTarget } from "./types";
@@ -15,9 +16,40 @@ const center = (box: BBox) => new Vec2(box.x + box.w / 2, box.y + box.h / 2);
 export class BoardInsetProvider implements InsetProvider {
     readonly kind = "pcb" as const;
 
+    #listeners = new Set<() => void>();
+    #hooked: BoardViewer | null = null;
+    #unhook: (() => void) | null = null;
+
     constructor(private readonly viewer: () => BoardViewer | null) {}
 
+    /**
+     * Insets show the board viewer's own scene, so every change it draws
+     * (layers, highlights, selection, variant, DNP) reaches them: they
+     * re-render on its draw requests.
+     */
+    subscribe(listener: () => void) {
+        this.#listeners.add(listener);
+        this.#hook();
+        return () => {
+            this.#listeners.delete(listener);
+        };
+    }
+
+    #hook() {
+        const viewer = this.viewer();
+        if (!viewer || viewer === this.#hooked) return;
+        this.#unhook?.();
+        this.#hooked = viewer;
+        const notify = () => {
+            for (const listener of this.#listeners) listener();
+        };
+        viewer.addEventListener(VIEWER_DRAW_REQUESTED as never, notify);
+        this.#unhook = () =>
+            viewer.removeEventListener(VIEWER_DRAW_REQUESTED, notify);
+    }
+
     ready() {
+        this.#hook();
         return !!this.viewer()?.board;
     }
 
@@ -25,6 +57,7 @@ export class BoardInsetProvider implements InsetProvider {
         reference: string,
         number: string,
     ): Promise<InsetTarget | null> {
+        this.#hook();
         const board = this.viewer()?.board;
         if (!board) return null;
         const fp = board.footprints.find((f) => f.reference === reference);
