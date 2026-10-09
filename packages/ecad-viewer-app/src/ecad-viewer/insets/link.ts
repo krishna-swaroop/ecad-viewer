@@ -16,8 +16,9 @@ import {
 import type { Viewer } from "../../viewers/base/viewer";
 import type { InsetCamera } from "./camera";
 import type { InsetAction } from "./panel";
-import { InsetSession } from "./session";
+import { InsetSession, type Inset } from "./session";
 import type {
+    InsetHit,
     InsetKind,
     InsetProvider,
     InsetSource,
@@ -159,7 +160,12 @@ export class InsetLink {
     /** The pin or pad under the pointer, whether or not an inset opened. */
     #hover: { viewer: Viewer; detail: HoverDetail } | null = null;
 
+    #child_timer: number | null = null;
+    #child_close_timer: number | null = null;
+
     constructor(private readonly host: InsetLinkHost) {
+        this.session.on_hit = (inset, hit) => this.#on_inset_hit(inset, hit);
+        this.session.on_click = (inset) => this.#on_inset_click(inset);
         for (const kind of ["pcb", "sch"] as const) {
             this.session.register(
                 new LazyProvider(
@@ -393,6 +399,79 @@ export class InsetLink {
         return true;
     }
 
+    // --- Chained insets (M5) -----------------------------------------
+
+    /** The child preview hanging off `parent`, if any. */
+    #child_preview(parent: Inset) {
+        const preview = this.session.preview;
+        return preview?.parent === parent ? preview : null;
+    }
+
+    #on_inset_hit(parent: Inset, hit: InsetHit | null) {
+        if (!this.#peer || (!this.#mode && !this.#peeking)) return;
+        if (this.#child_timer !== null) clearTimeout(this.#child_timer);
+        this.#child_timer = null;
+        if (hit) {
+            if (this.#child_close_timer !== null)
+                clearTimeout(this.#child_close_timer);
+            this.#child_close_timer = null;
+            if (is_virtual(hit.reference)) return;
+            this.#child_timer = window.setTimeout(() => {
+                this.#child_timer = null;
+                void this.#open_child(parent, hit, true);
+            }, HOVER_OPEN_DELAY_MS);
+            return;
+        }
+        if (this.#child_close_timer !== null)
+            clearTimeout(this.#child_close_timer);
+        this.#child_close_timer = window.setTimeout(() => {
+            this.#child_close_timer = null;
+            const child = this.#child_preview(parent);
+            if (child && this.session.hovered !== child)
+                this.session.close(child);
+        }, HOVER_CLOSE_DELAY_MS);
+    }
+
+    /** Open the other document's inset for a pin or pad inside `parent`. */
+    #open_child(parent: Inset, hit: InsetHit, preview: boolean) {
+        const existing = this.#child_preview(parent);
+        if (
+            existing &&
+            existing.target.reference === hit.reference &&
+            existing.target.number === hit.number
+        ) {
+            if (!preview) this.session.pin(existing);
+            return Promise.resolve(existing);
+        }
+        // A preview parent becomes the chain's anchor: opening a child
+        // preview would otherwise replace the parent itself.
+        this.session.pin(parent);
+        return this.session.open({
+            kind: OTHER[parent.target.kind],
+            reference: hit.reference,
+            number: hit.number,
+            source: parent,
+            source_anchor: new Vec2(
+                hit.box.x + hit.box.w / 2,
+                hit.box.y + hit.box.h / 2,
+            ),
+            parent,
+            preview,
+            show_missing: true,
+        });
+    }
+
+    /** A click on a pin or pad inside an inset pins (or opens) its child. */
+    #on_inset_click(parent: Inset): boolean {
+        if (!this.#peer || (!this.#mode && !this.#peeking)) return false;
+        const hit = parent.hit;
+        if (!hit || is_virtual(hit.reference)) return false;
+        if (this.#child_timer !== null) clearTimeout(this.#child_timer);
+        this.#child_timer = null;
+        void this.#open_child(parent, hit, false);
+        return true;
+    }
+
     #cancel_close() {
         if (this.#close_timer !== null) clearTimeout(this.#close_timer);
         this.#close_timer = null;
@@ -402,5 +481,10 @@ export class InsetLink {
         if (this.#open_timer !== null) clearTimeout(this.#open_timer);
         this.#cancel_close();
         this.#open_timer = null;
+        if (this.#child_timer !== null) clearTimeout(this.#child_timer);
+        if (this.#child_close_timer !== null)
+            clearTimeout(this.#child_close_timer);
+        this.#child_timer = null;
+        this.#child_close_timer = null;
     }
 }
