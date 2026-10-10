@@ -43,9 +43,17 @@ export const TOOLBAR: [InsetAction, string, string, string][] = [
     ["mirror", "⇋", "Mirror", "M"],
     ["lens", "◯", "Lens", "L"],
     ["refit", "⌂", "Refit", "Home"],
-    ["pin", "📌", "Pin", "P"],
+    ["pin", "", "Pin", "P"],
     ["close", "✕", "Close", "X"],
 ];
+
+/**
+ * Push-pin in the toolbar's colour: an outline while the inset is a preview,
+ * filled once pinned (an emoji would ignore the "on" colour).
+ */
+const PIN_ICON = `<svg class="inset-pin" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+<path d="M10.2 1.8 14.2 5.8 12.8 6.4 10.6 8.6 10.9 11.6 9.8 12.7 7.1 10 3.4 13.7 2.3 13.7 2.3 12.6 6 8.9 3.3 6.2 4.4 5.1 7.4 5.4 9.6 3.2Z"
+ stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>`;
 
 const SIDE_LABEL: Record<InsetSide, string> = {
     top: "TOP",
@@ -88,7 +96,8 @@ export class InsetPanel {
         for (const [action, glyph, label, key] of TOOLBAR) {
             const button = document.createElement("button");
             button.type = "button";
-            button.textContent = glyph;
+            if (action === "pin") button.innerHTML = PIN_ICON;
+            else button.textContent = glyph;
             button.dataset["key"] = key;
             button.dataset["label"] = label;
             // Styled tooltip with the key cap (mockup 02); a native title
@@ -201,6 +210,15 @@ export class InsetPanel {
 
     set preview(value: boolean) {
         this.el.classList.toggle("preview", value);
+        // The pin button shows the state and offers the opposite.
+        const pin = this.#buttons.get("pin")!;
+        const label = value ? "Pin" : "Unpin";
+        pin.classList.toggle("on", !value);
+        pin.setAttribute("aria-pressed", `${!value}`);
+        pin.setAttribute("aria-label", label);
+        pin.dataset["label"] = label;
+        const tip = pin.querySelector(".inset-tip");
+        if (tip?.firstChild) tip.firstChild.textContent = label;
     }
 
     set mirrored(value: boolean) {
@@ -322,7 +340,11 @@ export const INSET_STYLES = `
 .inset-tip kbd { font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 2px 4px; border-radius: 4px;
   border: 1px solid color-mix(in srgb, var(--inset-tip-fg, #fff) 35%, transparent); color: inherit; }
 .inset-toolbar button:hover .inset-tip, .inset-toolbar button:focus-visible .inset-tip { display: flex; }
+.inset-pin { fill: none; }
+.inset-toolbar button.on .inset-pin { fill: currentColor; }
 .inset.preview .inset-toolbar button:not([data-action="pin"]) { display: none; }
+.inset.loading .inset-dot { animation: inset-pulse 1s ease-in-out infinite alternate; }
+@keyframes inset-pulse { from { opacity: 1; } to { opacity: .3; } }
 .inset.missing { height: auto !important; border-color: var(--inset-border, #cbd5e1); border-style: solid; }
 .inset.missing .inset-dot { background: var(--inset-border, #cbd5e1); }
 .inset.missing .inset-view, .inset.missing .inset-grip,

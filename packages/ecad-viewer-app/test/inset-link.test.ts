@@ -12,6 +12,7 @@ import {
     HOVER_CLOSE_DELAY_MS,
     HOVER_OPEN_DELAY_MS,
     InsetLink,
+    LOADING_RETRY_MS,
     world_to_inset,
     type Inset,
     type InsetKind,
@@ -219,17 +220,93 @@ suite("inset link", () => {
         expect(link.mode).to.equal(true);
     });
 
-    test("a provider still loading opens nothing rather than 'not on board'", async () => {
-        const loading: InsetProvider = {
-            ...provider("pcb", []),
-            ready: () => false,
+    /** A PCB provider that knows nothing until `loaded` (a lazy board). */
+    const lazy_pcb = () => {
+        const state = { loaded: false };
+        const real = provider("pcb", ["U1"]);
+        const lazy: InsetProvider = {
+            ...real,
+            resolve: (reference, number) =>
+                state.loaded
+                    ? real.resolve(reference, number)
+                    : Promise.resolve(null),
+            ready: () => state.loaded,
         };
+        return { state, lazy };
+    };
+
+    test("a provider still loading shows a loading header, then the inset", async () => {
+        const { state, lazy } = lazy_pcb();
         link.peer = {
-            insetProvider: (kind) => (kind === "pcb" ? loading : null),
+            insetProvider: (kind) => (kind === "pcb" ? lazy : null),
         };
         viewer.probe(hover("U1"));
         await wait(HOVER_OPEN_DELAY_MS + 50);
+        // Not "not on board": a header that says it is loading.
+        const placeholder = link.session.preview!;
+        expect(placeholder.loading).to.equal(true);
+        expect(placeholder.missing).to.equal(true);
+        expect(placeholder.panel.el.classList.contains("loading")).to.equal(
+            true,
+        );
+        expect(placeholder.panel.el.textContent).to.contain("Loading…");
+        // Retries keep the same header rather than re-creating it.
+        await wait(LOADING_RETRY_MS * 2 + 50);
+        expect(link.session.preview).to.equal(placeholder);
+        // The board finishes loading with the pointer still on the pin.
+        state.loaded = true;
+        await wait(LOADING_RETRY_MS + 50);
+        const inset = link.session.preview!;
+        expect(inset).to.not.equal(placeholder);
+        expect(inset.loading).to.equal(false);
+        expect(inset.target.reference).to.equal("U1");
+        expect(link.session.count).to.equal(1);
+    });
+
+    test("leaving the pin while loading stops the retries", async () => {
+        const { state, lazy } = lazy_pcb();
+        link.peer = {
+            insetProvider: (kind) => (kind === "pcb" ? lazy : null),
+        };
+        viewer.probe(hover("U1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        viewer.probe({ ...hover("U1"), phase: "leave" } as KiCanvasProbeDetail);
+        state.loaded = true;
+        await wait(HOVER_CLOSE_DELAY_MS + 100);
         expect(link.session.count).to.equal(0);
+    });
+
+    test("a click while loading pins the inset once it opens", async () => {
+        const { state, lazy } = lazy_pcb();
+        link.peer = {
+            insetProvider: (kind) => (kind === "pcb" ? lazy : null),
+        };
+        viewer.probe(hover("U1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        expect(click()).to.equal(true);
+        // The loading header itself never pins.
+        expect(link.session.preview!.pinned).to.equal(false);
+        state.loaded = true;
+        await wait(LOADING_RETRY_MS + 50);
+        expect(link.session.count).to.equal(1);
+        expect(link.session.insets[0]!.loading).to.equal(false);
+        expect(link.session.insets[0]!.pinned).to.equal(true);
+    });
+
+    test("a hover held before the peer links opens once it does", async () => {
+        // Prism mounts the PCB only after the mode turns on: the pointer is
+        // already on a pin when the peer arrives.
+        link.peer = null;
+        viewer.probe(hover("U1"));
+        await wait(HOVER_OPEN_DELAY_MS + 50);
+        expect(link.session.count).to.equal(0);
+        const pcb = provider("pcb", ["U1"]);
+        link.peer = {
+            insetProvider: (kind) => (kind === "pcb" ? pcb : null),
+        };
+        await wait(20);
+        expect(link.session.count).to.equal(1);
+        expect(link.session.preview!.target.reference).to.equal("U1");
     });
 
     test("linking to a peer already in inset mode joins it", () => {

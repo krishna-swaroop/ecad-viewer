@@ -76,6 +76,8 @@ export class Inset implements InsetSource {
     used = 0;
     /** The designator is not in the target document: header only. */
     missing = false;
+    /** The target document is still loading: header only, retried. */
+    loading = false;
     /** The pin or pad under the pointer inside this inset (IN-20). */
     hit: InsetHit | null = null;
     readonly target_outline = document.createElementNS(SVG_NS, "polygon");
@@ -147,6 +149,18 @@ export class Inset implements InsetSource {
         return {
             w: this.panel.canvas.clientWidth,
             h: this.panel.canvas.clientHeight,
+        };
+    }
+
+    /** What the inset shows, in client pixels: its canvas, or a lens circle. */
+    get view(): { rect: DOMRect; circle: boolean } {
+        const circle = this.panel.lens;
+        return {
+            rect: (circle
+                ? this.panel.el
+                : this.panel.canvas
+            ).getBoundingClientRect(),
+            circle,
         };
     }
 
@@ -295,15 +309,29 @@ export class InsetSession {
         const provider = this.#providers.get(request.kind);
         if (!provider) return null;
         const ticket = ++this.#request;
+        // Readiness as of the resolve: a document that finishes loading
+        // meanwhile still answered "nothing yet", not "absent".
+        const was_ready = provider.ready?.() !== false;
         const target = await provider.resolve(
             request.reference,
             request.number,
         );
-        // Still loading is not the same as absent: open nothing yet.
-        if (!target && provider.ready?.() === false) return null;
+        // Still loading is not the same as absent: a "loading" header that
+        // the host replaces once the document is ready.
+        const loading = !target && (!was_ready || provider.ready?.() === false);
         const missing = !target;
         if (!target && !(request.show_missing && ticket === this.#request))
             return null;
+        const current = this.#preview;
+        if (
+            loading &&
+            current?.loading &&
+            current.target.kind === request.kind &&
+            current.target.reference === request.reference &&
+            current.target.number === request.number &&
+            current.parent === (request.parent ?? null)
+        )
+            return current;
         // A newer hover superseded this one while it resolved, or the parent
         // closed meanwhile.
         if (
@@ -374,6 +402,7 @@ export class InsetSession {
         });
         panel.title = {
             ...shown,
+            detail: loading ? "Loading…" : shown.detail,
             crumb: request.parent
                 ? `${request.parent.target.reference} · ${request.parent.target.number}`
                 : undefined,
@@ -382,6 +411,7 @@ export class InsetSession {
         panel.mirrored = shown.mirror;
         panel.preview = preview;
         panel.el.classList.toggle("missing", missing);
+        panel.el.classList.toggle("loading", loading);
 
         const leader = document.createElementNS(SVG_NS, "path");
         leader.setAttribute("fill", "none");
@@ -414,6 +444,7 @@ export class InsetSession {
         );
         inset.pinned = !preview;
         inset.missing = missing;
+        inset.loading = loading;
         inset.used = ++this.#clock;
         request.parent?.children.push(inset);
         this.#insets.push(inset);
@@ -431,10 +462,24 @@ export class InsetSession {
     }
 
     pin(inset: Inset) {
-        if (inset.pinned) return;
+        // A loading placeholder is replaced when its document is ready.
+        if (inset.pinned || inset.loading) return;
         inset.pinned = true;
         inset.panel.preview = false;
         if (this.#preview === inset) this.#preview = null;
+    }
+
+    /**
+     * Make a pinned inset the preview again (the toolbar pin toggles). The
+     * current preview, if another, gives way. An inset with children stays
+     * pinned: it anchors their chain.
+     */
+    unpin(inset: Inset) {
+        if (!inset.pinned || inset.children.length) return;
+        if (this.#preview && this.#preview !== inset) this.close(this.#preview);
+        inset.pinned = false;
+        inset.panel.preview = true;
+        this.#preview = inset;
     }
 
     /** Close `inset` and everything chained from it. */
@@ -529,7 +574,8 @@ export class InsetSession {
                 inset.fit();
                 break;
             case "pin":
-                this.pin(inset);
+                if (inset.pinned) this.unpin(inset);
+                else this.pin(inset);
                 break;
             case "close":
                 this.close(inset);
@@ -639,21 +685,29 @@ export class InsetSession {
     }
 
     #layout_leader(inset: Inset, root: DOMRect) {
-        const a = inset.source.world_to_client(inset.source_anchor);
+        const raw_a = inset.source.world_to_client(inset.source_anchor);
         const raw = inset.missing
             ? null
             : inset.world_to_client(inset.target.anchor);
-        const visible = !!a && !!raw;
+        const visible = !!raw_a && !!raw;
         for (const el of [inset.leader, inset.ring, inset.origin])
             el.style.display = visible ? "" : "none";
-        if (!a || !raw) return;
-        // Panned or zoomed so the pad is out of view: end the leader at the
-        // inset's edge, pointing at it, and mark the edge instead.
-        const lens = inset.panel.lens;
-        const view = (
-            lens ? inset.panel.el : inset.panel.canvas
-        ).getBoundingClientRect();
-        const { point: b, clipped } = clamp_to_view(raw, view, lens);
+        if (!raw_a || !raw) return;
+        // Panned or zoomed so a pad is out of view: keep that end of the
+        // leader on the inset's edge, pointing at it, and mark the edge. Both
+        // ends: a chained inset's leader starts inside its parent inset.
+        const end = inset.view;
+        const { point: b, clipped } = clamp_to_view(raw, end.rect, end.circle);
+        let a = raw_a;
+        let a_clipped = false;
+        if (inset.source instanceof Inset) {
+            const start = inset.source.view;
+            ({ point: a, clipped: a_clipped } = clamp_to_view(
+                raw_a,
+                start.rect,
+                start.circle,
+            ));
+        }
         const ax = a.x - root.left;
         const ay = a.y - root.top;
         const bx = b.x - root.left;
@@ -670,6 +724,7 @@ export class InsetSession {
         inset.ring.classList.toggle("off-view", clipped);
         inset.origin.setAttribute("cx", `${ax}`);
         inset.origin.setAttribute("cy", `${ay}`);
+        inset.origin.classList.toggle("off-view", a_clipped);
     }
 
     #on_key = (e: KeyboardEvent) => {

@@ -45,6 +45,8 @@ export interface InsetLinkHost extends InsetPeer {
 
 export const HOVER_OPEN_DELAY_MS = 180;
 export const HOVER_CLOSE_DELAY_MS = 700;
+/** While the other document loads, a held hover retries this often. */
+export const LOADING_RETRY_MS = 250;
 
 const OTHER: Record<InsetKind, InsetKind> = { sch: "pcb", pcb: "sch" };
 
@@ -162,6 +164,9 @@ export class InsetLink {
 
     #child_timer: number | null = null;
     #child_close_timer: number | null = null;
+    #retry_timer: number | null = null;
+    /** A click landed while the other document loaded: pin it once open. */
+    #pin_when_ready: HoverDetail | null = null;
 
     constructor(private readonly host: InsetLinkHost) {
         this.session.on_hit = (inset, hit) => this.#on_inset_hit(inset, hit);
@@ -184,6 +189,10 @@ export class InsetLink {
         // Linking to an element already in inset mode joins that mode.
         else if (peer.insetMode && !this.#mode) this.set_mode(true);
         this.sync();
+        // The host may link the peer only once the mode turned on (Prism
+        // mounts the PCB lazily): open for the pin already under the pointer.
+        if (peer && this.#hover && (this.#mode || this.#peeking))
+            this.#schedule_open(this.#hover.viewer, this.#hover.detail, 0);
     }
 
     get peer() {
@@ -327,16 +336,17 @@ export class InsetLink {
     }
 
     #on_probe(viewer: Viewer, detail: KiCanvasProbeDetail) {
-        if (!this.#peer) return;
         if (detail.phase === "hover") {
             if (!detail.reference || !detail.anchor) return;
             if (is_virtual(detail.reference)) return;
+            // Kept without a peer too: linking it opens this hover.
             this.#hover = { viewer, detail };
             this.#cancel_close();
-            if (!this.#mode && !this.#peeking) return;
+            if (!this.#peer || (!this.#mode && !this.#peeking)) return;
             this.#schedule_open(viewer, detail, HOVER_OPEN_DELAY_MS);
         } else if (detail.phase === "leave" || detail.phase === "clear") {
             this.#hover = null;
+            if (!this.#peer) return;
             if (this.#open_timer !== null) clearTimeout(this.#open_timer);
             this.#open_timer = null;
             this.#cancel_close();
@@ -357,12 +367,12 @@ export class InsetLink {
         const reference = detail.reference;
         const number = detail.number;
         const anchor = new Vec2(detail.anchor.x, detail.anchor.y);
-        const open = () => {
+        const open = async () => {
             this.#open_timer = null;
             // The element may have re-rendered its shadow DOM.
             const parent = this.host.overlay_parent();
             if (parent) this.session.mount(parent);
-            return this.session.open({
+            const inset = await this.session.open({
                 kind: OTHER[entry.kind],
                 reference,
                 number,
@@ -371,6 +381,24 @@ export class InsetLink {
                 preview: true,
                 show_missing: true,
             });
+            if (inset && !inset.loading && this.#pin_when_ready === detail) {
+                this.#pin_when_ready = null;
+                this.session.pin(inset);
+            }
+            // The other document is still loading: try again while the
+            // pointer stays on this pin. Leaving it ends the retries.
+            if (inset?.loading) {
+                if (this.#retry_timer !== null) clearTimeout(this.#retry_timer);
+                this.#retry_timer = window.setTimeout(() => {
+                    this.#retry_timer = null;
+                    if (
+                        this.#hover?.detail === detail &&
+                        (this.#mode || this.#peeking)
+                    )
+                        this.#schedule_open(viewer, detail, 0);
+                }, LOADING_RETRY_MS);
+            }
+            return inset;
         };
         if (delay <= 0) {
             this.#open_timer = null;
@@ -392,6 +420,10 @@ export class InsetLink {
         if (!hover || hover.viewer !== viewer) return false;
         const matches = () => {
             const preview = this.session.preview;
+            if (preview?.loading) {
+                this.#pin_when_ready = hover.detail;
+                return null;
+            }
             return preview &&
                 preview.target.reference === hover.detail.reference &&
                 preview.target.number === hover.detail.number
@@ -500,5 +532,8 @@ export class InsetLink {
             clearTimeout(this.#child_close_timer);
         this.#child_timer = null;
         this.#child_close_timer = null;
+        if (this.#retry_timer !== null) clearTimeout(this.#retry_timer);
+        this.#retry_timer = null;
+        this.#pin_when_ready = null;
     }
 }
