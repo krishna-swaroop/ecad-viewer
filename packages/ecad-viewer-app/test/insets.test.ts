@@ -1,9 +1,10 @@
 import { expect } from "@esm-bundle/chai";
-import { BBox, Vec2 } from "../src/base/math";
+import { BBox, Matrix3, Vec2 } from "../src/base/math";
 import {
     MAX_INSETS,
     clamp_to_view,
     fit_camera,
+    inset_matrix,
     inset_to_world,
     InsetSession,
     pan_by,
@@ -28,6 +29,56 @@ const cameras: InsetCamera[] = [
     { center: new Vec2(-3, 7), zoom: 0.5, rotation: 0, mirror: true },
     { center: new Vec2(-3, 7), zoom: 12, rotation: -1.1, mirror: true },
 ];
+
+suite("Canvas2D transforms", () => {
+    test("to_DOMMatrix maps points like transform(), rotations included", () => {
+        for (const camera of cameras) {
+            const m = inset_matrix(camera, 300, 200);
+            const dom = m.to_DOMMatrix();
+            for (const p of [
+                new Vec2(0, 0),
+                new Vec2(3, -8),
+                new Vec2(12, 5),
+            ]) {
+                const q = dom.transformPoint(new DOMPoint(p.x, p.y));
+                close_to(new Vec2(q.x, q.y), m.transform(p));
+            }
+            // from_DOMMatrix is its inverse.
+            const back = Matrix3.from_DOMMatrix(dom);
+            close_to(
+                back.transform(new Vec2(3, -8)),
+                m.transform(new Vec2(3, -8)),
+            );
+        }
+    });
+
+    test("a rotated schematic view draws where the leader points", () => {
+        // A Canvas2D layer drawn through a rotated inset camera lands where
+        // world_to_inset (the leader and outlines) puts it.
+        const canvas = document.createElement("canvas");
+        canvas.width = 300;
+        canvas.height = 200;
+        const ctx = canvas.getContext("2d")!;
+        const camera: InsetCamera = {
+            center: new Vec2(0, 0),
+            zoom: 10,
+            rotation: Math.PI / 3,
+            mirror: false,
+        };
+        const world = new Vec2(6, 2);
+        ctx.setTransform(inset_matrix(camera, 300, 200).to_DOMMatrix());
+        ctx.fillStyle = "#ff0000";
+        ctx.fillRect(world.x - 0.3, world.y - 0.3, 0.6, 0.6);
+        const at = world_to_inset(camera, 300, 200, world);
+        const px = ctx.getImageData(
+            Math.round(at.x),
+            Math.round(at.y),
+            1,
+            1,
+        ).data;
+        expect([...px]).to.deep.equal([255, 0, 0, 255]);
+    });
+});
 
 suite("inset camera", () => {
     test("world → inset → world round-trips with rotation and mirror", () => {
@@ -423,6 +474,95 @@ suite("inset session", () => {
         const { w, h } = inset.canvas_size;
         expect(inset.camera.zoom).to.be.closeTo(Math.min(w, h) / 20, 1e-6);
         close_to(inset.camera.center, new Vec2(5, 5));
+    });
+
+    test("the pin button shows the state and toggles it", async () => {
+        const inset = (await open("U1"))!;
+        const pin = inset.panel.button("pin");
+        const label = () =>
+            pin.querySelector(".inset-tip")!.firstChild!.textContent;
+        // A preview offers to pin: outline icon, not pressed.
+        expect(pin.querySelector("svg.inset-pin")).to.not.equal(null);
+        expect(pin.classList.contains("on")).to.equal(false);
+        expect(pin.getAttribute("aria-pressed")).to.equal("false");
+        expect(label()).to.equal("Pin");
+        pin.click();
+        expect(inset.pinned).to.equal(true);
+        expect(pin.classList.contains("on")).to.equal(true);
+        expect(pin.getAttribute("aria-pressed")).to.equal("true");
+        expect(label()).to.equal("Unpin");
+        expect(getComputedStyle(pin.querySelector("path")!).fill).to.not.equal(
+            "none",
+        );
+        // Unpinning makes it the preview again; another preview gives way.
+        session.pin((await open("U2", { preview: false }))!);
+        await open("U3");
+        pin.click();
+        expect(inset.pinned).to.equal(false);
+        expect(session.preview).to.equal(inset);
+        expect(session.insets.map((i) => i.target.reference)).to.deep.equal([
+            "U1",
+            "U2",
+        ]);
+        expect(pin.classList.contains("on")).to.equal(false);
+        expect(label()).to.equal("Pin");
+    });
+
+    test("an inset anchoring a chain stays pinned", async () => {
+        const root = (await open("U1", { preview: false }))!;
+        await session.open({
+            kind: "sch",
+            reference: "R9",
+            number: "1",
+            source: root,
+            source_anchor: new Vec2(5, 5),
+            parent: root,
+        });
+        root.panel.button("pin").click();
+        expect(root.pinned).to.equal(true);
+    });
+
+    test("a chained leader starts inside its parent inset", async () => {
+        const root = (await open("U1", { preview: false }))!;
+        const child = (await session.open({
+            kind: "sch",
+            reference: "R9",
+            number: "1",
+            source: root,
+            source_anchor: new Vec2(5, 5),
+            parent: root,
+            preview: false,
+        }))!;
+        const start = () => {
+            session.flush();
+            return new Vec2(
+                Number(child.origin.getAttribute("cx")),
+                Number(child.origin.getAttribute("cy")),
+            );
+        };
+        const inside = (p: Vec2, rect: DOMRect) => {
+            expect(p.x).to.be.within(rect.left, rect.right);
+            expect(p.y).to.be.within(rect.top, rect.bottom);
+        };
+        // In view: the leader starts at the pad.
+        close_to(start(), root.world_to_client(new Vec2(5, 5))!);
+        expect(child.origin.classList.contains("off-view")).to.equal(false);
+        // Pan the parent so the pad leaves it: the start stays on its edge.
+        root.camera.center = new Vec2(500, 500);
+        inside(start(), root.panel.canvas.getBoundingClientRect());
+        expect(child.origin.classList.contains("off-view")).to.equal(true);
+        // A lens parent keeps it inside the circle.
+        root.panel.lens = true;
+        const rect = root.panel.el.getBoundingClientRect();
+        const p = start();
+        expect(
+            Math.hypot(
+                p.x - (rect.left + rect.width / 2),
+                p.y - (rect.top + rect.height / 2),
+            ),
+        ).to.be.at.most(Math.min(rect.width, rect.height) / 2);
+        const d = child.leader.getAttribute("d")!;
+        expect(d.startsWith(`M${p.x},${p.y} `)).to.equal(true);
     });
 
     test("grabbing a preview pins it", async () => {
