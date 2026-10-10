@@ -1,7 +1,10 @@
 import { expect } from "@esm-bundle/chai";
 import { BBox, Matrix3, Vec2 } from "../src/base/math";
 import {
+    BoardInsetProvider,
+    DEFAULT_TILT,
     MAX_INSETS,
+    MAX_TILT,
     clamp_to_view,
     fit_camera,
     inset_matrix,
@@ -12,7 +15,9 @@ import {
     zoom_about,
     type InsetCamera,
     type InsetKind,
+    type Inset3DState,
     type InsetProvider,
+    type InsetScene3D,
     type InsetSource,
     type InsetTarget,
 } from "../src/ecad-viewer/insets";
@@ -941,5 +946,391 @@ suite("inset hover outlines", () => {
             }),
         );
         expect(hit_at).to.equal(null);
+    });
+});
+
+/** A PCB provider whose host has a 3D board in `state3d`. */
+class Fake3DProvider extends FakeProvider {
+    state3d: Inset3DState | null = "ready";
+    loads = 0;
+    #listeners = new Set<() => void>();
+
+    state_3d() {
+        return this.state3d;
+    }
+
+    load_3d() {
+        this.loads += 1;
+    }
+
+    subscribe(listener: () => void) {
+        this.#listeners.add(listener);
+        return () => this.#listeners.delete(listener);
+    }
+
+    set(state: Inset3DState) {
+        this.state3d = state;
+        for (const listener of this.#listeners) listener();
+    }
+}
+
+suite("3D insets (IN-61)", () => {
+    let host: HTMLDivElement;
+    let session: InsetSession;
+    let pcb: Fake3DProvider;
+    let sch: FakeProvider;
+
+    setup(() => {
+        host = document.createElement("div");
+        Object.assign(host.style, {
+            position: "fixed",
+            left: "0px",
+            top: "0px",
+            width: "1200px",
+            height: "800px",
+        });
+        document.body.append(host);
+        session = new InsetSession();
+        pcb = new Fake3DProvider("pcb");
+        sch = new FakeProvider("sch");
+        session.register(pcb);
+        session.register(sch);
+        session.mount(host);
+    });
+
+    teardown(() => {
+        session.dispose();
+        host.remove();
+    });
+
+    const open = (kind: InsetKind = "pcb") =>
+        session.open({
+            kind,
+            reference: "U1",
+            number: "1",
+            source: source_at(200, 300),
+            source_anchor: new Vec2(0, 0),
+            preview: false,
+        });
+
+    test("the lean shrinks screen y by cos(tilt) about the centre, after rotation", () => {
+        for (const base of cameras) {
+            const flat = { ...base, center: base.center.copy() };
+            const tilted = { ...flat, view3d: true, tilt: 0.7 };
+            for (const p of [new Vec2(3, -8), new Vec2(12, 5)]) {
+                const a = world_to_inset(flat, 300, 200, p);
+                const b = world_to_inset(tilted, 300, 200, p);
+                expect(b.x).to.be.closeTo(a.x, 1e-3);
+                expect(b.y - 100).to.be.closeTo(
+                    (a.y - 100) * Math.cos(0.7),
+                    1e-3,
+                );
+                close_to(inset_to_world(tilted, 300, 200, b), p);
+            }
+            // 2D ignores a stored tilt.
+            close_to(
+                world_to_inset(
+                    { ...flat, tilt: 0.7 },
+                    300,
+                    200,
+                    new Vec2(3, -8),
+                ),
+                world_to_inset(flat, 300, 200, new Vec2(3, -8)),
+            );
+        }
+    });
+
+    test("pan and zoom stay under the pointer while leaning", () => {
+        const camera: InsetCamera = {
+            center: new Vec2(10, 20),
+            zoom: 4,
+            rotation: 0.4,
+            mirror: true,
+            view3d: true,
+            tilt: DEFAULT_TILT,
+        };
+        const grabbed = inset_to_world(camera, 300, 200, new Vec2(100, 80));
+        pan_by(camera, 25, -15);
+        close_to(world_to_inset(camera, 300, 200, grabbed), new Vec2(125, 65));
+        const cursor = new Vec2(40, 150);
+        const before = inset_to_world(camera, 300, 200, cursor);
+        zoom_about(camera, 300, 200, cursor, 1.5);
+        close_to(inset_to_world(camera, 300, 200, cursor), before);
+    });
+
+    test("T toggles a PCB inset between 2D and 3D, leaning 40°", async () => {
+        const inset = (await open())!;
+        const button = inset.panel.button("3d");
+        expect(button.hidden).to.equal(false);
+        session.act(inset, "3d");
+        expect(inset.camera.view3d).to.equal(true);
+        expect(inset.camera.tilt).to.be.closeTo((40 * Math.PI) / 180, 1e-9);
+        expect(button.classList.contains("on")).to.equal(true);
+        await frame();
+        expect(pcb.last_camera?.view3d).to.equal(true);
+        session.act(inset, "3d");
+        expect(inset.camera.view3d).to.equal(false);
+        expect(button.classList.contains("on")).to.equal(false);
+    });
+
+    test("no 3D offered: schematic insets and hosts without a 3D board", async () => {
+        const sheet = (await open("sch"))!;
+        expect(sheet.panel.button("3d").hidden).to.equal(true);
+        session.act(sheet, "3d");
+        expect(sheet.camera.view3d ?? false).to.equal(false);
+        pcb.state3d = null;
+        const board = (await open())!;
+        expect(board.panel.button("3d").hidden).to.equal(true);
+    });
+
+    test("no 3D bundle: the inset says so and stays 2D", async () => {
+        pcb.state3d = "unavailable";
+        const inset = (await open())!;
+        session.act(inset, "3d");
+        expect(inset.camera.view3d ?? false).to.equal(false);
+        expect(inset.panel.notice_text).to.equal("3D unavailable");
+        expect(pcb.loads).to.equal(0);
+    });
+
+    test("the first T loads the 3D board; the inset switches once it is ready", async () => {
+        pcb.state3d = "loading";
+        const inset = (await open())!;
+        session.act(inset, "3d");
+        expect(pcb.loads).to.equal(1);
+        expect(inset.camera.view3d ?? false).to.equal(false);
+        expect(inset.panel.button("3d").classList.contains("pending")).to.equal(
+            true,
+        );
+        pcb.set("ready");
+        await frame();
+        expect(inset.camera.view3d).to.equal(true);
+        expect(inset.panel.button("3d").classList.contains("pending")).to.equal(
+            false,
+        );
+        expect(pcb.last_camera?.view3d).to.equal(true);
+    });
+
+    test("a load that fails ends in 2D with the notice", async () => {
+        pcb.state3d = "loading";
+        const inset = (await open())!;
+        session.act(inset, "3d");
+        pcb.set("unavailable");
+        await frame();
+        expect(inset.camera.view3d ?? false).to.equal(false);
+        expect(inset.panel.notice_text).to.equal("3D unavailable");
+    });
+
+    test("T again while loading cancels the switch", async () => {
+        pcb.state3d = "loading";
+        const inset = (await open())!;
+        session.act(inset, "3d");
+        session.act(inset, "3d");
+        pcb.set("ready");
+        await frame();
+        expect(inset.camera.view3d ?? false).to.equal(false);
+    });
+
+    const drag = (
+        canvas: HTMLCanvasElement,
+        dx: number,
+        dy: number,
+        opts: { shiftKey?: boolean; button?: number } = {},
+    ) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = rect.left + 50;
+        const y = rect.top + 50;
+        const init = { bubbles: true, shiftKey: opts.shiftKey ?? false };
+        canvas.dispatchEvent(
+            new PointerEvent("pointerdown", {
+                ...init,
+                button: opts.button ?? 0,
+                clientX: x,
+                clientY: y,
+            }),
+        );
+        canvas.dispatchEvent(
+            new PointerEvent("pointermove", {
+                ...init,
+                buttons: 1,
+                clientX: x + dx,
+                clientY: y + dy,
+            }),
+        );
+        canvas.dispatchEvent(
+            new PointerEvent("pointerup", {
+                ...init,
+                button: opts.button ?? 0,
+                clientX: x + dx,
+                clientY: y + dy,
+            }),
+        );
+    };
+
+    test("a plain drag orbits a 3D inset like the 3D tab, the lean within 0…75°", async () => {
+        const inset = (await open())!;
+        session.act(inset, "3d");
+        const canvas = inset.panel.canvas;
+        const center = inset.camera.center.copy();
+        // Up leans back, down straightens; the centre stays put.
+        drag(canvas, 0, -20);
+        expect(inset.camera.tilt).to.be.closeTo(DEFAULT_TILT + 0.12, 1e-9);
+        expect(inset.camera.rotation).to.equal(0);
+        close_to(inset.camera.center, center);
+        drag(canvas, 0, 10);
+        expect(inset.camera.tilt).to.be.closeTo(DEFAULT_TILT + 0.06, 1e-9);
+        drag(canvas, 0, -1000);
+        expect(inset.camera.tilt).to.be.closeTo(MAX_TILT, 1e-9);
+        drag(canvas, 0, 5000);
+        expect(inset.camera.tilt).to.equal(0);
+        // Across turns the board: against the pointer from above...
+        drag(canvas, 50, 0);
+        expect(inset.camera.rotation).to.be.closeTo(-0.3, 1e-9);
+        // ...and with it from below.
+        session.act(inset, "mirror");
+        drag(canvas, 50, 0);
+        expect(inset.camera.rotation).to.be.closeTo(0, 1e-9);
+    });
+
+    test("Shift, right and middle drags pan a 3D inset", async () => {
+        const inset = (await open())!;
+        session.act(inset, "3d");
+        const canvas = inset.panel.canvas;
+        for (const opts of [{ shiftKey: true }, { button: 2 }, { button: 1 }]) {
+            const { tilt, rotation } = inset.camera;
+            const before = inset.camera.center.copy();
+            drag(canvas, 30, 20, opts);
+            expect(inset.camera.tilt).to.equal(tilt);
+            expect(inset.camera.rotation).to.equal(rotation);
+            expect(inset.camera.center.x).to.not.be.closeTo(before.x, 1e-6);
+        }
+    });
+
+    test("2D insets keep panning on a plain drag; a right click never pins", async () => {
+        const inset = (await open())!;
+        const canvas = inset.panel.canvas;
+        const before = inset.camera.center.copy();
+        drag(canvas, 30, 0);
+        expect(inset.camera.center.x).to.not.be.closeTo(before.x, 1e-6);
+        expect(inset.camera.rotation).to.equal(0);
+        let clicks = 0;
+        session.on_click = () => {
+            clicks += 1;
+            return true;
+        };
+        drag(canvas, 0, 0, { button: 2 });
+        expect(clicks).to.equal(0);
+        drag(canvas, 0, 0);
+        expect(clicks).to.equal(1);
+    });
+
+    test("the 3D board going away drops the inset back to 2D", async () => {
+        const inset = (await open())!;
+        session.act(inset, "3d");
+        pcb.set("loading");
+        await frame();
+        expect(inset.camera.view3d).to.equal(false);
+    });
+});
+
+suite("board provider with a 3D scene", () => {
+    class FakeScene implements InsetScene3D {
+        status: Inset3DState = "ready";
+        drawn: { bottom: boolean; key: string; tilt?: number }[] = [];
+        released: string[] = [];
+        loads = 0;
+        listeners = new Set<() => void>();
+        state() {
+            return this.status;
+        }
+        load() {
+            this.loads += 1;
+        }
+        render(
+            camera: InsetCamera,
+            _canvas: HTMLCanvasElement,
+            bottom: boolean,
+            key: string,
+        ) {
+            this.drawn.push({ bottom, key, tilt: camera.tilt });
+            return true;
+        }
+        release(key: string) {
+            this.released.push(key);
+        }
+        subscribe(listener: () => void) {
+            this.listeners.add(listener);
+            return () => this.listeners.delete(listener);
+        }
+    }
+
+    const target = (side: "top" | "bottom"): InsetTarget => ({
+        kind: "pcb",
+        reference: "U1",
+        number: "1",
+        side,
+        focus: new BBox(0, 0, 4, 4),
+        anchor: new Vec2(2, 2),
+        mirror: side === "bottom",
+    });
+    const camera = (view3d: boolean): InsetCamera => ({
+        center: new Vec2(2, 2),
+        zoom: 10,
+        rotation: 0,
+        mirror: false,
+        view3d,
+        tilt: DEFAULT_TILT,
+    });
+
+    test("3D cameras draw through the scene, one key per inset; 2D ones never do", () => {
+        const provider = new BoardInsetProvider(() => null);
+        expect(provider.state_3d()).to.equal(null);
+        const scene = new FakeScene();
+        provider.scene3d = scene;
+        expect(provider.state_3d()).to.equal("ready");
+        const canvas = document.createElement("canvas");
+        const top = target("top");
+        const bottom = target("bottom");
+        provider.render(top, camera(false), canvas);
+        expect(scene.drawn).to.have.length(0);
+        provider.render(top, camera(true), canvas);
+        provider.render(top, camera(true), canvas);
+        provider.render(bottom, camera(true), canvas);
+        expect(scene.drawn.map((d) => d.bottom)).to.deep.equal([
+            false,
+            false,
+            true,
+        ]);
+        expect(scene.drawn[0]!.key).to.equal(scene.drawn[1]!.key);
+        expect(scene.drawn[2]!.key).to.not.equal(scene.drawn[0]!.key);
+        provider.release(top);
+        expect(scene.released).to.deep.equal([scene.drawn[0]!.key]);
+        provider.load_3d();
+        expect(scene.loads).to.equal(1);
+    });
+
+    test("a scene still loading leaves the 2D board drawing", () => {
+        const provider = new BoardInsetProvider(() => null);
+        const scene = new FakeScene();
+        scene.status = "loading";
+        provider.scene3d = scene;
+        provider.render(
+            target("top"),
+            camera(true),
+            document.createElement("canvas"),
+        );
+        expect(scene.drawn).to.have.length(0);
+    });
+
+    test("scene changes reach the inset session's listeners", () => {
+        const provider = new BoardInsetProvider(() => null);
+        const scene = new FakeScene();
+        let calls = 0;
+        provider.subscribe(() => (calls += 1));
+        provider.scene3d = scene;
+        const after_set = calls;
+        for (const listener of scene.listeners) listener();
+        expect(calls).to.equal(after_set + 1);
+        provider.scene3d = null;
+        expect(scene.listeners.size).to.equal(0);
     });
 });

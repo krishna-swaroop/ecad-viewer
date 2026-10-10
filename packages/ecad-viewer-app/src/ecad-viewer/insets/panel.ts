@@ -14,6 +14,7 @@ export type InsetAction =
     | "lens"
     | "refit"
     | "pin"
+    | "3d"
     | "close";
 
 export interface InsetPanelHandlers {
@@ -22,8 +23,12 @@ export interface InsetPanelHandlers {
     moved(): void;
     /** The canvas size changed; the inset needs re-rendering. */
     resized(): void;
-    /** Drag on the canvas, in screen pixels. */
-    pan(dx: number, dy: number): void;
+    /**
+     * Drag on the canvas, in screen pixels. `secondary`: a Shift, right or
+     * middle drag (3D insets pan with it and orbit with a plain drag, as
+     * the 3D tab does).
+     */
+    drag(dx: number, dy: number, secondary: boolean): void;
     /** Wheel on the canvas; `cursor` is in canvas CSS pixels. */
     wheel(cursor: Vec2, delta_y: number, shift: boolean): void;
     /** Pointer over the canvas (canvas CSS pixels), or null when it left. */
@@ -43,6 +48,7 @@ export const TOOLBAR: [InsetAction, string, string, string][] = [
     ["mirror", "⇋", "Mirror", "M"],
     ["lens", "◯", "Lens", "L"],
     ["refit", "⌂", "Refit", "Home"],
+    ["3d", "3D", "3D view", "T"],
     ["pin", "", "Pin", "P"],
     ["close", "✕", "Close", "X"],
 ];
@@ -72,6 +78,8 @@ export class InsetPanel {
     readonly marks: SVGSVGElement;
     #title: HTMLSpanElement;
     #side: HTMLSpanElement;
+    #notice: HTMLDivElement;
+    #notice_timer: ReturnType<typeof setTimeout> | null = null;
     #buttons = new Map<InsetAction, HTMLButtonElement>();
     #resize_observer: ResizeObserver;
 
@@ -129,9 +137,11 @@ export class InsetPanel {
             "svg",
         );
         this.marks.classList.add("inset-marks");
+        this.#notice = document.createElement("div");
+        this.#notice.className = "inset-notice";
         const view = document.createElement("div");
         view.className = "inset-view";
-        view.append(this.canvas, this.marks);
+        view.append(this.canvas, this.marks, this.#notice);
         this.el.append(header, view, grip);
         this.canvas.addEventListener("pointermove", (e) => {
             // Panning is not hovering.
@@ -155,9 +165,12 @@ export class InsetPanel {
         });
         this.#drag(
             this.canvas,
-            (dx, dy) => handlers.pan(dx, dy),
+            (dx, dy, secondary) => handlers.drag(dx, dy, secondary),
             () => handlers.click(),
+            true,
         );
+        // Right-drag pans; no browser menu over the inset.
+        this.canvas.addEventListener("contextmenu", (e) => e.preventDefault());
         this.canvas.addEventListener(
             "wheel",
             (e) => {
@@ -225,6 +238,33 @@ export class InsetPanel {
         this.#buttons.get("mirror")!.classList.toggle("on", value);
     }
 
+    /** PCB insets offer the 3D view; `pending` while it loads. */
+    set view3d(value: { offered: boolean; on: boolean; pending: boolean }) {
+        const button = this.#buttons.get("3d")!;
+        button.hidden = !value.offered;
+        button.classList.toggle("on", value.on);
+        button.classList.toggle("pending", value.pending);
+        button.setAttribute("aria-pressed", `${value.on}`);
+        this.el.classList.toggle("view3d", value.on);
+    }
+
+    /** A short message over the canvas, e.g. "3D unavailable". */
+    notice(text: string, ms = 2000) {
+        this.#notice.textContent = text;
+        this.#notice.classList.add("on");
+        if (this.#notice_timer) clearTimeout(this.#notice_timer);
+        this.#notice_timer = setTimeout(() => {
+            this.#notice_timer = null;
+            this.#notice.classList.remove("on");
+        }, ms);
+    }
+
+    get notice_text() {
+        return this.#notice.classList.contains("on")
+            ? this.#notice.textContent
+            : null;
+    }
+
     get lens() {
         return this.el.classList.contains("lens");
     }
@@ -250,17 +290,22 @@ export class InsetPanel {
     }
 
     dispose() {
+        if (this.#notice_timer) clearTimeout(this.#notice_timer);
         this.#resize_observer.disconnect();
         this.el.remove();
     }
 
     #drag(
         target: HTMLElement,
-        on_move: (dx: number, dy: number) => void,
+        on_move: (dx: number, dy: number, secondary: boolean) => void,
         on_click?: () => void,
+        any_button = false,
     ) {
         target.addEventListener("pointerdown", (e) => {
-            if (e.button !== 0) return;
+            if (e.button !== 0 && !(any_button && e.button <= 2)) return;
+            // Decided at the press, like the 3D tab: Shift or a non-left
+            // button for the whole drag.
+            const secondary = e.shiftKey || e.button !== 0;
             // Toolbar buttons take their own clicks. Capturing the pointer
             // here would retarget the click to the header and swallow it.
             if ((e.target as Element).closest("button")) return;
@@ -278,7 +323,7 @@ export class InsetPanel {
                 const dx = ev.clientX - last.x;
                 const dy = ev.clientY - last.y;
                 travel += Math.abs(dx) + Math.abs(dy);
-                on_move(dx, dy);
+                on_move(dx, dy, secondary);
                 last = { x: ev.clientX, y: ev.clientY };
             };
             const end = () => {
@@ -289,7 +334,7 @@ export class InsetPanel {
             const up = () => {
                 end();
                 // Pointer jitter is not a drag.
-                if (travel < 4) on_click?.();
+                if (travel < 4 && e.button === 0) on_click?.();
             };
             target.addEventListener("pointermove", move);
             target.addEventListener("pointerup", up);
@@ -340,6 +385,13 @@ export const INSET_STYLES = `
 .inset-tip kbd { font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 2px 4px; border-radius: 4px;
   border: 1px solid color-mix(in srgb, var(--inset-tip-fg, #fff) 35%, transparent); color: inherit; }
 .inset-toolbar button:hover .inset-tip, .inset-toolbar button:focus-visible .inset-tip { display: flex; }
+.inset-toolbar button[hidden] { display: none; }
+.inset-toolbar button[data-action="3d"] { width: 24px; font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.inset-toolbar button.pending { animation: inset-pulse 1s ease-in-out infinite alternate; }
+.inset-notice { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); display: none; padding: 3px 8px;
+  border-radius: 6px; background: var(--inset-tip-bg, #0f172a); color: var(--inset-tip-fg, #fff);
+  font: 500 11px/1.2 var(--inset-font, system-ui, sans-serif); white-space: nowrap; pointer-events: none; z-index: 2; }
+.inset-notice.on { display: block; }
 .inset-pin { fill: none; }
 .inset-toolbar button.on .inset-pin { fill: currentColor; }
 .inset.preview .inset-toolbar button:not([data-action="pin"]) { display: none; }

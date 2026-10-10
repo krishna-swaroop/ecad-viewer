@@ -71,6 +71,8 @@ function key_action(event: KeyboardEvent): InsetAction | null {
             return "refit";
         case "p":
             return "pin";
+        case "t":
+            return "3d";
         case "x":
             return "close";
     }
@@ -128,6 +130,14 @@ class LazyProvider implements InsetProvider {
     ready() {
         const provider = this.find();
         return !!provider && (provider.ready?.() ?? true);
+    }
+
+    state_3d() {
+        return this.find()?.state_3d?.() ?? null;
+    }
+
+    load_3d() {
+        this.find()?.load_3d?.();
     }
 
     release(target: InsetTarget) {

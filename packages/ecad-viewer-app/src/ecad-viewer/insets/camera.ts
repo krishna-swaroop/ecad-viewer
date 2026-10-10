@@ -5,6 +5,12 @@
     viewer that already holds the document renders the scene through it. The
     camera is centre + zoom + rotation + mirror, applied about the centre of
     the inset's canvas.
+
+    A PCB inset can also show the board in 3D (IN-61), leaning back by
+    `tilt`. The 3D view is orthographic and pivots on the board surface, so
+    on that surface the lean is exact in 2D: screen y shrinks by cos(tilt).
+    Pads sit on the surface, so pan, zoom, hover, outlines and leaders all
+    keep using this one matrix.
 */
 
 import { BBox, Matrix3, Vec2 } from "../../base/math";
@@ -18,6 +24,19 @@ export interface InsetCamera {
     rotation: number;
     /** Mirror about the vertical axis: a bottom-side view. */
     mirror: boolean;
+    /** Show the 3D board instead of the 2D one (PCB insets). */
+    view3d?: boolean;
+    /** Radians the 3D view leans back from straight down. */
+    tilt?: number;
+}
+
+/** The lean the 3D view opens with, and the most an orbit leans it. */
+export const DEFAULT_TILT = (40 * Math.PI) / 180;
+export const MAX_TILT = (75 * Math.PI) / 180;
+
+/** The lean in effect: none in 2D. */
+export function camera_tilt(camera: InsetCamera) {
+    return camera.view3d ? (camera.tilt ?? 0) : 0;
 }
 
 /** World → inset canvas (CSS pixels) for a canvas of `w`×`h`. */
@@ -25,6 +44,7 @@ export function inset_matrix(camera: InsetCamera, w: number, h: number) {
     // Matrix3.rotation turns counter-clockwise on a y-down screen; the inset
     // camera's rotation is clockwise, like the toolbar's ↻.
     return Matrix3.translation(w / 2, h / 2)
+        .scale_self(1, Math.cos(camera_tilt(camera)))
         .rotate_self(-camera.rotation)
         .scale_self(camera.mirror ? -camera.zoom : camera.zoom, camera.zoom)
         .translate_self(-camera.center.x, -camera.center.y);
@@ -57,7 +77,7 @@ export interface FitOptions {
 
 /**
  * Centre on `focus` and zoom so its neighbourhood fills the canvas. Keeps
- * rotation and mirror as they are.
+ * rotation, mirror and tilt as they are.
  */
 export function fit_camera(
     camera: InsetCamera,
@@ -71,7 +91,7 @@ export function fit_camera(
     camera.center = new Vec2(focus.x + focus.w / 2, focus.y + focus.h / 2);
     camera.zoom = Math.min(
         Math.max(1, w) / extent_x,
-        Math.max(1, h) / extent_y,
+        Math.max(1, h) / (extent_y * Math.cos(camera_tilt(camera))),
     );
     return camera;
 }

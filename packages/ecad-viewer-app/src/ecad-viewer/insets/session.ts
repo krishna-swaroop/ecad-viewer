@@ -15,6 +15,8 @@
 
 import { BBox, Vec2 } from "../../base/math";
 import {
+    DEFAULT_TILT,
+    MAX_TILT,
     fit_camera,
     inset_to_world,
     pan_by,
@@ -47,6 +49,11 @@ export const MAX_INSETS = 8;
 
 const ROTATE_STEP = Math.PI / 12;
 const WHEEL_ROTATE_STEP = Math.PI / 36;
+/**
+ * Radians per pixel of a 3D inset's orbit drag: the 3D tab's rate and
+ * directions (dragging down brings the view back towards straight down).
+ */
+const ORBIT_PER_PIXEL = 0.006;
 
 export interface OpenInsetRequest {
     kind: InsetKind;
@@ -80,6 +87,8 @@ export class Inset implements InsetSource {
     loading = false;
     /** The pin or pad under the pointer inside this inset (IN-20). */
     hit: InsetHit | null = null;
+    /** T was pressed while the 3D board loads: switch once it is ready. */
+    want_3d = false;
     readonly target_outline = document.createElementNS(SVG_NS, "polygon");
     readonly hover_outline = document.createElementNS(SVG_NS, "polygon");
     #dirty = true;
@@ -202,6 +211,63 @@ export class Inset implements InsetSource {
         this.invalidate();
     }
 
+    /**
+     * T (IN-61): switch a PCB inset between the 2D board and the host's 3D
+     * board, leaning back by DEFAULT_TILT. The first switch loads the 3D
+     * board when it is not loaded yet; the inset stays 2D until it is.
+     */
+    toggle_3d() {
+        const state = this.provider.state_3d?.() ?? null;
+        if (state === null || this.missing) return;
+        if (this.camera.view3d || this.want_3d) {
+            this.want_3d = false;
+            this.camera.view3d = false;
+        } else if (state === "unavailable") {
+            this.panel.notice("3D unavailable");
+        } else {
+            this.want_3d = true;
+            this.provider.load_3d?.();
+        }
+        this.sync_3d();
+        this.invalidate();
+    }
+
+    /**
+     * A plain drag on a 3D inset orbits, as in the 3D tab: across turns the
+     * board about its normal, up leans the view back, down straightens it.
+     * The lean stops short of edge-on; M shows the other side.
+     */
+    orbit(dx: number, dy: number) {
+        if (!this.camera.view3d) return;
+        // The tab turns its camera, so from above the board turns against
+        // the pointer on screen and from below with it; `rotation` is the
+        // board's clockwise turn on screen.
+        const turn = dx * ORBIT_PER_PIXEL;
+        this.camera.rotation += this.camera.mirror ? turn : -turn;
+        const tilt = (this.camera.tilt ?? DEFAULT_TILT) - dy * ORBIT_PER_PIXEL;
+        this.camera.tilt = Math.min(MAX_TILT, Math.max(0, tilt));
+        this.invalidate();
+    }
+
+    /** Follow the 3D board's state: it became ready, failed or went away. */
+    sync_3d() {
+        const state = this.provider.state_3d?.() ?? null;
+        if (this.want_3d && state === "ready") {
+            this.want_3d = false;
+            this.camera.view3d = true;
+            this.camera.tilt ??= DEFAULT_TILT;
+        } else if (this.want_3d && state !== "loading") {
+            this.want_3d = false;
+            if (state === "unavailable") this.panel.notice("3D unavailable");
+        }
+        if (this.camera.view3d && state !== "ready") this.camera.view3d = false;
+        this.panel.view3d = {
+            offered: state !== null && !this.missing,
+            on: !!this.camera.view3d,
+            pending: this.want_3d,
+        };
+    }
+
     invalidate() {
         this.#dirty = true;
         this.session.schedule();
@@ -213,6 +279,7 @@ export class Inset implements InsetSource {
         const { w, h } = this.canvas_size;
         if (!w || !h) return;
         this.#dirty = false;
+        this.sync_3d();
         this.#rendered_size = { w, h };
         this.provider.render(this.target, this.camera, this.panel.canvas);
     }
@@ -372,7 +439,11 @@ export class InsetSession {
             action: (action) => this.act(inset, action),
             moved: () => this.schedule(),
             resized: () => inset.resized(),
-            pan: (dx, dy) => {
+            drag: (dx, dy, secondary) => {
+                if (inset.camera.view3d && !secondary) {
+                    inset.orbit(dx, dy);
+                    return;
+                }
                 pan_by(inset.camera, dx, dy);
                 inset.invalidate();
             },
@@ -456,6 +527,7 @@ export class InsetSession {
         this.#root.append(panel.el);
         this.#svg.append(leader, ring, origin);
         this.#place(inset, request.size ?? { w: 320, h: 248 });
+        inset.sync_3d();
         if (!missing) inset.fit();
         this.#listen_keys(true);
         return inset;
@@ -576,6 +648,9 @@ export class InsetSession {
             case "pin":
                 if (inset.pinned) this.unpin(inset);
                 else this.pin(inset);
+                break;
+            case "3d":
+                inset.toggle_3d();
                 break;
             case "close":
                 this.close(inset);

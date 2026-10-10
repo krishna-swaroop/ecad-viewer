@@ -30,6 +30,39 @@ export interface InsetTarget {
     mirror: boolean;
 }
 
+/**
+ * Where a PCB inset's 3D view stands (IN-61): drawn, still loading (the inset
+ * shows 2D meanwhile), or not available for this board (no 3D bundle).
+ */
+export type Inset3DState = "ready" | "loading" | "unavailable";
+
+/**
+ * The host's 3D board, drawing inset views (IN-61). ecad-viewer has no 3D
+ * renderer of its own; a host that has one (Prism's 3D tab) registers it on
+ * the element holding the PCB with `setInset3D`.
+ */
+export interface InsetScene3D {
+    state(): Inset3DState;
+    /** Start loading the 3D board, if it is not loaded yet. */
+    load(): void;
+    /**
+     * Draw the board through `camera` (KiCad mm, as the 2D inset camera)
+     * into `canvas`, sized by CSS. `bottom` pivots on the bottom surface.
+     * `key` names the inset, for what the host keeps resident. Returns
+     * false when nothing was drawn.
+     */
+    render(
+        camera: InsetCamera,
+        canvas: HTMLCanvasElement,
+        bottom: boolean,
+        key: string,
+    ): boolean;
+    /** The inset `key` closed. */
+    release?(key: string): void;
+    /** Call `listener` when the 3D picture or the state changed. */
+    subscribe(listener: () => void): () => void;
+}
+
 /** A pin or pad under the pointer inside an inset. */
 export interface InsetHit {
     reference: string;
@@ -69,6 +102,13 @@ export interface InsetProvider {
      * highlights, selection, variant). Returns an unsubscribe function.
      */
     subscribe?(listener: () => void): () => void;
+    /**
+     * PCB insets: the 3D view's state, or null when the host has no 3D
+     * board. `render` draws 3D for a camera with `view3d` once ready.
+     */
+    state_3d?(): Inset3DState | null;
+    /** Start loading the 3D board. */
+    load_3d?(): void;
 }
 
 /**

@@ -448,6 +448,7 @@ import {
     type InsetKind,
     type InsetPeer,
     type InsetProvider,
+    type InsetScene3D,
 } from "./insets";
 
 export class ECadViewer extends KCUIElement implements InputContainer {
@@ -4321,6 +4322,17 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     #board_inset_provider: BoardInsetProvider | null = null;
+    #inset_scene_3d: InsetScene3D | null = null;
+
+    /**
+     * Give this element's PCB insets a 3D view (IN-61): T on a PCB inset
+     * then draws `scene`, the host's 3D board. Null removes it.
+     */
+    public setInset3D(scene: InsetScene3D | null) {
+        this.#inset_scene_3d = scene;
+        if (this.#board_inset_provider)
+            this.#board_inset_provider.scene3d = scene;
+    }
     #schematic_inset_provider: SchematicInsetProvider | null = null;
 
     /**
@@ -4331,9 +4343,12 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     public insetProvider(kind: InsetKind): InsetProvider | null {
         if (kind === "pcb") {
             if (!this.has_pcb) return null;
-            this.#board_inset_provider ??= new BoardInsetProvider(() =>
-                this.#safe_board_viewer(),
-            );
+            if (!this.#board_inset_provider) {
+                this.#board_inset_provider = new BoardInsetProvider(() =>
+                    this.#safe_board_viewer(),
+                );
+                this.#board_inset_provider.scene3d = this.#inset_scene_3d;
+            }
             return this.#board_inset_provider;
         }
         if (!this.has_sch) return null;
