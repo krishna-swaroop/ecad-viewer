@@ -11,7 +11,12 @@ import type { NetLabelLayers } from "../../viewers/board/net-label-layers";
 import type { BoardViewer } from "../../viewers/board/viewer";
 import { inset_matrix, type InsetCamera } from "./camera";
 import { BOARD_FOCUS_LIMIT, BOARD_FOCUS_WINDOW, local_focus } from "./focus";
-import type { InsetHit, InsetProvider, InsetTarget } from "./types";
+import type {
+    InsetHit,
+    InsetProvider,
+    InsetScene3D,
+    InsetTarget,
+} from "./types";
 
 const center = (box: BBox) => new Vec2(box.x + box.w / 2, box.y + box.h / 2);
 
@@ -23,8 +28,39 @@ export class BoardInsetProvider implements InsetProvider {
     #labels = new WeakMap<InsetTarget, NetLabelLayers>();
     #hooked: BoardViewer | null = null;
     #unhook: (() => void) | null = null;
+    /** The host's 3D board (IN-61), and each open inset's key in it. */
+    #scene3d: InsetScene3D | null = null;
+    #unhook_3d: (() => void) | null = null;
+    #keys_3d = new WeakMap<InsetTarget, string>();
+    #next_key = 0;
 
     constructor(private readonly viewer: () => BoardViewer | null) {}
+
+    /** Register (or with null, drop) the host's 3D board. */
+    set scene3d(scene: InsetScene3D | null) {
+        if (scene === this.#scene3d) return;
+        this.#unhook_3d?.();
+        this.#unhook_3d = null;
+        this.#scene3d = scene;
+        if (scene) this.#unhook_3d = scene.subscribe(() => this.#notify());
+        this.#notify();
+    }
+
+    get scene3d() {
+        return this.#scene3d;
+    }
+
+    state_3d() {
+        return this.#scene3d?.state() ?? null;
+    }
+
+    load_3d() {
+        this.#scene3d?.load();
+    }
+
+    #notify() {
+        for (const listener of this.#listeners) listener();
+    }
 
     /**
      * Insets show the board viewer's own scene, so every change it draws
@@ -44,9 +80,7 @@ export class BoardInsetProvider implements InsetProvider {
         if (!viewer || viewer === this.#hooked) return;
         this.#unhook?.();
         this.#hooked = viewer;
-        const notify = () => {
-            for (const listener of this.#listeners) listener();
-        };
+        const notify = () => this.#notify();
         viewer.addEventListener(VIEWER_DRAW_REQUESTED as never, notify);
         this.#unhook = () =>
             viewer.removeEventListener(VIEWER_DRAW_REQUESTED, notify);
@@ -109,6 +143,16 @@ export class BoardInsetProvider implements InsetProvider {
         camera: InsetCamera,
         canvas: HTMLCanvasElement,
     ) {
+        const scene = this.#scene3d;
+        if (camera.view3d && scene?.state() === "ready") {
+            let key = this.#keys_3d.get(target);
+            if (!key) {
+                key = `inset-${++this.#next_key}`;
+                this.#keys_3d.set(target, key);
+            }
+            if (scene.render(camera, canvas, target.side === "bottom", key))
+                return;
+        }
         const viewer = this.viewer();
         if (!viewer) return;
         let labels = this.#labels.get(target);
@@ -130,5 +174,8 @@ export class BoardInsetProvider implements InsetProvider {
     release(target: InsetTarget) {
         this.#labels.get(target)?.dispose();
         this.#labels.delete(target);
+        const key = this.#keys_3d.get(target);
+        if (key) this.#scene3d?.release?.(key);
+        this.#keys_3d.delete(target);
     }
 }
