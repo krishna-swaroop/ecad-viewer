@@ -1166,12 +1166,15 @@ suite("3D insets (IN-61)", () => {
             );
         };
         const center = inset.camera.center.copy();
-        drag(20, true);
-        expect(inset.camera.tilt).to.be.closeTo(DEFAULT_TILT + 0.2, 1e-9);
+        // Like the 3D tab's orbit: dragging up leans back, down straightens.
+        drag(-20, true);
+        expect(inset.camera.tilt).to.be.closeTo(DEFAULT_TILT + 0.12, 1e-9);
         close_to(inset.camera.center, center);
-        drag(1000, true);
+        drag(10, true);
+        expect(inset.camera.tilt).to.be.closeTo(DEFAULT_TILT + 0.06, 1e-9);
+        drag(-1000, true);
         expect(inset.camera.tilt).to.be.closeTo(MAX_TILT, 1e-9);
-        drag(-5000, true);
+        drag(5000, true);
         expect(inset.camera.tilt).to.equal(0);
         drag(30, false);
         expect(inset.camera.center.y).to.not.be.closeTo(center.y, 1e-6);

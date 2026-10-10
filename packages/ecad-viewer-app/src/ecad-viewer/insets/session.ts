@@ -49,8 +49,11 @@ export const MAX_INSETS = 8;
 
 const ROTATE_STEP = Math.PI / 12;
 const WHEEL_ROTATE_STEP = Math.PI / 36;
-/** Radians of lean per pixel of Shift+drag. */
-const TILT_PER_PIXEL = 0.01;
+/**
+ * Radians of lean per pixel of Shift+drag: the 3D tab's orbit rate, and its
+ * direction (dragging down brings the view back towards straight down).
+ */
+const TILT_PER_PIXEL = 0.006;
 
 export interface OpenInsetRequest {
     kind: InsetKind;
@@ -229,10 +232,10 @@ export class Inset implements InsetSource {
         this.invalidate();
     }
 
-    /** Shift+drag: lean a 3D view further back (down) or up. */
+    /** Shift+drag: up leans the 3D view further back, down straightens it. */
     tilt_by(dy: number) {
         if (!this.camera.view3d) return;
-        const tilt = (this.camera.tilt ?? DEFAULT_TILT) + dy * TILT_PER_PIXEL;
+        const tilt = (this.camera.tilt ?? DEFAULT_TILT) - dy * TILT_PER_PIXEL;
         this.camera.tilt = Math.min(MAX_TILT, Math.max(0, tilt));
         this.invalidate();
     }
