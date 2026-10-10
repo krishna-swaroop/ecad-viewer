@@ -30,7 +30,7 @@ export interface InsetCamera {
     tilt?: number;
 }
 
-/** The lean the 3D view opens with, and the range Shift+drag keeps. */
+/** The lean the 3D view opens with, and the most an orbit leans it. */
 export const DEFAULT_TILT = (40 * Math.PI) / 180;
 export const MAX_TILT = (75 * Math.PI) / 180;
 

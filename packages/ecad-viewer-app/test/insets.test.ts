@@ -1130,54 +1130,97 @@ suite("3D insets (IN-61)", () => {
         expect(inset.camera.view3d ?? false).to.equal(false);
     });
 
-    test("Shift+drag sets the lean, within 0…75°; a plain drag pans", async () => {
+    const drag = (
+        canvas: HTMLCanvasElement,
+        dx: number,
+        dy: number,
+        opts: { shiftKey?: boolean; button?: number } = {},
+    ) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = rect.left + 50;
+        const y = rect.top + 50;
+        const init = { bubbles: true, shiftKey: opts.shiftKey ?? false };
+        canvas.dispatchEvent(
+            new PointerEvent("pointerdown", {
+                ...init,
+                button: opts.button ?? 0,
+                clientX: x,
+                clientY: y,
+            }),
+        );
+        canvas.dispatchEvent(
+            new PointerEvent("pointermove", {
+                ...init,
+                buttons: 1,
+                clientX: x + dx,
+                clientY: y + dy,
+            }),
+        );
+        canvas.dispatchEvent(
+            new PointerEvent("pointerup", {
+                ...init,
+                button: opts.button ?? 0,
+                clientX: x + dx,
+                clientY: y + dy,
+            }),
+        );
+    };
+
+    test("a plain drag orbits a 3D inset like the 3D tab, the lean within 0…75°", async () => {
         const inset = (await open())!;
         session.act(inset, "3d");
         const canvas = inset.panel.canvas;
-        const drag = (dy: number, shiftKey: boolean) => {
-            const rect = canvas.getBoundingClientRect();
-            const x = rect.left + 50;
-            const y = rect.top + 50;
-            canvas.dispatchEvent(
-                new PointerEvent("pointerdown", {
-                    bubbles: true,
-                    button: 0,
-                    clientX: x,
-                    clientY: y,
-                    shiftKey,
-                }),
-            );
-            canvas.dispatchEvent(
-                new PointerEvent("pointermove", {
-                    bubbles: true,
-                    buttons: 1,
-                    clientX: x,
-                    clientY: y + dy,
-                    shiftKey,
-                }),
-            );
-            canvas.dispatchEvent(
-                new PointerEvent("pointerup", {
-                    bubbles: true,
-                    clientX: x,
-                    clientY: y + dy,
-                    shiftKey,
-                }),
-            );
-        };
         const center = inset.camera.center.copy();
-        // Like the 3D tab's orbit: dragging up leans back, down straightens.
-        drag(-20, true);
+        // Up leans back, down straightens; the centre stays put.
+        drag(canvas, 0, -20);
         expect(inset.camera.tilt).to.be.closeTo(DEFAULT_TILT + 0.12, 1e-9);
+        expect(inset.camera.rotation).to.equal(0);
         close_to(inset.camera.center, center);
-        drag(10, true);
+        drag(canvas, 0, 10);
         expect(inset.camera.tilt).to.be.closeTo(DEFAULT_TILT + 0.06, 1e-9);
-        drag(-1000, true);
+        drag(canvas, 0, -1000);
         expect(inset.camera.tilt).to.be.closeTo(MAX_TILT, 1e-9);
-        drag(5000, true);
+        drag(canvas, 0, 5000);
         expect(inset.camera.tilt).to.equal(0);
-        drag(30, false);
-        expect(inset.camera.center.y).to.not.be.closeTo(center.y, 1e-6);
+        // Across turns the board: against the pointer from above...
+        drag(canvas, 50, 0);
+        expect(inset.camera.rotation).to.be.closeTo(-0.3, 1e-9);
+        // ...and with it from below.
+        session.act(inset, "mirror");
+        drag(canvas, 50, 0);
+        expect(inset.camera.rotation).to.be.closeTo(0, 1e-9);
+    });
+
+    test("Shift, right and middle drags pan a 3D inset", async () => {
+        const inset = (await open())!;
+        session.act(inset, "3d");
+        const canvas = inset.panel.canvas;
+        for (const opts of [{ shiftKey: true }, { button: 2 }, { button: 1 }]) {
+            const { tilt, rotation } = inset.camera;
+            const before = inset.camera.center.copy();
+            drag(canvas, 30, 20, opts);
+            expect(inset.camera.tilt).to.equal(tilt);
+            expect(inset.camera.rotation).to.equal(rotation);
+            expect(inset.camera.center.x).to.not.be.closeTo(before.x, 1e-6);
+        }
+    });
+
+    test("2D insets keep panning on a plain drag; a right click never pins", async () => {
+        const inset = (await open())!;
+        const canvas = inset.panel.canvas;
+        const before = inset.camera.center.copy();
+        drag(canvas, 30, 0);
+        expect(inset.camera.center.x).to.not.be.closeTo(before.x, 1e-6);
+        expect(inset.camera.rotation).to.equal(0);
+        let clicks = 0;
+        session.on_click = () => {
+            clicks += 1;
+            return true;
+        };
+        drag(canvas, 0, 0, { button: 2 });
+        expect(clicks).to.equal(0);
+        drag(canvas, 0, 0);
+        expect(clicks).to.equal(1);
     });
 
     test("the 3D board going away drops the inset back to 2D", async () => {

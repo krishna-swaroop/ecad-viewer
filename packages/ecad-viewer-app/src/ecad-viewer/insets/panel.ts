@@ -23,8 +23,12 @@ export interface InsetPanelHandlers {
     moved(): void;
     /** The canvas size changed; the inset needs re-rendering. */
     resized(): void;
-    /** Drag on the canvas, in screen pixels; Shift held tilts a 3D view. */
-    pan(dx: number, dy: number, shift: boolean): void;
+    /**
+     * Drag on the canvas, in screen pixels. `secondary`: a Shift, right or
+     * middle drag (3D insets pan with it and orbit with a plain drag, as
+     * the 3D tab does).
+     */
+    drag(dx: number, dy: number, secondary: boolean): void;
     /** Wheel on the canvas; `cursor` is in canvas CSS pixels. */
     wheel(cursor: Vec2, delta_y: number, shift: boolean): void;
     /** Pointer over the canvas (canvas CSS pixels), or null when it left. */
@@ -161,9 +165,12 @@ export class InsetPanel {
         });
         this.#drag(
             this.canvas,
-            (dx, dy, shift) => handlers.pan(dx, dy, shift),
+            (dx, dy, secondary) => handlers.drag(dx, dy, secondary),
             () => handlers.click(),
+            true,
         );
+        // Right-drag pans; no browser menu over the inset.
+        this.canvas.addEventListener("contextmenu", (e) => e.preventDefault());
         this.canvas.addEventListener(
             "wheel",
             (e) => {
@@ -290,11 +297,15 @@ export class InsetPanel {
 
     #drag(
         target: HTMLElement,
-        on_move: (dx: number, dy: number, shift: boolean) => void,
+        on_move: (dx: number, dy: number, secondary: boolean) => void,
         on_click?: () => void,
+        any_button = false,
     ) {
         target.addEventListener("pointerdown", (e) => {
-            if (e.button !== 0) return;
+            if (e.button !== 0 && !(any_button && e.button <= 2)) return;
+            // Decided at the press, like the 3D tab: Shift or a non-left
+            // button for the whole drag.
+            const secondary = e.shiftKey || e.button !== 0;
             // Toolbar buttons take their own clicks. Capturing the pointer
             // here would retarget the click to the header and swallow it.
             if ((e.target as Element).closest("button")) return;
@@ -312,7 +323,7 @@ export class InsetPanel {
                 const dx = ev.clientX - last.x;
                 const dy = ev.clientY - last.y;
                 travel += Math.abs(dx) + Math.abs(dy);
-                on_move(dx, dy, ev.shiftKey);
+                on_move(dx, dy, secondary);
                 last = { x: ev.clientX, y: ev.clientY };
             };
             const end = () => {
@@ -323,7 +334,7 @@ export class InsetPanel {
             const up = () => {
                 end();
                 // Pointer jitter is not a drag.
-                if (travel < 4) on_click?.();
+                if (travel < 4 && e.button === 0) on_click?.();
             };
             target.addEventListener("pointermove", move);
             target.addEventListener("pointerup", up);

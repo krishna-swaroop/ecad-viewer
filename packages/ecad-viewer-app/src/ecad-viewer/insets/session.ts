@@ -50,10 +50,10 @@ export const MAX_INSETS = 8;
 const ROTATE_STEP = Math.PI / 12;
 const WHEEL_ROTATE_STEP = Math.PI / 36;
 /**
- * Radians of lean per pixel of Shift+drag: the 3D tab's orbit rate, and its
- * direction (dragging down brings the view back towards straight down).
+ * Radians per pixel of a 3D inset's orbit drag: the 3D tab's rate and
+ * directions (dragging down brings the view back towards straight down).
  */
-const TILT_PER_PIXEL = 0.006;
+const ORBIT_PER_PIXEL = 0.006;
 
 export interface OpenInsetRequest {
     kind: InsetKind;
@@ -232,10 +232,19 @@ export class Inset implements InsetSource {
         this.invalidate();
     }
 
-    /** Shift+drag: up leans the 3D view further back, down straightens it. */
-    tilt_by(dy: number) {
+    /**
+     * A plain drag on a 3D inset orbits, as in the 3D tab: across turns the
+     * board about its normal, up leans the view back, down straightens it.
+     * The lean stops short of edge-on; M shows the other side.
+     */
+    orbit(dx: number, dy: number) {
         if (!this.camera.view3d) return;
-        const tilt = (this.camera.tilt ?? DEFAULT_TILT) - dy * TILT_PER_PIXEL;
+        // The tab turns its camera, so from above the board turns against
+        // the pointer on screen and from below with it; `rotation` is the
+        // board's clockwise turn on screen.
+        const turn = dx * ORBIT_PER_PIXEL;
+        this.camera.rotation += this.camera.mirror ? turn : -turn;
+        const tilt = (this.camera.tilt ?? DEFAULT_TILT) - dy * ORBIT_PER_PIXEL;
         this.camera.tilt = Math.min(MAX_TILT, Math.max(0, tilt));
         this.invalidate();
     }
@@ -430,9 +439,9 @@ export class InsetSession {
             action: (action) => this.act(inset, action),
             moved: () => this.schedule(),
             resized: () => inset.resized(),
-            pan: (dx, dy, shift) => {
-                if (shift && inset.camera.view3d) {
-                    inset.tilt_by(dy);
+            drag: (dx, dy, secondary) => {
+                if (inset.camera.view3d && !secondary) {
+                    inset.orbit(dx, dy);
                     return;
                 }
                 pan_by(inset.camera, dx, dy);
