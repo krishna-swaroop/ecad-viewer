@@ -141,6 +141,26 @@ export abstract class Viewer extends EventTarget {
      */
     public click_interceptor: ((event: MouseEvent) => boolean) | null = null;
 
+    /**
+     * Interceptors for a tool mode (PCB measure), consulted before
+     * click_interceptor so a mode wins over insets. The latest added runs
+     * first.
+     */
+    #mode_click_interceptors: ((event: MouseEvent) => boolean)[] = [];
+
+    public add_click_interceptor(
+        interceptor: (event: MouseEvent) => boolean,
+    ): IDisposable {
+        this.#mode_click_interceptors.unshift(interceptor);
+        return {
+            dispose: () => {
+                const index =
+                    this.#mode_click_interceptors.indexOf(interceptor);
+                if (index >= 0) this.#mode_click_interceptors.splice(index, 1);
+            },
+        };
+    }
+
     abstract type: ViewerType;
 
     public static MinZoom = 0.5;
@@ -267,7 +287,10 @@ export abstract class Viewer extends EventTarget {
                 listen(this.canvas, "click", (e) => {
                     if (!this.#active) return;
                     if (this.#comment_mode) return;
-                    // A host feature (inset mode) may claim the click.
+                    // A tool mode (measure), then a host feature (inset
+                    // mode), may claim the click.
+                    for (const intercept of this.#mode_click_interceptors)
+                        if (intercept(e)) return;
                     if (this.click_interceptor?.(e)) return;
                     const overlay = this.#overlay_scenes?.hit_test(
                         this.#mouse_position,
@@ -284,6 +307,8 @@ export abstract class Viewer extends EventTarget {
                 listen(this.canvas, "dblclick", (e) => {
                     if (!this.#active) return;
                     if (this.#comment_mode) return;
+                    // Two quick clicks in a tool mode are two points.
+                    if (this.#mode_click_interceptors.length) return;
                     this.on_dblclick(this.#mouse_position);
                 }),
             );

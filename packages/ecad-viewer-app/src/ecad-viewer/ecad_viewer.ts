@@ -433,6 +433,8 @@ import { ZipUtils } from "../utils/zip_utils";
 import { length } from "../base/iterator";
 import { PRISM_LOGO } from "../kc-ui/prism_logo";
 import type { BoardViewer } from "../viewers/board/viewer";
+import { MeasureTool, type MeasureState } from "../viewers/board/measure-tool";
+import type { MeasureUnits } from "../viewers/board/measure";
 import { SchematicViewer } from "../viewers/schematic/viewer";
 import {
     board_view_stats,
@@ -751,6 +753,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
 
     #apply_viewport_insets(): void {
         this.#inset_link?.sync();
+        // A reload may have replaced the board viewer under measure mode.
+        if (this.#measure?.active) this.#measure.attach(this.#measure_viewer());
         this.#safe_board_viewer()?.set_viewport_insets(this.#viewport_insets);
         this.#safe_schematic_viewer()?.set_viewport_insets(
             this.#viewport_insets,
@@ -2490,6 +2494,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     #activate_tab_content(tabKind: TabKind): void {
         const previous = this.#active_tab;
         this.#active_tab = tabKind;
+        if (tabKind !== TabKind.pcb && this.has_sch) this.setMeasureMode(false);
         if (previous === TabKind.pcb && this.#board_app) {
             this.#board_app.tabMenuHidden = true;
         } else if (previous === TabKind.sch && this.#schematic_app) {
@@ -3243,6 +3248,17 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         )
             return;
 
+        if (
+            (event.key === "m" || event.key === "M") &&
+            (event.metaKey || event.ctrlKey) &&
+            event.shiftKey &&
+            !event.altKey
+        ) {
+            if (!event.repeat && this.#measure_viewer())
+                this.setMeasureMode(!this.measureMode);
+            if (this.#measure_viewer()) event.preventDefault();
+            return;
+        }
         if (this.#inset_link?.key_down(event)) {
             event.preventDefault();
             return;
@@ -4265,6 +4281,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 pcb: this.has_pcb ? this.#safe_board_viewer() : null,
             }),
             mode_changed: (on) => {
+                // One click mode at a time: insets on ends measuring.
+                if (on) this.setMeasureMode(false);
                 this.#inset_link?.peer?.syncInsetMode?.(on);
                 this.#emit_inset_mode(on);
             },
@@ -4297,6 +4315,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     /** InsetPeer: the other element changed the mode. */
     public syncInsetMode(on: boolean) {
         if (!this.#inset_link || this.#inset_link.mode === on) return;
+        if (on) this.setMeasureMode(false);
         this.#inset_link.set_mode(on, true);
         this.#emit_inset_mode(on);
     }
@@ -4305,6 +4324,81 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.dispatchEvent(
             new CustomEvent("ecad-viewer:inset-mode", {
                 detail: { on },
+                bubbles: true,
+                composed: true,
+            }),
+        );
+    }
+
+    #measure: MeasureTool | null = null;
+    #measure_units: MeasureUnits = "mm";
+
+    /** The board viewer measure mode can run on: loaded and showing. */
+    #measure_viewer(): BoardViewer | null {
+        if (!this.has_pcb) return null;
+        if (this.has_sch && this.#active_tab !== TabKind.pcb) return null;
+        const viewer = this.#safe_board_viewer();
+        return viewer?.board ? viewer : null;
+    }
+
+    /**
+     * PCB measure mode: click two points to measure between them. Pads,
+     * vias and track ends snap; Shift places a free point.
+     * `Cmd/Ctrl+Shift+M` toggles it. Turning it on ends inset mode.
+     */
+    public get measureMode(): boolean {
+        return this.#measure?.active ?? false;
+    }
+
+    public setMeasureMode(on: boolean) {
+        if (on === this.measureMode) return;
+        if (on) {
+            const viewer = this.#measure_viewer();
+            if (!viewer) return;
+            if (this.insetMode) this.setInsetMode(false);
+            this.#measure ??= new MeasureTool((state) =>
+                this.#emit_measure(state),
+            );
+            this.#measure.units = this.#measure_units;
+            this.#measure.attach(viewer);
+        } else {
+            this.#measure?.attach(null);
+        }
+        this.dispatchEvent(
+            new CustomEvent("ecad-viewer:measure-mode", {
+                detail: { on: this.measureMode },
+                bubbles: true,
+                composed: true,
+            }),
+        );
+    }
+
+    /**
+     * Escape for measure mode: clear the points, else leave the mode.
+     * Returns whether anything happened, so a host can stop its own Escape.
+     */
+    public escapeMeasure(): boolean {
+        if (!this.measureMode) return false;
+        if (this.#measure?.clear()) return true;
+        this.setMeasureMode(false);
+        return true;
+    }
+
+    /** Units of the on-canvas label; the host keeps the preference. */
+    public setMeasureUnits(units: MeasureUnits) {
+        this.#measure_units = units === "mil" ? "mil" : "mm";
+        if (this.#measure) this.#measure.units = this.#measure_units;
+    }
+
+    /** The current measure state, for hosts that mount late. */
+    public get measureState(): MeasureState | null {
+        return this.#measure?.active ? this.#measure.state : null;
+    }
+
+    #emit_measure(state: MeasureState) {
+        this.dispatchEvent(
+            new CustomEvent("ecad-viewer:measure", {
+                detail: state,
                 bubbles: true,
                 composed: true,
             }),
