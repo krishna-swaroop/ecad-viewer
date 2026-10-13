@@ -3,6 +3,7 @@ import { SchematicParser } from "kicad-parser";
 
 import { NullRenderer } from "../src/graphics/null-renderer";
 import { DrawingSheet } from "../src/kicad";
+import { ProjectSettings } from "../src/kicad/project-settings";
 import { KicadSch, SchematicInstanceContext } from "../src/kicad/schematic";
 import { SchematicBomVisitor } from "../src/kicad/schematic_bom_visitor";
 import { normalize_schematic_selection } from "../src/ecad-viewer/host-adapter";
@@ -346,5 +347,90 @@ suite("case-insensitive schematic hierarchy resolution", () => {
         expect(project._determine_schematic_hierarchy()).to.equal(true);
         expect(project.pages).to.have.length(2);
         expect(project.pages[1]!.filename).to.equal(exact);
+    });
+});
+
+suite("KiCad 10 top-level sheet paths", () => {
+    // An imported project: the file's UUID is not the top-level sheet's, and
+    // the instance paths start at the latter.
+    const SOURCE = `
+(kicad_sch
+  (version 20260306)
+  (generator "eeschema")
+  (uuid "00000000-0000-0000-0000-0000000000f1")
+  (lib_symbols
+    (symbol "Device:R"
+      (exclude_from_sim no) (in_bom yes) (on_board yes)
+      (symbol "R_1_1"
+        (rectangle (start -1.27 -1.27) (end 1.27 1.27)
+          (stroke (width 0.254) (type default)) (fill (type none))))))
+  (symbol
+    (lib_id "Device:R") (at 100 100 0) (unit 1)
+    (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no)
+    (uuid "${SYMBOL_UUID}")
+    (property "Reference" "R1" (at 102 96 0)
+      (effects (font (size 1.27 1.27))))
+    (instances
+      (project "imported"
+        (path "/00000000-0000-0000-0000-0000000000a1"
+          (reference "R1") (unit 1)
+          (variant (name "Alt") (dnp yes))))))
+  (sheet_instances (path "/" (page "1"))))
+`;
+
+    function load(top_level_sheets: unknown, filename = "imported.kicad_sch") {
+        const root = new KicadSch(
+            filename,
+            new SchematicParser().parse(SOURCE),
+        );
+        const project = project_with_files([[filename, root]]);
+        project.settings = ProjectSettings.load({
+            schematic: { top_level_sheets },
+        });
+        root.project = project;
+        expect(project._determine_schematic_hierarchy()).to.equal(true);
+        return { project, symbol: root.symbols.get(SYMBOL_UUID)! };
+    }
+
+    test("roots the page at the project's top-level sheet", () => {
+        const { project, symbol } = load([
+            {
+                filename: "imported.kicad_sch",
+                name: "imported",
+                uuid: "00000000-0000-0000-0000-0000000000a1",
+            },
+        ]);
+        const context = project.pages[0]!.schematic_context!;
+
+        expect(project.pages[0]!.sheet_path).to.equal(
+            "/00000000-0000-0000-0000-0000000000a1",
+        );
+        expect(context.dnp(symbol)).to.equal(false);
+        project.set_active_variant("Alt");
+        expect(context.dnp(symbol)).to.equal(true);
+    });
+
+    test("takes a lone top-level sheet for a root loaded under another name", () => {
+        const { project } = load(
+            [
+                {
+                    filename: "imported.kicad_sch",
+                    uuid: "00000000-0000-0000-0000-0000000000a1",
+                },
+            ],
+            "root.kicad_sch",
+        );
+
+        expect(project.pages[0]!.sheet_path).to.equal(
+            "/00000000-0000-0000-0000-0000000000a1",
+        );
+    });
+
+    test("keeps the file's UUID without a top-level sheet list", () => {
+        const { project } = load(undefined);
+
+        expect(project.pages[0]!.sheet_path).to.equal(
+            "/00000000-0000-0000-0000-0000000000f1",
+        );
     });
 });

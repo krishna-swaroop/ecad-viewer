@@ -1120,6 +1120,30 @@ export class Project extends EventTarget implements IDisposable {
         return true;
     }
 
+    /**
+     * The UUID KiCad 10 roots this schematic's instance paths at.
+     *
+     * KiCad 10 lists the top-level sheets in the project file
+     * (`schematic.top_level_sheets`), and symbol and sheet instance paths
+     * start at that sheet's UUID rather than the schematic file's own. The
+     * two usually match, but not in an imported project, where every
+     * instance lookup then missed and variants never changed the drawing.
+     * A host may load the root under another name, so a lone top-level sheet
+     * is taken as the root's.
+     */
+    #top_level_sheet_uuid(root: KicadSch): string | undefined {
+        const listed = (
+            this.settings.schematic as { top_level_sheets?: unknown }
+        ).top_level_sheets;
+        if (!Array.isArray(listed)) return undefined;
+        const sheets = listed.filter(
+            (sheet): sheet is { uuid: string; filename?: unknown } =>
+                typeof sheet?.uuid === "string" && sheet.uuid !== "",
+        );
+        const named = sheets.find((sheet) => sheet.filename === root.filename);
+        return (named ?? (sheets.length === 1 ? sheets[0] : undefined))?.uuid;
+    }
+
     _determine_schematic_hierarchy() {
         // KiCad schematic navigation is an instance tree. A schematic file can
         // be instantiated more than once, so filenames alone cannot identify a
@@ -1144,7 +1168,7 @@ export class Project extends EventTarget implements IDisposable {
         const root_page = new ProjectPage(
             this,
             root.filename,
-            `/${root.uuid}`,
+            `/${this.#top_level_sheet_uuid(root) ?? root.uuid}`,
             "Root",
             root.sheet_instances?.get("/")?.page ?? "1",
         );
