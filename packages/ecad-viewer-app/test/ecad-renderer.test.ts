@@ -89,6 +89,22 @@ const DUAL_UNIT_LIB = `
 )
 `;
 
+const LABELLED_LIB = `
+(kicad_symbol_lib
+  (version 20231120)
+  (generator "kicad_symbol_editor")
+  (symbol "Labelled"
+    (property "Reference" "D" (at 0 5.08 0)
+      (effects (font (size 1.27 1.27))))
+    (property "Value" "Labelled" (at 0 -5.08 0)
+      (effects (font (size 1.27 1.27))))
+    (symbol "Labelled_0_1"
+      (rectangle (start -2.54 1.27) (end 2.54 -1.27))
+    )
+  )
+)
+`;
+
 /**
  * A canvas with no layout size gives the viewport a zero-sized camera, and
  * every bbox assertion below would read zero regardless of what was painted.
@@ -206,6 +222,42 @@ suite("rendering a library asset", () => {
             const placed = [...viewer.document.symbols.values()][0]!;
             expect(placed.unit_pins.length, `unit ${unit}`).to.equal(1);
         }
+    });
+
+    test("places fields where KiCad places them", async () => {
+        const container = sized_container();
+        const [labelled] = parseSymbolLibrary(LABELLED_LIB);
+        const result = await renderSymbol(labelled!, {
+            canvas: container.firstElementChild as HTMLCanvasElement,
+        });
+        cleanup.push(() => {
+            result.dispose();
+            container.remove();
+        });
+
+        const viewer = result.viewer as {
+            document: {
+                symbols: Map<
+                    string,
+                    {
+                        properties: Map<
+                            string,
+                            { at: { position: { x: number; y: number } } }
+                        >;
+                    }
+                >;
+            };
+        };
+        const placed = [...viewer.document.symbols.values()][0]!;
+        expect(placed.properties.get("Reference")!.at.position).to.include({
+            x: 0,
+            y: -5.08,
+        });
+        expect(placed.properties.get("Value")!.at.position).to.include({
+            x: 0,
+            y: 5.08,
+        });
+        expect(labelled!.properties[0]!.at.position.y).to.equal(5.08);
     });
 
     test("renders a footprint", async () => {
