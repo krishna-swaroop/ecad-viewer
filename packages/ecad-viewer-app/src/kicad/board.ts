@@ -1564,6 +1564,9 @@ export class FilledPolygon extends Poly {
      * triangulate on the main thread.
      */
     triangles?: Float32Array;
+
+    /** Bounds of `points`, set with `triangles`. */
+    triangles_bbox?: BBox;
 }
 
 export class GrPoly extends Poly {

@@ -1,11 +1,12 @@
 import * as Comlink from "comlink";
+import type { ParseResult } from "./parser.worker";
 
 type ParserAPI = {
     set_perf_log(enabled: boolean): Promise<void> | void;
-    parse_board(buffer: ArrayBuffer): Promise<any>;
+    parse_board(buffer: ArrayBuffer): Promise<ParseResult>;
     split_board(buffer: ArrayBuffer, k: number): Promise<ArrayBuffer[]>;
     triangulate_rings(rings: Float64Array[]): Promise<Float32Array[]>;
-    parse_schematic(buffer: ArrayBuffer): Promise<any>;
+    parse_schematic(buffer: ArrayBuffer): Promise<ParseResult>;
 };
 
 export class WorkerPool {

@@ -5,14 +5,27 @@ import {
     triangulation_ready,
 } from "../graphics/webgl/triangulate";
 
+/** A parsed file, and whether its text needs the CJK glyph set. */
+export type ParseResult = { pod: any; has_cjk: boolean };
+
+const CJK =
+    /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3040-\u309f\uac00-\ud7af]/;
+
+function has_cjk(content: string): boolean {
+    return CJK.test(content);
+}
+
 export class ParserWorker {
     set_perf_log(enabled: boolean) {
         (globalThis as any).__ECAD_PERF_LOG__ = !!enabled;
     }
 
-    parse_board(buf: ArrayBuffer) {
+    parse_board(buf: ArrayBuffer): ParseResult {
         const content = new TextDecoder().decode(buf);
-        return new BoardParser().parse(content);
+        return {
+            pod: new BoardParser().parse(content),
+            has_cjk: has_cjk(content),
+        };
     }
 
     /**
@@ -44,9 +57,12 @@ export class ParserWorker {
         );
     }
 
-    parse_schematic(buf: ArrayBuffer) {
+    parse_schematic(buf: ArrayBuffer): ParseResult {
         const content = new TextDecoder().decode(buf);
-        return new SchematicParser().parse(content);
+        return {
+            pod: new SchematicParser().parse(content),
+            has_cjk: has_cjk(content),
+        };
     }
 }
 

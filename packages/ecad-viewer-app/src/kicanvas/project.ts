@@ -5,6 +5,7 @@
 */
 
 import { Barrier } from "../base/async";
+import { BBox } from "../base/math";
 import { type IDisposable } from "../base/disposable";
 import { first, length } from "../base/iterator";
 import { Logger } from "../base/log";
@@ -182,9 +183,30 @@ export function getParserPerfSnapshot(): EcadParserPerfSnapshot {
     };
 }
 
-function _parse_key(filename: string, content: string): string {
-    // Two independent 32-bit FNV-1a streams make accidental collisions
-    // vanishingly unlikely without making cache lookup asynchronous.
+/**
+ * The parse cache key. A SHA-256 of the file's UTF-8 bytes where the browser
+ * offers crypto.subtle (secure contexts: https or localhost) -- it runs off
+ * the main thread, where a JS hash of a 56.8 MB board cost ~86 ms -- and two
+ * 32-bit FNV-1a streams over the text otherwise.
+ */
+async function _parse_key(
+    filename: string,
+    bytes: Uint8Array,
+    content: string,
+): Promise<string> {
+    const subtle = globalThis.crypto?.subtle;
+    if (subtle) {
+        try {
+            const digest = new Uint8Array(
+                await subtle.digest("SHA-256", bytes as BufferSource),
+            );
+            let hex = "";
+            for (const b of digest) hex += b.toString(16).padStart(2, "0");
+            return `${_PARSER_CACHE_VERSION}:${filename}:sha256:${hex}`;
+        } catch {
+            // Fall through to the JS hash.
+        }
+    }
     let first = 0x811c9dc5;
     let second = 0x9e3779b9;
     for (let index = 0; index < content.length; index++) {
@@ -196,12 +218,20 @@ function _parse_key(filename: string, content: string): string {
         first >>> 0
     ).toString(16)}:${(second >>> 0).toString(16)}`;
 }
-function dedup_parse<T>(
+
+/**
+ * Parse once per distinct file. The key is computed before the cache is
+ * consulted, and the entry is set synchronously after that, so concurrent
+ * loads of the same file still share one parse. `bytes` must not be
+ * transferred until this has computed the key -- `run` is only called after.
+ */
+async function dedup_parse<T>(
     filename: string,
+    bytes: Uint8Array,
     content: string,
     run: () => Promise<T>,
 ): Promise<T> {
-    const key = _parse_key(filename, content);
+    const key = await _parse_key(filename, bytes, content);
     const cached = _parse_cache.get(key);
     if (cached) {
         _parse_cache_hits += 1;
@@ -761,13 +791,25 @@ export class Project extends EventTarget implements IDisposable {
         if (!fills.length) return;
 
         const t0 = isEcadPerfLogEnabled() ? performance.now() : 0;
+        const bboxes: BBox[] = [];
         const rings = fills.map((fill) => {
             const points = fill.points;
             const coords = new Float64Array(points.length * 2);
+            let min_x = Infinity;
+            let min_y = Infinity;
+            let max_x = -Infinity;
+            let max_y = -Infinity;
             for (let i = 0; i < points.length; i++) {
-                coords[i * 2] = points[i]!.x;
-                coords[i * 2 + 1] = points[i]!.y;
+                const x = points[i]!.x;
+                const y = points[i]!.y;
+                coords[i * 2] = x;
+                coords[i * 2 + 1] = y;
+                if (x < min_x) min_x = x;
+                if (x > max_x) max_x = x;
+                if (y < min_y) min_y = y;
+                if (y > max_y) max_y = y;
             }
+            bboxes.push(BBox.from_corners(min_x, min_y, max_x, max_y));
             return coords;
         });
 
@@ -800,12 +842,16 @@ export class Project extends EventTarget implements IDisposable {
                     );
                     group.forEach((i, j) => {
                         fills[i]!.triangles = triangles[j];
+                        fills[i]!.triangles_bbox = bboxes[i];
                     });
                 }),
             );
         } catch (e) {
             log.warn(`zone triangulation in workers failed: ${e}`);
-            for (const fill of fills) fill.triangles = undefined;
+            for (const fill of fills) {
+                fill.triangles = undefined;
+                fill.triangles_bbox = undefined;
+            }
         }
 
         if (t0) {
@@ -817,15 +863,6 @@ export class Project extends EventTarget implements IDisposable {
 
     async _load_blob(blob: EcadBlob) {
         const file_content = blob.content;
-        // Check if file content contains CJK characters
-        if (
-            !this._found_cjk &&
-            file_content.match(
-                /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3040-\u309f\uac00-\ud7af]/,
-            ) !== null
-        ) {
-            this._found_cjk = true;
-        }
 
         if (this._files_by_name.has(blob.filename)) {
             return this._files_by_name.get(blob.filename);
@@ -837,41 +874,59 @@ export class Project extends EventTarget implements IDisposable {
         const perf = this.#perf_accum;
         const t_worker0 = perf ? performance.now() : 0;
 
-        const pod = await dedup_parse(blob.filename, blob.content, async () => {
-            const buffer = new TextEncoder().encode(blob.content).buffer;
-            const k = is_pcb
-                ? parallel_parse_chunks(buffer.byteLength, this._pool.size)
-                : 1;
-            if (k > 1) {
-                const chunks = await this._pool.run((worker) =>
-                    worker.split_board(Comlink.transfer(buffer, [buffer]), k),
-                );
-                const pods = await Promise.all(
-                    chunks.map((chunk) =>
-                        this._pool.run(async (worker) => {
-                            if (perf) await worker.set_perf_log(true);
-                            return worker.parse_board(
-                                Comlink.transfer(chunk, [chunk]),
-                            );
-                        }),
-                    ),
-                );
-                if (perf) {
-                    ecadPerfLog(
-                        `parallel parse  ${filename}  chunks=${chunks.length}`,
+        const bytes = new TextEncoder().encode(blob.content);
+        // The worker reports whether the text has CJK characters (it needs
+        // the full glyph set), so that scan stays off the main thread and is
+        // cached with the parse.
+        const parsed = await dedup_parse(
+            blob.filename,
+            bytes,
+            file_content,
+            async () => {
+                const buffer = bytes.buffer as ArrayBuffer;
+                const k = is_pcb
+                    ? parallel_parse_chunks(buffer.byteLength, this._pool.size)
+                    : 1;
+                if (k > 1) {
+                    const chunks = await this._pool.run((worker) =>
+                        worker.split_board(
+                            Comlink.transfer(buffer, [buffer]),
+                            k,
+                        ),
                     );
+                    const pods = await Promise.all(
+                        chunks.map((chunk) =>
+                            this._pool.run(async (worker) => {
+                                if (perf) await worker.set_perf_log(true);
+                                return worker.parse_board(
+                                    Comlink.transfer(chunk, [chunk]),
+                                );
+                            }),
+                        ),
+                    );
+                    if (perf) {
+                        ecadPerfLog(
+                            `parallel parse  ${filename}  chunks=${chunks.length}`,
+                        );
+                    }
+                    return {
+                        pod: merge_board_pods(pods.map((p) => p.pod)),
+                        has_cjk: pods.some((p) => p.has_cjk),
+                    };
                 }
-                return merge_board_pods(pods);
-            }
-            return this._pool.run(async (worker) => {
-                if (perf) await worker.set_perf_log(true);
-                return is_pcb
-                    ? worker.parse_board(Comlink.transfer(buffer, [buffer]))
-                    : worker.parse_schematic(
-                          Comlink.transfer(buffer, [buffer]),
-                      );
-            });
-        });
+                return this._pool.run(async (worker) => {
+                    if (perf) await worker.set_perf_log(true);
+                    return is_pcb
+                        ? worker.parse_board(Comlink.transfer(buffer, [buffer]))
+                        : worker.parse_schematic(
+                              Comlink.transfer(buffer, [buffer]),
+                          );
+                });
+            },
+        );
+
+        const pod = parsed.pod;
+        if (parsed.has_cjk) this._found_cjk = true;
 
         const t_worker1 = perf ? performance.now() : 0;
         const t_model0 = t_worker1;

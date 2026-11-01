@@ -1,6 +1,6 @@
 import { expect } from "@esm-bundle/chai";
 
-import { Matrix3, Vec2 } from "../src/base/math";
+import { BBox, Matrix3, Vec2 } from "../src/base/math";
 import { Color, Polygon } from "../src/graphics";
 import { NullRenderer } from "../src/graphics/null-renderer";
 import {
@@ -68,5 +68,44 @@ suite("zone fill triangles from workers", function () {
         const prepped = r.prep(polygon);
         expect(prepped.vertices).to.equal(undefined);
         expect(prepped.points[0]!.x).to.equal(5);
+    });
+
+    test("passes a triangles-only polygon through under identity", function () {
+        const r = new PrepRenderer();
+        r.start_bbox();
+        const tris = new Float32Array([0, 0, 10, 0, 10, 10]);
+        const bbox = BBox.from_corners(0, 0, 10, 10);
+        const prepped = r.prep(Polygon.from_triangles(tris, bbox, Color.white));
+
+        expect(prepped.vertices).to.equal(tris);
+        expect(prepped.points).to.have.length(0);
+        const tracked = r.end_bbox(null);
+        expect([tracked.x, tracked.y, tracked.w, tracked.h]).to.deep.equal([
+            0, 0, 10, 10,
+        ]);
+    });
+
+    test("transforms a triangles-only polygon's vertices and bounds", function () {
+        const r = new PrepRenderer();
+        r.state.matrix = Matrix3.translation(5, -2);
+        const tris = new Float32Array([0, 0, 10, 0, 10, 10]);
+        const prepped = r.prep(
+            Polygon.from_triangles(
+                tris,
+                BBox.from_corners(0, 0, 10, 10),
+                Color.white,
+            ),
+        );
+
+        expect(Array.from(prepped.vertices!)).to.deep.equal([
+            5, -2, 15, -2, 15, 8,
+        ]);
+        expect([
+            prepped.bbox!.x,
+            prepped.bbox!.y,
+            prepped.bbox!.w,
+        ]).to.deep.equal([5, -2, 10]);
+        // The caller's triangles are not modified in place.
+        expect(Array.from(tris)).to.deep.equal([0, 0, 10, 0, 10, 10]);
     });
 });
