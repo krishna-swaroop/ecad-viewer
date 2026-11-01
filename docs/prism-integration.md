@@ -45,6 +45,25 @@ groups:
 The comparison contract (what Prism sends, how diffs are drawn) is written up in
 [DOCUMENT_DIFF_REVIEW_ARCHITECTURE.md](DOCUMENT_DIFF_REVIEW_ARCHITECTURE.md).
 
+Prism sets `source-mode="host"` and supplies every source itself. A host-mode
+viewer ignores bridged ZIPs, and Prism's page carries no
+`ecad-viewer-mode` meta tag, so the bundle reads no query-string configuration
+and installs no postMessage bridge there (see
+[Standalone mode](#standalone-mode)).
+
+### Standalone mode
+
+The demo app (`static/index.html`) opts in with
+`<meta name="ecad-viewer-mode" content="standalone">`. Only then does the bundle:
+
+- read `?zip-url=`, `?app=`, `?default-page=`, `?design_urls=` and the rest.
+  `?cli-server-addr=` is kept only on the page's own origin and `?ai-url=`
+  only when it is https or relative;
+- install the iframe bridge. It accepts messages from `window.parent` alone, on
+  the page's origin or one listed in
+  `<meta name="ecad-viewer-bridge-origins" content="https://a https://b">`, and
+  replies only to the origin the parent spoke from.
+
 `ecad-renderer.js` is loaded separately where Prism shows a single library
 symbol or footprint (`frontend/src/lib/ecad-renderer.ts` and the workspace's
 library asset renderer).

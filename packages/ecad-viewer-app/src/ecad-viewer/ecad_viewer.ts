@@ -39,7 +39,6 @@ import type { SchematicInstanceContext } from "../kicad/schematic";
 
 import { is_3d_model, is_kicad, TabHeaderElement } from "./tab_header";
 import {
-    BoardContentReady,
     EcadCommentAreaEvent,
     EcadOverlayClickEvent,
     ImageExportRequestEvent,
@@ -428,7 +427,7 @@ import type { InputContainer } from "./input_container";
 import type { Online3dViewer } from "../3d-viewer/online_3d_viewer";
 import "../kc-ui/spinner";
 import { show_ecad_viewer } from "../eda_host/show_ecad_viewer";
-import "./ecad_viewer_global";
+import { safe_link_url } from "./ecad_viewer_global";
 import { ZipUtils } from "../utils/zip_utils";
 import { length } from "../base/iterator";
 import { PRISM_LOGO } from "../kc-ui/prism_logo";
@@ -3833,6 +3832,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         // Listen for ZIP blob received via postMessage
         this.addDisposable(
             listen(window, LoadZipEvent.type, async (event) => {
+                // A host that supplies sources owns what is shown.
+                if (this.getAttribute("source-mode") === "host") return;
                 await this.load_zip((event as LoadZipEvent).detail);
             }),
         );
@@ -5042,21 +5043,6 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             }
             this.#board_app.showPropertyPanel = this.showSelectionPanel;
             embed_to_tab(this.#board_app, TabKind.pcb);
-            if (!this.#project.has_3d) {
-                try {
-                    this.#project
-                        .get_file_text(
-                            this.#project.get_first_page(AssertType.PCB)!
-                                .filename,
-                        )
-                        .then((v) => {
-                            if (v)
-                                window.dispatchEvent(new BoardContentReady(v));
-                        });
-                } catch (e) {
-                    alert(e);
-                }
-            }
         }
 
         if (this.has_sch) {
@@ -5113,9 +5099,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         // Only a link when the host actually configured a destination.
         // `href=${undefined}` rendered a literal href="undefined", giving a
         // focusable control that navigated to a bogus relative path.
-        const corner_mark = window.ai_url
+        const ai_url = safe_link_url(window.ai_url);
+        const corner_mark = ai_url
             ? (html`<a
-                  href=${window.ai_url}
+                  href=${ai_url}
                   class="bottom-left-icon"
                   target="_blank"
                   rel="noopener noreferrer"
