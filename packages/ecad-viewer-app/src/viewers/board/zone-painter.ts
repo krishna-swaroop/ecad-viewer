@@ -46,7 +46,9 @@ export class ZonePainter extends BoardItemPainter {
             const color = emphasised ? this.color_for(p.layer) : layer.color;
 
             // FIXME paint the arc in the polygon
-            this.gfx.polygon(new Polygon(p.points, color));
+            const polygon = new Polygon(p.points, color);
+            if (p.triangles) polygon.vertices = p.triangles;
+            this.gfx.polygon(polygon);
         }
     }
 }

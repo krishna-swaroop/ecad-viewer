@@ -26,6 +26,7 @@ import {
     NetLabel,
     SchematicInstanceContext,
 } from "../kicad/schematic";
+import type { FilledPolygon } from "../kicad/board";
 import { SchematicBomVisitor } from "../kicad/schematic_bom_visitor";
 import { NewStrokeGlyph } from "../kicad/text/newstroke-glyphs";
 
@@ -143,6 +144,8 @@ function get_shared_pool(): WorkerPool {
 // (speedy_processing_module, 2 chunks) the worker saved only 50 ms, within
 // run-to-run noise, so smaller boards keep the single parse.
 const PARALLEL_PARSE_MIN_BYTES = 20 * 1024 * 1024;
+// Zone fills with at least this many points are triangulated in the pool.
+const ZONE_WORKER_MIN_POINTS = 5_000;
 const PARALLEL_PARSE_CHUNK_BYTES = 12 * 1024 * 1024;
 const PARALLEL_PARSE_MAX_CHUNKS = 4;
 
@@ -739,6 +742,79 @@ export class Project extends EventTarget implements IDisposable {
         });
     }
 
+    /**
+     * Triangulate a board's large zone fills on the worker pool, in parallel,
+     * and leave the triangles on each FilledPolygon for the zone painter.
+     * Done serially on the main thread during paint, EDA-04903's six planes
+     * cost 78-132 ms each even after strip triangulation. Fills below
+     * ZONE_WORKER_MIN_POINTS stay on the main thread: shipping them costs
+     * more than triangulating them. A failure here only means the painter
+     * triangulates as before.
+     */
+    async #triangulate_zone_fills(doc: KicadPCB) {
+        const fills: FilledPolygon[] = [];
+        for (const zone of doc.zones) {
+            for (const fill of zone.filled_polygons ?? []) {
+                if (fill.pts.length >= ZONE_WORKER_MIN_POINTS) fills.push(fill);
+            }
+        }
+        if (!fills.length) return;
+
+        const t0 = isEcadPerfLogEnabled() ? performance.now() : 0;
+        const rings = fills.map((fill) => {
+            const points = fill.points;
+            const coords = new Float64Array(points.length * 2);
+            for (let i = 0; i < points.length; i++) {
+                coords[i * 2] = points[i]!.x;
+                coords[i * 2 + 1] = points[i]!.y;
+            }
+            return coords;
+        });
+
+        // Largest first, each to the lightest group, one group per worker.
+        const groups: number[][] = Array.from(
+            { length: Math.min(this._pool.size, fills.length) },
+            () => [],
+        );
+        const load = groups.map(() => 0);
+        const order = rings
+            .map((_, i) => i)
+            .sort((a, b) => rings[b]!.length - rings[a]!.length);
+        for (const i of order) {
+            const g = load.indexOf(Math.min(...load));
+            groups[g]!.push(i);
+            load[g]! += rings[i]!.length;
+        }
+
+        try {
+            await Promise.all(
+                groups.map(async (group) => {
+                    const batch = group.map((i) => rings[i]!);
+                    const triangles = await this._pool.run((worker) =>
+                        worker.triangulate_rings(
+                            Comlink.transfer(
+                                batch,
+                                batch.map((r) => r.buffer as ArrayBuffer),
+                            ),
+                        ),
+                    );
+                    group.forEach((i, j) => {
+                        fills[i]!.triangles = triangles[j];
+                    });
+                }),
+            );
+        } catch (e) {
+            log.warn(`zone triangulation in workers failed: ${e}`);
+            for (const fill of fills) fill.triangles = undefined;
+        }
+
+        if (t0) {
+            ecadPerfLog(
+                `zone fills  ${doc.filename}  ${fills.length} triangulated in workers  ${(performance.now() - t0).toFixed(0)}ms`,
+            );
+        }
+    }
+
     async _load_blob(blob: EcadBlob) {
         const file_content = blob.content;
         // Check if file content contains CJK characters
@@ -808,6 +884,10 @@ export class Project extends EventTarget implements IDisposable {
         doc.project = this;
 
         const t_model1 = perf ? performance.now() : 0;
+
+        if (doc instanceof KicadPCB) {
+            await this.#triangulate_zone_fills(doc);
+        }
 
         if (perf) {
             const workerMs = t_worker1 - t_worker0;

@@ -114,8 +114,16 @@ export function triangulate(points: Vec2[]): Float32Array {
         ]);
     }
 
-    const coords = flatten(points);
-    if (n >= STRIP_MIN_POINTS) {
+    return triangulate_flat(flatten(points));
+}
+
+/**
+ * `triangulate` on a ring given as interleaved xy, for callers that already
+ * hold flat coordinates -- the parser worker, which triangulates large zone
+ * fills off the main thread.
+ */
+export function triangulate_flat(coords: Float64Array): Float32Array {
+    if (coords.length / 2 >= STRIP_MIN_POINTS) {
         return triangulate_strips(coords) ?? triangulate_coords(coords);
     }
     return triangulate_coords(coords);

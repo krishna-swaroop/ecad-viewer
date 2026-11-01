@@ -1,5 +1,9 @@
 import { expose, transfer } from "comlink";
 import { BoardParser, SchematicParser, split_board_bytes } from "kicad-parser";
+import {
+    triangulate_flat,
+    triangulation_ready,
+} from "../graphics/webgl/triangulate";
 
 export class ParserWorker {
     set_perf_log(enabled: boolean) {
@@ -24,6 +28,20 @@ export class ParserWorker {
                 : (c.slice().buffer as ArrayBuffer),
         );
         return transfer(chunks, chunks);
+    }
+
+    /**
+     * Triangulate rings (interleaved xy) exactly as the WebGL tesselator
+     * would, so large zone fills are done here, in parallel, instead of one
+     * after another on the main thread during paint. Results are transferred.
+     */
+    async triangulate_rings(rings: Float64Array[]) {
+        await triangulation_ready();
+        const out = rings.map((ring) => triangulate_flat(ring));
+        return transfer(
+            out,
+            out.map((v) => v.buffer as ArrayBuffer),
+        );
     }
 
     parse_schematic(buf: ArrayBuffer) {

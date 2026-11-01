@@ -390,6 +390,12 @@ export abstract class Renderer implements IDisposable {
         polygon.points = Array.from(
             this.state.matrix.transform_all(polygon.points),
         );
+        // Precomputed triangles are in the polygon's own coordinates; under
+        // any other transform they would land in the wrong place, so drop
+        // them and let the tesselator triangulate the transformed points.
+        if (polygon.vertices && !this.state.matrix.is_identity) {
+            polygon.vertices = undefined;
+        }
 
         if (this.#current_bbox) {
             this.add_bbox(BBox.from_points(polygon.points));

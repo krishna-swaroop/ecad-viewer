@@ -4,6 +4,7 @@ type ParserAPI = {
     set_perf_log(enabled: boolean): Promise<void> | void;
     parse_board(buffer: ArrayBuffer): Promise<any>;
     split_board(buffer: ArrayBuffer, k: number): Promise<ArrayBuffer[]>;
+    triangulate_rings(rings: Float64Array[]): Promise<Float32Array[]>;
     parse_schematic(buffer: ArrayBuffer): Promise<any>;
 };
 

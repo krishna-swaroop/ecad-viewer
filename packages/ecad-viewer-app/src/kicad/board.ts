@@ -1556,6 +1556,14 @@ export class Poly extends GraphicItem {
 
 export class FilledPolygon extends Poly {
     static override expr_start = "filled_polygon";
+
+    /**
+     * `points` already triangulated, as interleaved xy board coordinates,
+     * when the project loader did it in a worker (large fills only). The
+     * zone painter hands these to the renderer instead of having it
+     * triangulate on the main thread.
+     */
+    triangles?: Float32Array;
 }
 
 export class GrPoly extends Poly {

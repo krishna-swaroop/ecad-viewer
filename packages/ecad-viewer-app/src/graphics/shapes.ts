@@ -105,7 +105,7 @@ export class Polyline {
 
 /** Filled polygon */
 export class Polygon {
-    vertices: Float32Array;
+    vertices?: Float32Array;
 
     /**
      * Create a filled polygon
