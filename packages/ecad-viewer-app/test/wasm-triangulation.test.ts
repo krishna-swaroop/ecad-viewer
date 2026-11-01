@@ -3,6 +3,7 @@ import { expect } from "@esm-bundle/chai";
 import { Vec2 } from "../src/base/math";
 import {
     __impl,
+    strip_count,
     triangulate,
     triangulation_backend,
     triangulation_ready,
@@ -94,6 +95,36 @@ function circle(n: number, r = 100): Vec2[] {
     return points;
 }
 
+/**
+ * A zone fill the way KiCad stores it: a rectangle with `holes` square
+ * clearance holes in a row, each joined to the bottom edge by a zero-width
+ * slit that runs up to the hole, round it the other way, and back down over
+ * the same points. 7 points per hole, so 8,000 holes is a 56,004-point ring,
+ * above the strip threshold. Units are millimetres at board scale.
+ */
+function fractured_plane(holes: number): { points: Vec2[]; area: number } {
+    const pitch = 0.03;
+    const size = 0.015;
+    const width = holes * pitch + pitch;
+    const height = 100;
+    const points: Vec2[] = [new Vec2(0, 0)];
+    for (let i = 0; i < holes; i++) {
+        const x = pitch * (i + 1);
+        const y = 10 + (i % 50);
+        points.push(new Vec2(x, 0));
+        points.push(new Vec2(x, y));
+        points.push(new Vec2(x, y + size));
+        points.push(new Vec2(x + size, y + size));
+        points.push(new Vec2(x + size, y));
+        points.push(new Vec2(x, y));
+        points.push(new Vec2(x, 0));
+    }
+    points.push(new Vec2(width, 0));
+    points.push(new Vec2(width, height));
+    points.push(new Vec2(0, height));
+    return { points, area: width * height - holes * size * size };
+}
+
 suite("polygon triangulation", function () {
     suiteSetup(async function () {
         await triangulation_ready();
@@ -165,6 +196,65 @@ suite("polygon triangulation", function () {
 
         expect(js.length).to.equal(wa.length);
         expect(Array.from(js)).to.not.deep.equal(Array.from(wa));
+    });
+
+    test("cuts only large rings into strips", function () {
+        expect(strip_count(49_999)).to.equal(1);
+        expect(strip_count(50_000)).to.equal(4);
+        expect(strip_count(123_035)).to.equal(8);
+        expect(strip_count(1_000_000)).to.equal(16);
+    });
+
+    test("tiles a fractured plane through the strip path", function () {
+        const { points, area } = fractured_plane(8000);
+        expect(strip_count(points.length)).to.be.greaterThan(1);
+
+        const strips = __impl.strips(points);
+        expect(strips, "strip path declined").to.not.equal(null);
+        expect(Math.abs(soup_area(strips!) - area) / area).to.be.lessThan(
+            F32_AREA_TOLERANCE,
+        );
+
+        // And triangulate() takes it.
+        expect(Array.from(triangulate(points))).to.deep.equal(
+            Array.from(strips!),
+        );
+    });
+
+    test("strips and the whole ring cover the same area", function () {
+        const { points } = fractured_plane(8000);
+        const whole = soup_area(__impl.wasm(points)!);
+        const strips = soup_area(__impl.strips(points)!);
+        expect(Math.abs(whole - strips) / whole).to.be.lessThan(
+            F32_AREA_TOLERANCE,
+        );
+    });
+
+    test("tiles a large deeply concave ring through the strip path", function () {
+        // 13,000 teeth is 52,002 points: every strip cut crosses teeth.
+        const points = comb(13_000);
+        expect(strip_count(points.length)).to.be.greaterThan(1);
+        expect(deviation(points)).to.be.lessThan(F32_AREA_TOLERANCE);
+    });
+
+    test("drops repeated points without changing the shape", function () {
+        // Every point of a 64-gon doubled, plus a closing repeat of the first.
+        const ring = circle(64);
+        const doubled: Vec2[] = [];
+        for (const p of ring) doubled.push(p, new Vec2(p.x, p.y));
+        doubled.push(new Vec2(ring[0]!.x, ring[0]!.y));
+
+        const verts = triangulate(doubled);
+        // n-2 triangles of the undoubled ring: the repeats are gone.
+        expect(verts.length).to.equal((ring.length - 2) * 3 * 2);
+        expect(
+            Math.abs(soup_area(verts) - ring_area(ring)) / ring_area(ring),
+        ).to.be.lessThan(F32_AREA_TOLERANCE);
+    });
+
+    test("a ring of one repeated point yields no triangles", function () {
+        const p = new Vec2(1, 1);
+        expect(triangulate([p, p, p, p]).length).to.equal(0);
     });
 
     test("survives a repeat call after growing the arena", function () {

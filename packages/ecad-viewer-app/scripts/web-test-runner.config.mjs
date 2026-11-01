@@ -16,6 +16,19 @@ export default {
     debugger: false,
     browsers: [chromeLauncher({ concurrency: 1 })],
     plugins: [
+        // Test the parser source, as the bundle does (scripts/build.js aliases
+        // `kicad-parser` to its src). Left to node resolution, the bare import
+        // lands on packages/kicad-parser/dist -- a gitignored build that is
+        // stale unless rebuilt by hand, and in a git worktree it is the main
+        // checkout's copy, not this one's.
+        {
+            name: "kicad-parser-src",
+            resolveImport({ source }) {
+                if (source === "kicad-parser") {
+                    return "/kicad-parser/src/index.ts";
+                }
+            },
+        },
         esbuildPlugin({
             ts: true,
             target: "es2022",
