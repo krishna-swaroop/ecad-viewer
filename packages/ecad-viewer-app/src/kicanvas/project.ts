@@ -5,7 +5,6 @@
 */
 
 import { Barrier } from "../base/async";
-import { BBox } from "../base/math";
 import { type IDisposable } from "../base/disposable";
 import { first, length } from "../base/iterator";
 import { Logger } from "../base/log";
@@ -770,33 +769,17 @@ export class Project extends EventTarget implements IDisposable {
         const fills: FilledPolygon[] = [];
         for (const zone of doc.zones) {
             for (const fill of zone.filled_polygons ?? []) {
-                if (fill.pts.length >= ZONE_WORKER_MIN_POINTS) fills.push(fill);
+                if (fill.point_count >= ZONE_WORKER_MIN_POINTS) {
+                    fills.push(fill);
+                }
             }
         }
         if (!fills.length) return;
 
         const t0 = isEcadPerfLogEnabled() ? performance.now() : 0;
-        const bboxes: BBox[] = [];
-        const rings = fills.map((fill) => {
-            const points = fill.points;
-            const coords = new Float64Array(points.length * 2);
-            let min_x = Infinity;
-            let min_y = Infinity;
-            let max_x = -Infinity;
-            let max_y = -Infinity;
-            for (let i = 0; i < points.length; i++) {
-                const x = points[i]!.x;
-                const y = points[i]!.y;
-                coords[i * 2] = x;
-                coords[i * 2 + 1] = y;
-                if (x < min_x) min_x = x;
-                if (x > max_x) max_x = x;
-                if (y < min_y) min_y = y;
-                if (y > max_y) max_y = y;
-            }
-            bboxes.push(BBox.from_corners(min_x, min_y, max_x, max_y));
-            return coords;
-        });
+        // A copy: the rings are transferred to the workers, which would
+        // detach the fill's own packed coordinates.
+        const rings = fills.map((fill) => fill.coords.slice());
 
         // Largest first, each to the lightest group, one group per worker.
         const groups: number[][] = Array.from(
@@ -827,7 +810,7 @@ export class Project extends EventTarget implements IDisposable {
                     );
                     group.forEach((i, j) => {
                         fills[i]!.triangles = triangles[j];
-                        fills[i]!.triangles_bbox = bboxes[i];
+                        fills[i]!.triangles_bbox = fills[i]!.bbox;
                     });
                 }),
             );
