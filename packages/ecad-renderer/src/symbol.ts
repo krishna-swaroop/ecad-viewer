@@ -40,6 +40,17 @@ function collect_unit_pins(
     return result;
 }
 
+function placed_field(
+    field: schematicProto.I_Property,
+): schematicProto.I_Property {
+    const position = field.at.position;
+    if (!position) return field;
+    return {
+        ...field,
+        at: { ...field.at, position: { x: position.x, y: -position.y } },
+    };
+}
+
 /**
  * Render one library symbol through the existing schematic painter.
  *
@@ -86,7 +97,7 @@ export function renderSymbol(
                     on_board: symbol.on_board ?? false,
                     dnp: false,
                     fields_autoplaced: false,
-                    properties: symbol.properties ?? [],
+                    properties: (symbol.properties ?? []).map(placed_field),
                     pins,
                     exclude_from_sim: symbol.exclude_from_sim ?? false,
                     instances: { projects: [] },

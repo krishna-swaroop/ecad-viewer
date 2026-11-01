@@ -39,7 +39,6 @@ import type { SchematicInstanceContext } from "../kicad/schematic";
 
 import { is_3d_model, is_kicad, TabHeaderElement } from "./tab_header";
 import {
-    BoardContentReady,
     EcadCommentAreaEvent,
     EcadOverlayClickEvent,
     ImageExportRequestEvent,
@@ -428,12 +427,30 @@ import type { InputContainer } from "./input_container";
 import type { Online3dViewer } from "../3d-viewer/online_3d_viewer";
 import "../kc-ui/spinner";
 import { show_ecad_viewer } from "../eda_host/show_ecad_viewer";
-import "./ecad_viewer_global";
+import { safe_link_url } from "./ecad_viewer_global";
 import { ZipUtils } from "../utils/zip_utils";
 import { length } from "../base/iterator";
 import { PRISM_LOGO } from "../kc-ui/prism_logo";
 import type { BoardViewer } from "../viewers/board/viewer";
+import { MeasureTool, type MeasureState } from "../viewers/board/measure-tool";
+import type { MeasureUnits } from "../viewers/board/measure";
 import { SchematicViewer } from "../viewers/schematic/viewer";
+import {
+    board_view_stats,
+    set_board_view_gpu_sync,
+} from "../viewers/board/board-view";
+import { schematic_view_stats } from "../viewers/schematic/schematic-view";
+import { cull_settings, cull_stats } from "../graphics/webgl/cull";
+import themes from "../kicanvas/themes";
+import {
+    BoardInsetProvider,
+    InsetLink,
+    SchematicInsetProvider,
+    type InsetKind,
+    type InsetPeer,
+    type InsetProvider,
+    type InsetScene3D,
+} from "./insets";
 
 export class ECadViewer extends KCUIElement implements InputContainer {
     static override styles = [
@@ -553,6 +570,14 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             listen(window, "keydown", (event) => {
                 this.#handle_host_keydown(event as KeyboardEvent);
             }),
+        );
+        this.addDisposable(
+            listen(window, "keyup", (event) => {
+                this.#inset_link?.key_up(event as KeyboardEvent);
+            }),
+        );
+        this.addDisposable(
+            listen(window, "blur", () => this.#inset_link?.key_up(null)),
         );
     }
 
@@ -676,6 +701,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.#requested_variant = resolution.requested;
         this.#reflect_variant(resolution.requested);
         this.#apply_variant_request();
+        this.#schematic_inset_provider?.set_variant(this.getVariant());
         return resolution.known;
     }
 
@@ -725,6 +751,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     #apply_viewport_insets(): void {
+        this.#inset_link?.sync();
+        // A reload may have replaced the board viewer under measure mode.
+        if (this.#measure?.active) this.#measure.attach(this.#measure_viewer());
         this.#safe_board_viewer()?.set_viewport_insets(this.#viewport_insets);
         this.#safe_schematic_viewer()?.set_viewport_insets(
             this.#viewport_insets,
@@ -2464,6 +2493,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     #activate_tab_content(tabKind: TabKind): void {
         const previous = this.#active_tab;
         this.#active_tab = tabKind;
+        if (tabKind !== TabKind.pcb && this.has_sch) this.setMeasureMode(false);
         if (previous === TabKind.pcb && this.#board_app) {
             this.#board_app.tabMenuHidden = true;
         } else if (previous === TabKind.sch && this.#schematic_app) {
@@ -2484,6 +2514,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.#apply_viewer_activity();
         if (active) this.#restart_diff_animation();
         else this.#cancel_diff_animation();
+        // A hidden tab drops its unpinned previews; a shown one lays its
+        // insets and leaders out again (the camera may have moved meanwhile).
+        if (active) this.#inset_link?.shown();
+        else this.#inset_link?.hidden();
     }
 
     /**
@@ -2917,6 +2951,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         const orig = viewer.on_viewport_change.bind(viewer);
         viewer.on_viewport_change = () => {
             orig();
+            this.#inset_link?.sources_moved();
             if (viewer.active) this.#emit_camera_change();
         };
         viewer.__camerachange_hooked = true;
@@ -3201,8 +3236,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     #handle_host_keydown(event: KeyboardEvent) {
-        if (!this.#host_active || !this.has_sch || event.defaultPrevented)
-            return;
+        if (!this.#host_active || event.defaultPrevented) return;
         if (document.querySelector('[role="dialog"][data-state="open"]'))
             return;
         const target = event.composedPath()[0];
@@ -3212,6 +3246,23 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             (target instanceof HTMLElement && target.isContentEditable)
         )
             return;
+
+        if (
+            (event.key === "m" || event.key === "M") &&
+            (event.metaKey || event.ctrlKey) &&
+            event.shiftKey &&
+            !event.altKey
+        ) {
+            if (!event.repeat && this.#measure_viewer())
+                this.setMeasureMode(!this.measureMode);
+            if (this.#measure_viewer()) event.preventDefault();
+            return;
+        }
+        if (this.#inset_link?.key_down(event)) {
+            event.preventDefault();
+            return;
+        }
+        if (!this.has_sch) return;
 
         const direction =
             event.key === "[" || event.code === "BracketLeft"
@@ -3781,6 +3832,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         // Listen for ZIP blob received via postMessage
         this.addDisposable(
             listen(window, LoadZipEvent.type, async (event) => {
+                // A host that supplies sources owns what is shown.
+                if (this.getAttribute("source-mode") === "host") return;
                 await this.load_zip((event as LoadZipEvent).detail);
             }),
         );
@@ -4193,6 +4246,240 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 );
             }
         }
+    }
+
+    #inset_link: InsetLink | null = null;
+
+    /**
+     * Link this element to the one holding the other document (schematic ↔
+     * PCB). Hovering a pin or pad here then opens an inset of the peer's
+     * document. Pass null to unlink and close this element's insets.
+     */
+    public setInsetPeer(peer: InsetPeer | null) {
+        if (!peer) {
+            this.#inset_link?.dispose();
+            this.#inset_link = null;
+            return;
+        }
+        this.#ensure_inset_link().peer = peer;
+    }
+
+    /**
+     * Turn insets on for this element before a peer exists, so `I` and
+     * setInsetMode work while the other document is not loaded yet. Linking
+     * a peer later keeps the mode.
+     */
+    public enableInsets() {
+        this.#ensure_inset_link();
+    }
+
+    #ensure_inset_link(): InsetLink {
+        this.#inset_link ??= new InsetLink({
+            insetProvider: (kind) => this.insetProvider(kind),
+            overlay_parent: () => this.shadowRoot,
+            source_viewers: () => ({
+                sch: this.has_sch ? this.#safe_schematic_viewer() : null,
+                pcb: this.has_pcb ? this.#safe_board_viewer() : null,
+            }),
+            mode_changed: (on) => {
+                // One click mode at a time: insets on ends measuring.
+                if (on) this.setMeasureMode(false);
+                this.#inset_link?.peer?.syncInsetMode?.(on);
+                this.#emit_inset_mode(on);
+            },
+        });
+        this.#inset_link.sync();
+        return this.#inset_link;
+    }
+
+    /**
+     * Inset mode: hovering a pin or pad opens a preview of the other
+     * document and clicking pins it. `I` toggles it; holding Alt peeks while
+     * it is off. A linked peer follows.
+     */
+    public get insetMode(): boolean {
+        return this.#inset_link?.mode ?? false;
+    }
+
+    public setInsetMode(on: boolean) {
+        this.#ensure_inset_link().set_mode(on);
+    }
+
+    /**
+     * Escape for insets: close the preview, else every inset. Returns
+     * whether anything closed, so a host can stop its own Escape there.
+     */
+    public escapeInsets(): boolean {
+        return this.#inset_link?.session.escape() ?? false;
+    }
+
+    /** InsetPeer: the other element changed the mode. */
+    public syncInsetMode(on: boolean) {
+        if (!this.#inset_link || this.#inset_link.mode === on) return;
+        if (on) this.setMeasureMode(false);
+        this.#inset_link.set_mode(on, true);
+        this.#emit_inset_mode(on);
+    }
+
+    #emit_inset_mode(on: boolean) {
+        this.dispatchEvent(
+            new CustomEvent("ecad-viewer:inset-mode", {
+                detail: { on },
+                bubbles: true,
+                composed: true,
+            }),
+        );
+    }
+
+    #measure: MeasureTool | null = null;
+    #measure_units: MeasureUnits = "mm";
+
+    /** The board viewer measure mode can run on: loaded and showing. */
+    #measure_viewer(): BoardViewer | null {
+        if (!this.has_pcb) return null;
+        if (this.has_sch && this.#active_tab !== TabKind.pcb) return null;
+        const viewer = this.#safe_board_viewer();
+        return viewer?.board ? viewer : null;
+    }
+
+    /**
+     * PCB measure mode: click two points to measure between them. Pads,
+     * vias and track ends snap; Shift places a free point.
+     * `Cmd/Ctrl+Shift+M` toggles it. Turning it on ends inset mode.
+     */
+    public get measureMode(): boolean {
+        return this.#measure?.active ?? false;
+    }
+
+    public setMeasureMode(on: boolean) {
+        if (on === this.measureMode) return;
+        if (on) {
+            const viewer = this.#measure_viewer();
+            if (!viewer) return;
+            if (this.insetMode) this.setInsetMode(false);
+            this.#measure ??= new MeasureTool((state) =>
+                this.#emit_measure(state),
+            );
+            this.#measure.units = this.#measure_units;
+            this.#measure.attach(viewer);
+        } else {
+            this.#measure?.attach(null);
+        }
+        this.dispatchEvent(
+            new CustomEvent("ecad-viewer:measure-mode", {
+                detail: { on: this.measureMode },
+                bubbles: true,
+                composed: true,
+            }),
+        );
+    }
+
+    /**
+     * Escape for measure mode: clear the points, else leave the mode.
+     * Returns whether anything happened, so a host can stop its own Escape.
+     */
+    public escapeMeasure(): boolean {
+        if (!this.measureMode) return false;
+        if (this.#measure?.clear()) return true;
+        this.setMeasureMode(false);
+        return true;
+    }
+
+    /** Units of the on-canvas label; the host keeps the preference. */
+    public setMeasureUnits(units: MeasureUnits) {
+        this.#measure_units = units === "mil" ? "mil" : "mm";
+        if (this.#measure) this.#measure.units = this.#measure_units;
+    }
+
+    /** The current measure state, for hosts that mount late. */
+    public get measureState(): MeasureState | null {
+        return this.#measure?.active ? this.#measure.state : null;
+    }
+
+    #emit_measure(state: MeasureState) {
+        this.dispatchEvent(
+            new CustomEvent("ecad-viewer:measure", {
+                detail: state,
+                bubbles: true,
+                composed: true,
+            }),
+        );
+    }
+
+    /** Close this element's insets. Returns whether any were open. */
+    public closeInsets(): boolean {
+        return this.#inset_link?.session.close_all() ?? false;
+    }
+
+    /** Open insets on this element; for hosts and tests. */
+    public get insetCount(): number {
+        return this.#inset_link?.session.count ?? 0;
+    }
+
+    #board_inset_provider: BoardInsetProvider | null = null;
+    #inset_scene_3d: InsetScene3D | null = null;
+
+    /**
+     * Give this element's PCB insets a 3D view (IN-61): T on a PCB inset
+     * then draws `scene`, the host's 3D board. Null removes it.
+     */
+    public setInset3D(scene: InsetScene3D | null) {
+        this.#inset_scene_3d = scene;
+        if (this.#board_inset_provider)
+            this.#board_inset_provider.scene3d = scene;
+    }
+    #schematic_inset_provider: SchematicInsetProvider | null = null;
+
+    /**
+     * Serves insets of this element's documents to the other element's
+     * insets: "pcb" is the board around a footprint, "sch" the schematic
+     * around a symbol. Null when this element holds no such document.
+     */
+    public insetProvider(kind: InsetKind): InsetProvider | null {
+        if (kind === "pcb") {
+            if (!this.has_pcb) return null;
+            if (!this.#board_inset_provider) {
+                this.#board_inset_provider = new BoardInsetProvider(() =>
+                    this.#safe_board_viewer(),
+                );
+                this.#board_inset_provider.scene3d = this.#inset_scene_3d;
+            }
+            return this.#board_inset_provider;
+        }
+        if (!this.has_sch) return null;
+        this.#schematic_inset_provider ??= new SchematicInsetProvider({
+            pages: () =>
+                this.#project.pages.flatMap((page) => {
+                    const document = page.document;
+                    return document instanceof KicadSch
+                        ? [
+                              {
+                                  key: page.project_path,
+                                  name: page.name ?? document.filename,
+                                  document,
+                                  context: page.schematic_context,
+                              },
+                          ]
+                        : [];
+                }),
+            theme: () =>
+                this.#safe_schematic_viewer()?.theme ??
+                themes.default.schematic,
+            container: () => this.shadowRoot ?? document.body,
+            variant: () => this.getVariant(),
+        });
+        return this.#schematic_inset_provider;
+    }
+
+    /** Inset render timings and the GPU-sync switch, for benchmarks. */
+    static get insetDiagnostics() {
+        return {
+            board: board_view_stats,
+            schematic: schematic_view_stats,
+            setGpuSync: set_board_view_gpu_sync,
+            cull: cull_settings,
+            cullStats: cull_stats,
+        };
     }
 
     #safe_board_viewer(): BoardViewer | null {
@@ -4756,21 +5043,6 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             }
             this.#board_app.showPropertyPanel = this.showSelectionPanel;
             embed_to_tab(this.#board_app, TabKind.pcb);
-            if (!this.#project.has_3d) {
-                try {
-                    this.#project
-                        .get_file_text(
-                            this.#project.get_first_page(AssertType.PCB)!
-                                .filename,
-                        )
-                        .then((v) => {
-                            if (v)
-                                window.dispatchEvent(new BoardContentReady(v));
-                        });
-                } catch (e) {
-                    alert(e);
-                }
-            }
         }
 
         if (this.has_sch) {
@@ -4827,9 +5099,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         // Only a link when the host actually configured a destination.
         // `href=${undefined}` rendered a literal href="undefined", giving a
         // focusable control that navigated to a bogus relative path.
-        const corner_mark = window.ai_url
+        const ai_url = safe_link_url(window.ai_url);
+        const corner_mark = ai_url
             ? (html`<a
-                  href=${window.ai_url}
+                  href=${ai_url}
                   class="bottom-left-icon"
                   target="_blank"
                   rel="noopener noreferrer"

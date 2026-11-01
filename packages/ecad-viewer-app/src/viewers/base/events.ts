@@ -91,6 +91,10 @@ export type KiCanvasProbeDetail =
           number: string;
           index: string;
           crossIndex: string;
+          /** Owning symbol or footprint designator, for cross-document insets. */
+          reference?: string;
+          /** World-space centre of the pin or pad. */
+          anchor?: { x: number; y: number };
       }
     | {
           phase: "clear";
@@ -304,14 +308,6 @@ export class PCBViewerLoaded extends CustomEvent<void> {
 
     constructor() {
         super(PCBViewerLoaded.type);
-    }
-}
-
-export class BoardContentReady extends CustomEvent<string> {
-    static readonly type = "pcb:board_content:ready";
-
-    constructor(content: string) {
-        super(BoardContentReady.type, { detail: content });
     }
 }
 
@@ -534,7 +530,6 @@ declare global {
         [KiCanvasFitterMenuEvent.type]: KiCanvasFitterMenuEvent;
         [OpenBarrierEvent.type]: OpenBarrierEvent;
         [SelectDesignatorEvent.type]: SelectDesignatorEvent;
-        [BoardContentReady.type]: BoardContentReady;
         [ComponentERCResultEvent.type]: ComponentERCResultEvent;
         [ProjectERCResultEvent.type]: ProjectERCResultEvent;
     }
@@ -553,7 +548,6 @@ declare global {
         [KiCanvasFitterMenuEvent.type]: KiCanvasFitterMenuEvent;
         [OpenBarrierEvent.type]: OpenBarrierEvent;
         [SelectDesignatorEvent.type]: SelectDesignatorEvent;
-        [BoardContentReady.type]: BoardContentReady;
         [ComponentERCResultEvent.type]: ComponentERCResultEvent;
         [ProjectERCResultEvent.type]: ProjectERCResultEvent;
         [EcadOverlayClickEvent.type]: EcadOverlayClickEvent;

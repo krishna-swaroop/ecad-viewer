@@ -1,213 +1,109 @@
-# ECAD-Viewer
+# ecad-viewer (KiCAD-Prism fork)
 
 <p>
-    English |<a href="README_zh.md">中文<a/>
+    English | <a href="README_zh.md">中文</a>
 </p>
 
-Interactive online electronic designs viewer based on [kicanvas](https://github.com/theacodes/kicanvas) .
+A browser viewer for KiCad schematics, boards and library assets. This fork is
+maintained as the KiCad file viewer for
+[KiCAD-Prism](https://github.com/krishna-swaroop/KiCAD-Prism), a self-hosted
+design-review platform. It started from
+[Huaqiu-Electronics/ecad-viewer](https://github.com/Huaqiu-Electronics/ecad-viewer),
+which is itself built on [KiCanvas](https://github.com/theacodes/kicanvas), and
+has diverged a long way from both.
 
-Live demo: https://www.eda.cn/ecadViewer/
+What the fork adds on top of upstream, in short:
 
-Standalone symbol and footprint rendering is documented in the
-[`ecad-renderer` package](packages/ecad-renderer/README.md). Its bundle requires
-selection and navigation gestures to be configured explicitly; the former
-experimental `interactive` option is not supported.
+- Revision comparison: a reference and a comparison revision rendered as one
+  scene from a KiCad-shaped `DOCUMENT_DIFF`, with added, removed and modified
+  items coloured through the normal painters.
+- Host API for an embedding app: comment markers and area comments, cross-probe
+  between schematic and board, page navigation, layer visibility, net
+  highlighting and per-net routing statistics.
+- Insets: pinned magnified views of a pin or pad, chainable, with a 3D mode when
+  the host supplies a 3D board.
+- PCB measure mode with snapping to pads, vias and tracks.
+- KiCad 10 design variants, text variables, DNP on sheets, embedded hyperlinks.
+- `ecad-renderer`: a separate bundle that draws a single library symbol or
+  footprint into a canvas.
+- Load and interaction work: board zone fills triangulated in WebAssembly,
+  view culling for large layers, and the removal of a duplicate schematic paint.
+  On the largest public board benchmarked (CERN EDA-04903, 56.81 MB) the fork
+  opens the PCB in 6.67 s against 33.1 s for upstream and 138.6 s for KiCanvas.
 
-## Why another repository instead of contributing back to the original project?
+See [docs/performance-and-features.md](docs/performance-and-features.md) for
+the measurements and where each one comes from.
 
-We are open to introducing ready-made frameworks, unlike the original, which insists on being a dependency-free library.
+## Documentation
 
-While remaining a reusable component, ECAD-Viewer offers the following features out of the box, combining the most advanced and leading-edge technologies, some of which were not intended in the original:
-
-- **General Features:**
-    - In-depth secondary development based on KiCad to support the import of Altium designs and the generation of 3D models from `kicad_pcb`.
-    - Support for loading projects from ZIP files.
-    - Maintain support for the latest KiCad file formats.
-
-- **PCB:**
-    - Option to select and display properties of VIAs and ZONES.
-    - Other areas become grayed out when selecting a net/component package.
-    - Selection priority: Track -> Pad/Drill -> Footprint -> Zone. A pop-up menu is provided for selection when overlaps occur.
-    - Interface to set the transparency of through-hole type pads.
-    - Fab Layer displays component package text.
-    - Single-click to select components, double-click to select nets.
-    - Wires on the selected net are rendered according to the preset color of the copper layer they are on.
-    - Display properties of wire width and color.
-
-- **SCH:**
-    - Inspection of symbol and sub-sheet properties.
-    - Navigation between labels with the same name through clicking.
-    - Addition of hierarchical_labels.
-    - Fixes for SCH drawings converted from AD.
-    - Schematic preview with the ability to switch schematics via preview images.
-    - Jumping to a specific schematic, focusing, and selecting a specific symbol.
-    - Display of properties for wires, buses, pins, symbols, and labels upon clicking.
-    - Highlighting of wires, buses, pins, symbols, and labels on hover.
-
-- **3D:**
-    - Integration with kicad-cli-docker for generating 3D models from PCB, with priority given to using package 3D models in the project's root directory.
-    - Use of gltfpack for model compression to save bandwidth and improve rendering efficiency.
-    - Integration of Three.js for displaying 3D models.
-
-- **BOM:**
-    - Generation of a Bill of Materials (BOM) from the schematic.
-    - Extraction of BOM from the schematic.
-    - Priority given to extracting BOM from the schematic; if no schematic is available, extract from the PCB.
-
-- **Bug Fixes During Development and Feedback:**
-    - Incorrect pin positions in SCH sheets.
-    - Parsing of ALTIUM_VALUE attributes in SCH drawings converted from AD.
-    - Disorder of package information in PCB designs imported from AD.
-    - Even with minimum pad transparency, the color only lightens and does not completely disappear.
-    - Introduction of a toggle for highlighting wires on hover.
-    - Disarray in the positioning and angle of component package text in PCB.
-    - Non-display of pads when the layer they are on is hidden.
-
-![ECAD Viewer](docs/ecad-viewer-preview.gif)
+| Page                                                                                                                     | Contents                                                                 |
+| ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| [docs/packages.md](docs/packages.md)                                                                                     | The packages in this repo and what each one does                         |
+| [docs/prism-integration.md](docs/prism-integration.md)                                                                   | How KiCAD-Prism builds and embeds the viewer                             |
+| [docs/development.md](docs/development.md)                                                                               | Building, testing, branch model and releases                             |
+| [docs/performance-and-features.md](docs/performance-and-features.md)                                                     | Performance and features compared with KiCanvas and upstream ecad-viewer |
+| [docs/DOCUMENT_DIFF_REVIEW_ARCHITECTURE.md](docs/DOCUMENT_DIFF_REVIEW_ARCHITECTURE.md)                                   | The document comparison contract                                         |
+| [packages/ecad-renderer/README.md](packages/ecad-renderer/README.md)                                                     | Standalone symbol and footprint rendering                                |
+| [packages/ecad-viewer-app/third_party/earcut-wasm/README.md](packages/ecad-viewer-app/third_party/earcut-wasm/README.md) | The WebAssembly polygon triangulator                                     |
 
 ## Quick start
 
-We have prepared a full version (all kicad official 3D models are included, so the image size is much larger) and a streamlined version of the docker image for you to try. You can download the docker image from the following command.
+Node 18 or later.
 
 ```bash
-# Uncomment the below line to pull the full version
-# docker pull ghcr.io/huaqiu-electronics/ecad-viewer:full
-# The lite version
-docker pull ghcr.io/huaqiu-electronics/ecad-viewer:lite
-
-```
-
-Then start the container:
-
-```bash
-
-# Uncomment the below line to run the full version in case you pulled the full version
-# docker run --rm -p 7676:7676 -p 8989:8989 -p 8012:8012 ghcr.io/huaqiu-electronics/ecad-viewer:full
-# Run the lite version
-docker run --rm -p 7676:7676 -p 8989:8989 -p 8012:8012 ghcr.io/huaqiu-electronics/ecad-viewer:lite
-
-```
-
-The demo viewer will be available at http://localhost:8012?cli-server-addr=http://localhost:8989/?convert_ad_to_kicad&zip-url=./video.zip
-![Quick start](docs/quick-start.gif)
-
-## Local development
-
-Download and install nodejs (version >= 18) from https://nodejs.org/en/download/
-
-```bash
-git https://github.com/Huaqiu-Electronics/ecad-viewer.git
+git clone https://github.com/krishna-swaroop/ecad-viewer.git
 cd ecad-viewer
 npm install
-npm run serve
+npm run serve -w packages/ecad-viewer-app
 ```
 
-Try to modify the code and open http://localhost:8080 to inspect the change
+The dev server listens on http://127.0.0.1:8012 (set `ECAD_VIEWER_PORT` to
+change it) and serves the demo pages in `packages/ecad-viewer-app/static`.
+`http://127.0.0.1:8012/?zip-url=./video.zip` opens the bundled demo project.
+Query-string configuration and the postMessage bridge only run on a page that
+opts in with `<meta name="ecad-viewer-mode" content="standalone">`; see
+[docs/prism-integration.md](docs/prism-integration.md#standalone-mode).
 
 ## Usage
 
-### Standalone
+The bundle registers an `<ecad-viewer>` element. Point it at KiCad files:
 
 ```html
-<ecad-viewer cli_server_addr="http://localhost:8989/convert_ad_to_kicad">
-    <ecad-source src="video/video.kicad_pcb"></ecad-source>
-    <ecad-source src="video/video.kicad_sch"></ecad-source>
-    <ecad-3d-source src="video/video.glb"></ecad-3d-source>
+<ecad-viewer>
+    <ecad-source src="design/design.kicad_pro"></ecad-source>
+    <ecad-source src="design/design.kicad_sch"></ecad-source>
+    <ecad-source src="design/design.kicad_pcb"></ecad-source>
 </ecad-viewer>
 <script type="module" src="./ecad_viewer/ecad-viewer.js"></script>
-<script>
-    window.addEventListener("pcb:board_content:ready", function (event) {
-        // URL of the API endpoint
-        const convert_pcb_to_glb_url =
-            "http://localhost:8989/convert_pcb_to_glb";
-        fetch(convert_pcb_to_glb_url, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-                pcb_content: event.detail,
-            }),
-        })
-            .then((response) => {
-                return response.json(); // Parse response JSON
-            })
-            .then((data) => {
-                window.dispatchEvent(
-                    new CustomEvent("3d:url:ready", { detail: url }),
-                );
-            });
-    });
-</script>
 ```
 
-Explanation:
+`<ecad-viewer-embedded url="a.kicad_sch;b.kicad_sch">` is the lighter embed
+inherited from upstream. An app that drives the viewer from script (as Prism
+does) uses the public methods on the `ECadViewer` element; see
+[docs/prism-integration.md](docs/prism-integration.md).
 
-- `cli_server_addr`: URL of the API endpoint for converting AD designs to KiCad
-- `ecad-source`: Customer tag in which the either Kicad or AD design url is stored in the `src` attribute
-- `ecad-3d-source`: Customer tag in which the 3D model url is stored in the `src` attribute
-- `convert_pcb_to_glb_url`: URL of the API endpoint for converting KiCad PCB to 3D model
+## Contributing
 
-Check out the [Standalone example](static/index.html)
+Open pull requests against `dev`. `main` only moves by merging `dev`. There is
+no CI on pull requests, so run the local suites before asking for review; see
+[docs/development.md](docs/development.md).
 
-### Embedded
+## Credits and licence
 
-```html
-<body>
-    <ecad-viewer-embedded url="video/video.kicad_pcb"> </ecad-viewer-embedded>
-    <ecad-viewer-embedded url="video/video.glb"> </ecad-viewer-embedded>
-    <ecad-viewer-embedded
-        url="video/video.kicad_sch;
-      video/bus_pci.kicad_sch">
-    </ecad-viewer-embedded>
-    <ecad-viewer-embedded
-        is-bom="true"
-        url="video/video.kicad_sch;
-      video/bus_pci.kicad_sch">
-    </ecad-viewer-embedded>
-</body>
-<script type="module" src="./ecad_viewer/ecad-viewer.js"></script>
-```
+This repository is a fork of
+[Huaqiu-Electronics/ecad-viewer](https://github.com/Huaqiu-Electronics/ecad-viewer),
+by Ethan Chien and the Huaqiu Electronics team, released under the MIT licence
+in [LICENSE.md](LICENSE.md) (copyright 2024 深圳华秋电子有限公司). Upstream
+ecad-viewer is built on [KiCanvas](https://github.com/theacodes/kicanvas) by
+Alethea Katherine Flowers, also MIT; the KiCanvas copyright headers are kept in
+the files that carry them. The fork's changes are released under the same
+licence.
 
-Explanation:
+Other third-party code:
 
-- `url`: URL of the KiCad PCB or AD design or multiple KiCad PCB or AD designs separated by semicolon
-- `is-bom`: If set to true, the embedded viewer will show the BOM instead of the schematic
-
-Check out the [Embedded example](static/embedded.html)
-
-### kicad-cli server
-
-kicad-cli is needed for both converting AD designs to KiCad and the 3D model generation.
-
-#### kicad-cli docker image
-
-Here is the [docker image](https://github.com/orgs/Huaqiu-Electronics/packages/container/package/kicad) built upon the [Kicad branch](https://github.com/Huaqiu-Electronics/kicad) we maintain.
-
-```bash
-# The full image in which all the kicad official 3d models are shipped
-docker pull ghcr.io/huaqiu-electronics/kicad:full
-
-# The minimal image in which only the kicad-cli is shipped
-docker pull ghcr.io/huaqiu-electronics/kicad:lite
-```
-
-#### kicad-cli-python
-
-[kicad-cli-python](https://github.com/Huaqiu-Electronics/kicad-cli-python) is a python wrapper for kicad-cli. Assuming you have pulled the kicad-cli docker image mentioned above, you can start the file server and the cli server as follows:
-
-```bash
-git clone https://github.com/Huaqiu-Electronics/kicad-cli-python.git
-cd kicad-cli-python
-pip install -r ./requirements.txt
-# Start the file server and the cli server
-python file_srv.py
-python cli_srv.py
-```
-
-## Credits
-
-This project contains copies or makes use of other works. These works and their respective license and terms are:
-
-- [kicanvas](https://github.com/theacodes/kicanvas) is under the [MIT license](https://github.com/theacodes/kicanvas/blob/main/LICENSE.md)
-- [three-gltf-viewer](https://github.com/donmccurdy/three-gltf-viewer) is under the [MIT license](https://github.com/donmccurdy/three-gltf-viewer/blob/main/LICENSE)
+- [three-gltf-viewer](https://github.com/donmccurdy/three-gltf-viewer), MIT
+- [mapbox/earcut](https://github.com/mapbox/earcut) and
+  [mapbox/earcut.hpp](https://github.com/mapbox/earcut.hpp), ISC, in
+  `packages/ecad-viewer-app/third_party/`
+- KiCad's newstroke stroke font, in `packages/ecad-viewer-app/third_party/newstroke`
+  (see its `README.txt` and `THIRD_PARTY_README.md`)

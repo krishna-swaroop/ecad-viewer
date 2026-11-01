@@ -7,7 +7,12 @@
 import { Barrier } from "../../base/async";
 import { Disposables, type IDisposable } from "../../base/disposable";
 import { listen } from "../../base/events";
-import { BBox, Vec2, type CameraViewportInsets } from "../../base/math";
+import {
+    BBox,
+    Matrix3,
+    Vec2,
+    type CameraViewportInsets,
+} from "../../base/math";
 import type {
     MoveAndZoomOptions,
     WheelNavigationMode,
@@ -98,6 +103,9 @@ const LIBRARY_CROSS_PROBE_CHANNEL = "library-crossprobe";
 const COMMENT_AREA_PREVIEW_CHANNEL = "__comment-area-preview__";
 const MIN_COMMENT_AREA_SIZE = 0.5;
 
+/** Fired by Viewer.draw() each time it schedules a frame. */
+export const VIEWER_DRAW_REQUESTED = "ecad-viewer:draw-requested";
+
 export abstract class Viewer extends EventTarget {
     public renderer: Renderer;
     public viewport: Viewport;
@@ -126,6 +134,32 @@ export abstract class Viewer extends EventTarget {
     }
 
     public loaded = new Barrier();
+
+    /**
+     * Consulted before a click selects. Returning true consumes the click:
+     * no selection, probe activation or overlay click follows.
+     */
+    public click_interceptor: ((event: MouseEvent) => boolean) | null = null;
+
+    /**
+     * Interceptors for a tool mode (PCB measure), consulted before
+     * click_interceptor so a mode wins over insets. The latest added runs
+     * first.
+     */
+    #mode_click_interceptors: ((event: MouseEvent) => boolean)[] = [];
+
+    public add_click_interceptor(
+        interceptor: (event: MouseEvent) => boolean,
+    ): IDisposable {
+        this.#mode_click_interceptors.unshift(interceptor);
+        return {
+            dispose: () => {
+                const index =
+                    this.#mode_click_interceptors.indexOf(interceptor);
+                if (index >= 0) this.#mode_click_interceptors.splice(index, 1);
+            },
+        };
+    }
 
     abstract type: ViewerType;
 
@@ -253,6 +287,11 @@ export abstract class Viewer extends EventTarget {
                 listen(this.canvas, "click", (e) => {
                     if (!this.#active) return;
                     if (this.#comment_mode) return;
+                    // A tool mode (measure), then a host feature (inset
+                    // mode), may claim the click.
+                    for (const intercept of this.#mode_click_interceptors)
+                        if (intercept(e)) return;
+                    if (this.click_interceptor?.(e)) return;
                     const overlay = this.#overlay_scenes?.hit_test(
                         this.#mouse_position,
                     );
@@ -268,6 +307,8 @@ export abstract class Viewer extends EventTarget {
                 listen(this.canvas, "dblclick", (e) => {
                     if (!this.#active) return;
                     if (this.#comment_mode) return;
+                    // Two quick clicks in a tool mode are two points.
+                    if (this.#mode_click_interceptors.length) return;
                     this.on_dblclick(this.#mouse_position);
                 }),
             );
@@ -647,6 +688,16 @@ export abstract class Viewer extends EventTarget {
         if (!this.layers) {
             return;
         }
+        this.render_layers(this.viewport.camera.matrix);
+    }
+
+    /**
+     * Draw every visible layer through `camera` into whatever target the
+     * renderer is bound to. The main frame passes its own camera; insets pass
+     * theirs.
+     */
+    public render_layers(camera: Matrix3) {
+        if (!this.layers) return;
 
         // Render all layers in display order (back to front). Allocate the
         // available clip-space depth across the layers that will actually be
@@ -660,7 +711,6 @@ export abstract class Viewer extends EventTarget {
         );
         const depth_step = 0.98 / Math.max(1, drawable_layer_count);
         let depth = depth_step;
-        const camera = this.viewport.camera.matrix;
         const should_dim = this.layers.is_any_layer_highlighted();
 
         // Skip blending for fully-opaque layers (same visual, less GPU work).
@@ -714,6 +764,9 @@ export abstract class Viewer extends EventTarget {
             if (this.disposables.isDisposed) return;
             this.on_draw();
         });
+        // Something on screen changed (state, highlight, camera): views that
+        // borrow this scene, like insets, redraw on their next frame too.
+        this.dispatchEvent(new Event(VIEWER_DRAW_REQUESTED));
     }
 
     /** Immediate draw — used after unhide + zoom-fit so the first frame is not zoom=0. */

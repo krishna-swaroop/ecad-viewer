@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <title>Inset benchmark</title>
+        <link rel="stylesheet" href="./style.css" />
+        <style>
+            html,
+            body {
+                height: 100%;
+                margin: 0;
+            }
+            ecad-viewer {
+                position: absolute;
+                inset: 0;
+            }
+            #inset {
+                position: fixed;
+                right: 8px;
+                top: 8px;
+                width: 300px;
+                height: 220px;
+                z-index: 10;
+                border: 1px solid #999;
+            }
+        </style>
+    </head>
+    <body>
+        <!--
+            Board inset benchmark (scripts/bench-insets.mjs drives it).
+            ?pcb=<url of a .kicad_pcb served under static/>
+        -->
+        <canvas id="inset"></canvas>
+        <script type="importmap">
+            {
+                "imports": {
+                    "three": "./three/three.module.js",
+                    "three/addons/": "./three/addons/",
+                    "3d-viewer": "./ecad_viewer/3d-viewer.js",
+                    "glyph-full": "./ecad_viewer/glyph-full.js"
+                }
+            }
+        </script>
+        <script type="module">
+            const params = new URLSearchParams(location.search);
+            const pcb = params.get("pcb");
+            document.body.insertAdjacentHTML(
+                "afterbegin",
+                `<ecad-viewer id="pcb"><ecad-source src="${pcb}"></ecad-source></ecad-viewer>`,
+            );
+            const el = document.getElementById("pcb");
+            const canvas = document.getElementById("inset");
+            const frame = () =>
+                new Promise((r) => requestAnimationFrame(() => r()));
+
+            window.bench_ready = async () => {
+                const viewer = () =>
+                    el.shadowRoot?.querySelector("kc-board-app")?.viewer;
+                while (!viewer()?.board || !el.insetProvider("pcb"))
+                    await new Promise((r) => setTimeout(r, 250));
+                await frame();
+                return true;
+            };
+
+            // One pad: first frame, then `steps` zoom frames (one per rAF).
+            window.bench_pad = async (reference, number, steps = 30) => {
+                const { board, setGpuSync } = el.constructor.insetDiagnostics;
+                const p = el.insetProvider("pcb");
+                const t = await p.resolve(reference, number);
+                if (!t) return { reference, number, error: "not found" };
+                const camera = {
+                    center: {
+                        x: t.focus.x + t.focus.w / 2,
+                        y: t.focus.y + t.focus.h / 2,
+                    },
+                    zoom: Math.min(
+                        300 / Math.max(t.focus.w * 2, 4),
+                        220 / Math.max(t.focus.h * 2, 4),
+                    ),
+                    rotation: 0,
+                    mirror: t.mirror,
+                };
+                const out = { reference, number, side: t.side };
+                // As in the Visualizer: board insets render while the PCB
+                // tab is hidden and inactive, so no main redraw follows.
+                el.setActive(false);
+                board.reset();
+                p.render(t, camera, canvas);
+                out.first_ms = +board.ms.toFixed(2);
+                await frame();
+                for (const sync of [false, true]) {
+                    setGpuSync(sync);
+                    board.reset();
+                    for (let i = 0; i < steps; i++) {
+                        camera.zoom *= i < steps / 2 ? 1.04 : 1 / 1.04;
+                        p.render(t, camera, canvas);
+                        await frame();
+                    }
+                    if (sync)
+                        out.gpu_ms = +(board.gpu_ms / board.frames).toFixed(2);
+                    else
+                        out.main_thread_ms = +(board.ms / board.frames).toFixed(
+                            2,
+                        );
+                }
+                setGpuSync(false);
+                // True GPU time with timer queries, when the driver has them.
+                const viewer =
+                    el.shadowRoot.querySelector("kc-board-app").viewer;
+                const gl = viewer.renderer.gl;
+                const ext = gl.getExtension("EXT_disjoint_timer_query_webgl2");
+                if (ext) {
+                    const queries = [];
+                    for (let i = 0; i < steps; i++) {
+                        camera.zoom *= i < steps / 2 ? 1.04 : 1 / 1.04;
+                        const q = gl.createQuery();
+                        gl.beginQuery(ext.TIME_ELAPSED_EXT, q);
+                        p.render(t, camera, canvas);
+                        gl.endQuery(ext.TIME_ELAPSED_EXT);
+                        queries.push(q);
+                        await frame();
+                    }
+                    for (let i = 0; i < 20; i++) await frame();
+                    const ns = queries
+                        .filter((q) =>
+                            gl.getQueryParameter(q, gl.QUERY_RESULT_AVAILABLE),
+                        )
+                        .map((q) => gl.getQueryParameter(q, gl.QUERY_RESULT));
+                    queries.forEach((q) => gl.deleteQuery(q));
+                    if (ns.length)
+                        out.gpu_query_ms = +(
+                            ns.reduce((a, b) => a + b, 0) /
+                            ns.length /
+                            1e6
+                        ).toFixed(3);
+                }
+                el.setActive(true);
+                return out;
+            };
+
+            // IN-51: several insets re-rendering in one frame (a net highlight
+            // change with pinned insets and a chain open). One canvas per
+            // inset, all rendered back to back, timed as a single frame.
+            window.bench_frame = async (pads, frames = 20) => {
+                const { setGpuSync } = el.constructor.insetDiagnostics;
+                const p = el.insetProvider("pcb");
+                const viewer =
+                    el.shadowRoot.querySelector("kc-board-app").viewer;
+                const gl = viewer.renderer.gl;
+                const ext = gl.getExtension("EXT_disjoint_timer_query_webgl2");
+                el.setActive(false);
+                const insets = [];
+                for (const [i, [reference, number]] of pads.entries()) {
+                    const t = await p.resolve(reference, number);
+                    if (!t) continue;
+                    const c = document.createElement("canvas");
+                    c.style.cssText = `position:fixed;left:${10 + (i % 3) * 310}px;top:${240 + Math.floor(i / 3) * 230}px;width:300px;height:220px;z-index:20`;
+                    document.body.append(c);
+                    insets.push({
+                        t,
+                        c,
+                        camera: {
+                            center: {
+                                x: t.focus.x + t.focus.w / 2,
+                                y: t.focus.y + t.focus.h / 2,
+                            },
+                            zoom: Math.min(
+                                300 / Math.max(t.focus.w * 2, 4),
+                                220 / Math.max(t.focus.h * 2, 4),
+                            ),
+                            rotation: 0,
+                            mirror: t.mirror,
+                        },
+                    });
+                }
+                const cpu = [];
+                const queries = [];
+                for (let f = 0; f < frames; f++) {
+                    const q = ext ? gl.createQuery() : null;
+                    if (q) gl.beginQuery(ext.TIME_ELAPSED_EXT, q);
+                    const t0 = performance.now();
+                    for (const inset of insets)
+                        p.render(inset.t, inset.camera, inset.c);
+                    cpu.push(performance.now() - t0);
+                    if (q) {
+                        gl.endQuery(ext.TIME_ELAPSED_EXT);
+                        queries.push(q);
+                    }
+                    await frame();
+                }
+                for (let i = 0; i < 20; i++) await frame();
+                const ns = queries
+                    .filter((q) =>
+                        gl.getQueryParameter(q, gl.QUERY_RESULT_AVAILABLE),
+                    )
+                    .map((q) => gl.getQueryParameter(q, gl.QUERY_RESULT));
+                queries.forEach((q) => gl.deleteQuery(q));
+                insets.forEach((i) => i.c.remove());
+                el.setActive(true);
+                cpu.sort((a, b) => a - b);
+                ns.sort((a, b) => a - b);
+                return {
+                    insets: insets.length,
+                    cpu_median_ms: +cpu[cpu.length >> 1].toFixed(2),
+                    cpu_max_ms: +cpu[cpu.length - 1].toFixed(2),
+                    gpu_median_ms: ns.length
+                        ? +(ns[ns.length >> 1] / 1e6).toFixed(2)
+                        : null,
+                    gpu_max_ms: ns.length
+                        ? +(ns[ns.length - 1] / 1e6).toFixed(2)
+                        : null,
+                };
+            };
+
+            // FNV-1a of the full main-view pixels after a fresh draw.
+            window.bench_pixels = () => {
+                const viewer =
+                    el.shadowRoot.querySelector("kc-board-app").viewer;
+                const gl = viewer.renderer.gl;
+                viewer.draw_now();
+                const { width, height } = viewer.canvas;
+                const px = new Uint8Array(width * height * 4);
+                gl.readPixels(
+                    0,
+                    0,
+                    width,
+                    height,
+                    gl.RGBA,
+                    gl.UNSIGNED_BYTE,
+                    px,
+                );
+                let h = 0x811c9dc5;
+                for (let i = 0; i < px.length; i++)
+                    h = Math.imul(h ^ px[i], 16777619) >>> 0;
+                return { size: [width, height], hash: h.toString(16) };
+            };
+
+            window.bench_cull = () => {
+                const { cullStats } = el.constructor.insetDiagnostics;
+                return {
+                    drawn: cullStats.drawn,
+                    held: cullStats.held,
+                    calls: cullStats.calls,
+                };
+            };
+
+            // Reference: one full main-view frame with GPU sync.
+            window.bench_main = async (n = 10) => {
+                const viewer =
+                    el.shadowRoot.querySelector("kc-board-app").viewer;
+                const gl = viewer.renderer.gl;
+                const times = [];
+                for (let i = 0; i < n; i++) {
+                    const t0 = performance.now();
+                    viewer.draw_now();
+                    gl.readPixels(
+                        0,
+                        0,
+                        1,
+                        1,
+                        gl.RGBA,
+                        gl.UNSIGNED_BYTE,
+                        new Uint8Array(4),
+                    );
+                    times.push(performance.now() - t0);
+                    await frame();
+                }
+                times.sort((a, b) => a - b);
+                return {
+                    canvas: [viewer.canvas.width, viewer.canvas.height],
+                    median_ms: +times[n >> 1].toFixed(2),
+                };
+            };
+            // ?cull=0 paints with view culling off (A/B against the old path).
+            const loaded = import("./ecad_viewer/ecad-viewer.js");
+            await customElements.whenDefined("ecad-viewer");
+            customElements.get("ecad-viewer").insetDiagnostics.cull.enabled =
+                params.get("cull") !== "0";
+            await loaded;
+        </script>
+    </body>
+</html>
