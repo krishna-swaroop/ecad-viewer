@@ -11,7 +11,7 @@ import { Logger } from "../base/log";
 import { dirname } from "../base/paths";
 
 import { DrawingSheet, KicadPCB, KicadSch, ProjectSettings } from "../kicad";
-import { parse_drawing_sheet } from "kicad-parser";
+import { merge_board_pods, parse_drawing_sheet } from "kicad-parser";
 import * as Comlink from "comlink";
 import {
     BoardBomItemVisitor,
@@ -133,6 +133,29 @@ function get_shared_pool(): WorkerPool {
         );
     }
     return _shared_pool;
+}
+
+// A board at least this large is split into self-contained chunks parsed in
+// parallel on the pool (kicad-parser's board_split.ts), about one chunk per
+// PARALLEL_PARSE_CHUNK_BYTES and never more than PARALLEL_PARSE_MAX_CHUNKS.
+// Cold loads in Chrome: EDA-04903 (56.8 MB, 4 chunks) 3835 -> 2997 ms and
+// jumperless_v5r7 (26.7 MB, 3 chunks) 1908 -> 1655 ms. At 16.4 MB
+// (speedy_processing_module, 2 chunks) the worker saved only 50 ms, within
+// run-to-run noise, so smaller boards keep the single parse.
+const PARALLEL_PARSE_MIN_BYTES = 20 * 1024 * 1024;
+const PARALLEL_PARSE_CHUNK_BYTES = 12 * 1024 * 1024;
+const PARALLEL_PARSE_MAX_CHUNKS = 4;
+
+function parallel_parse_chunks(bytes: number, pool_size: number): number {
+    if (bytes < PARALLEL_PARSE_MIN_BYTES) return 1;
+    return Math.max(
+        1,
+        Math.min(
+            PARALLEL_PARSE_MAX_CHUNKS,
+            pool_size,
+            Math.ceil(bytes / PARALLEL_PARSE_CHUNK_BYTES),
+        ),
+    );
 }
 
 // Parse de-duplication + result cache. Callers should supply a blob identity
@@ -738,8 +761,32 @@ export class Project extends EventTarget implements IDisposable {
         const perf = this.#perf_accum;
         const t_worker0 = perf ? performance.now() : 0;
 
-        const pod = await dedup_parse(blob.filename, blob.content, () => {
+        const pod = await dedup_parse(blob.filename, blob.content, async () => {
             const buffer = new TextEncoder().encode(blob.content).buffer;
+            const k = is_pcb
+                ? parallel_parse_chunks(buffer.byteLength, this._pool.size)
+                : 1;
+            if (k > 1) {
+                const chunks = await this._pool.run((worker) =>
+                    worker.split_board(Comlink.transfer(buffer, [buffer]), k),
+                );
+                const pods = await Promise.all(
+                    chunks.map((chunk) =>
+                        this._pool.run(async (worker) => {
+                            if (perf) await worker.set_perf_log(true);
+                            return worker.parse_board(
+                                Comlink.transfer(chunk, [chunk]),
+                            );
+                        }),
+                    ),
+                );
+                if (perf) {
+                    ecadPerfLog(
+                        `parallel parse  ${filename}  chunks=${chunks.length}`,
+                    );
+                }
+                return merge_board_pods(pods);
+            }
             return this._pool.run(async (worker) => {
                 if (perf) await worker.set_perf_log(true);
                 return is_pcb

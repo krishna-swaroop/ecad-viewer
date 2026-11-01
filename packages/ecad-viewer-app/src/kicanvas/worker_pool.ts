@@ -3,6 +3,7 @@ import * as Comlink from "comlink";
 type ParserAPI = {
     set_perf_log(enabled: boolean): Promise<void> | void;
     parse_board(buffer: ArrayBuffer): Promise<any>;
+    split_board(buffer: ArrayBuffer, k: number): Promise<ArrayBuffer[]>;
     parse_schematic(buffer: ArrayBuffer): Promise<any>;
 };
 
@@ -12,6 +13,11 @@ export class WorkerPool {
     private idle: Comlink.Remote<ParserAPI>[] = [];
     private queue: (() => void)[] = [];
     private disposed = false;
+
+    /** Number of workers in the pool. */
+    get size(): number {
+        return this.workers.length;
+    }
 
     constructor(workerCount: number) {
         for (let i = 0; i < workerCount; i++) {
