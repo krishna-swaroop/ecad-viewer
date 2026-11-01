@@ -43,6 +43,7 @@ import {
     KICAD_SCH_EXT,
     KICAD_WKS_EXT,
 } from "./file_ext";
+import { ParseCache } from "./parse_cache";
 import { WorkerPool } from "./worker_pool";
 import { ecadPerfLog, formatBytes, isEcadPerfLogEnabled } from "./perf_log";
 
@@ -162,14 +163,11 @@ function parallel_parse_chunks(bytes: number, pool_size: number): number {
     );
 }
 
-// Parse de-duplication + result cache. Callers should supply a blob identity
-// (Git blob SHA in Prism); standalone callers fall back to a full-content hash.
-// Sampling a few characters is not safe for two revisions of the same file.
-const _parse_cache = new Map<string, Promise<unknown>>();
-const _PARSE_CACHE_MAX = 24;
+// Parse de-duplication + result cache, keyed on a hash of the full content
+// (sampling a few characters is not safe for two revisions of the same file)
+// and budgeted by source bytes -- see parse_cache.ts.
+const _parse_cache = new ParseCache(24, 32 * 1024 * 1024);
 const _PARSER_CACHE_VERSION = "kicad-parser-v2";
-let _parse_cache_hits = 0;
-let _parser_invocations = 0;
 
 export type EcadParserPerfSnapshot = {
     cacheHits: number;
@@ -178,8 +176,8 @@ export type EcadParserPerfSnapshot = {
 
 export function getParserPerfSnapshot(): EcadParserPerfSnapshot {
     return {
-        cacheHits: _parse_cache_hits,
-        parserInvocations: _parser_invocations,
+        cacheHits: _parse_cache.hits,
+        parserInvocations: _parse_cache.misses,
     };
 }
 
@@ -232,21 +230,8 @@ async function dedup_parse<T>(
     run: () => Promise<T>,
 ): Promise<T> {
     const key = await _parse_key(filename, bytes, content);
-    const cached = _parse_cache.get(key);
-    if (cached) {
-        _parse_cache_hits += 1;
-        ecadPerfLog(`cache=hit  ${filename}`);
-        return cached as Promise<T>;
-    }
-    _parser_invocations += 1;
-    const p = run();
-    p.catch(() => _parse_cache.delete(key));
-    _parse_cache.set(key, p);
-    if (_parse_cache.size > _PARSE_CACHE_MAX) {
-        const oldest = _parse_cache.keys().next().value;
-        if (oldest !== undefined) _parse_cache.delete(oldest);
-    }
-    return p;
+    if (_parse_cache.has(key)) ecadPerfLog(`cache=hit  ${filename}`);
+    return _parse_cache.get_or_run(key, bytes.byteLength, run);
 }
 
 export class Project extends EventTarget implements IDisposable {
@@ -985,7 +970,14 @@ export class Project extends EventTarget implements IDisposable {
             }
         }
         this._files_by_name.set(filename, doc);
-        this._file_content.set(filename, file_content);
+        // A board or schematic is fully parsed by now and is never re-read
+        // from its text; the only reader left is the legacy kicad-cli upload
+        // (BoardContentReady, ecad_viewer_global.ts), which needs
+        // cli_server_addr. Keeping the text otherwise held a second copy of
+        // every file -- 57 MB of heap for EDA-04903.
+        if (window.cli_server_addr) {
+            this._file_content.set(filename, file_content);
+        }
         return doc;
     }
 

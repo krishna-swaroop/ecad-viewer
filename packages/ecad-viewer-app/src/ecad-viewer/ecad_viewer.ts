@@ -5042,7 +5042,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             }
             this.#board_app.showPropertyPanel = this.showSelectionPanel;
             embed_to_tab(this.#board_app, TabKind.pcb);
-            if (!this.#project.has_3d) {
+            // Only the kicad-cli 3D conversion listens for the board text, and
+            // only with cli_server_addr set; without it the project does not
+            // keep the text (project.ts), so there is nothing to send.
+            if (!this.#project.has_3d && window.cli_server_addr) {
                 try {
                     this.#project
                         .get_file_text(
