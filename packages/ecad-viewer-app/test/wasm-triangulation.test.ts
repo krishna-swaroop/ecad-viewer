@@ -237,6 +237,26 @@ suite("polygon triangulation", function () {
         expect(deviation(points)).to.be.lessThan(F32_AREA_TOLERANCE);
     });
 
+    test("drops repeated points without changing the shape", function () {
+        // Every point of a 64-gon doubled, plus a closing repeat of the first.
+        const ring = circle(64);
+        const doubled: Vec2[] = [];
+        for (const p of ring) doubled.push(p, new Vec2(p.x, p.y));
+        doubled.push(new Vec2(ring[0]!.x, ring[0]!.y));
+
+        const verts = triangulate(doubled);
+        // n-2 triangles of the undoubled ring: the repeats are gone.
+        expect(verts.length).to.equal((ring.length - 2) * 3 * 2);
+        expect(
+            Math.abs(soup_area(verts) - ring_area(ring)) / ring_area(ring),
+        ).to.be.lessThan(F32_AREA_TOLERANCE);
+    });
+
+    test("a ring of one repeated point yields no triangles", function () {
+        const p = new Vec2(1, 1);
+        expect(triangulate([p, p, p, p]).length).to.equal(0);
+    });
+
     test("survives a repeat call after growing the arena", function () {
         // The wasm coordinate arena is reused across calls and resized to fit,
         // which can detach the heap views. A big polygon followed by a small
