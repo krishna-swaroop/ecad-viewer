@@ -311,14 +311,6 @@ export class PCBViewerLoaded extends CustomEvent<void> {
     }
 }
 
-export class BoardContentReady extends CustomEvent<string> {
-    static readonly type = "pcb:board_content:ready";
-
-    constructor(content: string) {
-        super(BoardContentReady.type, { detail: content });
-    }
-}
-
 export class AdBoardContentReady extends CustomEvent<string> {
     static readonly type = "ad:board_content:ready";
 
@@ -538,7 +530,6 @@ declare global {
         [KiCanvasFitterMenuEvent.type]: KiCanvasFitterMenuEvent;
         [OpenBarrierEvent.type]: OpenBarrierEvent;
         [SelectDesignatorEvent.type]: SelectDesignatorEvent;
-        [BoardContentReady.type]: BoardContentReady;
         [ComponentERCResultEvent.type]: ComponentERCResultEvent;
         [ProjectERCResultEvent.type]: ProjectERCResultEvent;
     }
@@ -557,7 +548,6 @@ declare global {
         [KiCanvasFitterMenuEvent.type]: KiCanvasFitterMenuEvent;
         [OpenBarrierEvent.type]: OpenBarrierEvent;
         [SelectDesignatorEvent.type]: SelectDesignatorEvent;
-        [BoardContentReady.type]: BoardContentReady;
         [ComponentERCResultEvent.type]: ComponentERCResultEvent;
         [ProjectERCResultEvent.type]: ProjectERCResultEvent;
         [EcadOverlayClickEvent.type]: EcadOverlayClickEvent;

@@ -60,6 +60,9 @@ npm run serve -w packages/ecad-viewer-app
 The dev server listens on http://127.0.0.1:8012 (set `ECAD_VIEWER_PORT` to
 change it) and serves the demo pages in `packages/ecad-viewer-app/static`.
 `http://127.0.0.1:8012/?zip-url=./video.zip` opens the bundled demo project.
+Query-string configuration and the postMessage bridge only run on a page that
+opts in with `<meta name="ecad-viewer-mode" content="standalone">`; see
+[docs/prism-integration.md](docs/prism-integration.md#standalone-mode).
 
 ## Usage
 
