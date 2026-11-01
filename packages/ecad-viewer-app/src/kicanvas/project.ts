@@ -954,13 +954,8 @@ export class Project extends EventTarget implements IDisposable {
         }
         this._files_by_name.set(filename, doc);
         // A board or schematic is fully parsed by now and is never re-read
-        // from its text; the only reader left is the legacy kicad-cli upload
-        // (BoardContentReady, ecad_viewer_global.ts), which needs
-        // cli_server_addr. Keeping the text otherwise held a second copy of
-        // every file -- 57 MB of heap for EDA-04903.
-        if (window.cli_server_addr) {
-            this._file_content.set(filename, file_content);
-        }
+        // from its text, so it is not kept: that held a second copy of every
+        // file -- 57 MB of heap for EDA-04903.
         return doc;
     }
 
