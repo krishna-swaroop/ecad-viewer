@@ -1,5 +1,5 @@
 import type { BBox } from "../../base/math";
-import type { KicadSch } from "../../kicad/schematic";
+import { NetLabel, type KicadSch } from "../../kicad/schematic";
 import type {
     EcadOverlayPrimitive,
     EcadOverlayScene,
@@ -100,6 +100,38 @@ export function net_highlight_scene(
                 radius: 0.6,
                 fill: color,
             });
+        }
+        // Local labels of one name join on their own sheet: a dashed line
+        // from each to the next, so a net carried by labels reads as one.
+        const locals = new Map<string, BBox[]>();
+        for (const label of document.labels) {
+            if (!(label instanceof NetLabel) || !label.uuid) continue;
+            if (!uuids.has(label.uuid)) continue;
+            const box = item_bbox(label.uuid);
+            if (!box) continue;
+            const group = locals.get(label.text) ?? [];
+            group.push(box);
+            locals.set(label.text, group);
+        }
+        for (const [name, boxes] of locals) {
+            boxes.sort((a, b) => a.x - b.x || a.y - b.y);
+            for (let i = 1; i < boxes.length; i++) {
+                const a = boxes[i - 1]!.center;
+                const b = boxes[i]!.center;
+                primitives.push({
+                    id: `local:${name}:${i}`,
+                    kind: "polyline",
+                    anchor: origin,
+                    points: [
+                        [a.x, a.y],
+                        [b.x, b.y],
+                    ],
+                    stroke: color,
+                    strokeWidth: 0.3,
+                    dash: [1.5, 1],
+                    opacity: 0.9,
+                });
+            }
         }
         for (const uuid of uuids) {
             if (seen.has(uuid)) continue;

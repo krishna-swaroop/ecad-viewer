@@ -179,3 +179,41 @@ suite("net instances", () => {
         ]);
     });
 });
+
+suite("local label lines", () => {
+    test("same-name local labels of a highlighted net are joined on their sheet", () => {
+        const doc = new KicadSch(
+            "local.kicad_sch",
+            new SchematicParser().parse(`
+(kicad_sch
+  (version 20250114)
+  (generator "eeschema")
+  (uuid "00000000-0000-0000-0000-000000000003")
+  (label "CLK" (at 10 10 0) (effects (font (size 1.27 1.27))) (uuid "00000000-0000-0000-0000-000000000101"))
+  (label "CLK" (at 80 40 0) (effects (font (size 1.27 1.27))) (uuid "00000000-0000-0000-0000-000000000102"))
+)
+`),
+        );
+        const boxes: Record<string, BBox> = {
+            "00000000-0000-0000-0000-000000000101": new BBox(10, 9, 4, 2),
+            "00000000-0000-0000-0000-000000000102": new BBox(80, 39, 4, 2),
+        };
+        const scene = net_highlight_scene(
+            [
+                {
+                    name: "CLK",
+                    pages: [{ sheetPath: "/l", uuids: Object.keys(boxes) }],
+                },
+            ],
+            "/l",
+            doc,
+            (uuid) => boxes[uuid],
+        );
+        const line = scene.primitives.find((p) => p.id.startsWith("local:"));
+        expect(line?.kind).to.equal("polyline");
+        expect((line as { points: number[][] }).points).to.deep.equal([
+            [12, 10],
+            [82, 40],
+        ]);
+    });
+});
