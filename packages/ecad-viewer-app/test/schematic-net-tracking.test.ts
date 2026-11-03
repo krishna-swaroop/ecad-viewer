@@ -13,6 +13,7 @@ import {
 import { KicadSch } from "../src/kicad/schematic";
 import {
     NET_HIGHLIGHT_CHANNEL,
+    local_trace_scene,
     members_on_page,
     net_highlight_scene,
 } from "../src/viewers/schematic/net-highlight";
@@ -182,8 +183,8 @@ suite("net instances", () => {
     });
 });
 
-suite("local label lines", () => {
-    test("same-name local labels of a highlighted net are joined on their sheet", () => {
+suite("local trace", () => {
+    test("~ on a local label joins its namesakes on the sheet", () => {
         const doc = new KicadSch(
             "local.kicad_sch",
             new SchematicParser().parse(`
@@ -200,18 +201,8 @@ suite("local label lines", () => {
             "00000000-0000-0000-0000-000000000101": new BBox(10, 9, 4, 2),
             "00000000-0000-0000-0000-000000000102": new BBox(80, 39, 4, 2),
         };
-        const scene = net_highlight_scene(
-            [
-                {
-                    name: "CLK",
-                    pages: [{ sheetPath: "/l", uuids: Object.keys(boxes) }],
-                },
-            ],
-            "/l",
-            doc,
-            (uuid) => boxes[uuid],
-        );
-        const line = scene.primitives.find((p) => p.id.startsWith("local:"));
+        const scene = local_trace_scene("CLK", doc, (uuid) => boxes[uuid]);
+        const line = scene.primitives.find((p) => p.id.startsWith("line:"));
         expect(line?.kind).to.equal("polyline");
         expect((line as { points: number[][] }).points).to.deep.equal([
             [12, 10],

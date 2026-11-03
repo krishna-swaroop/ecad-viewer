@@ -101,6 +101,7 @@ export class WorldView {
     #frame: number | null = null;
     #opened_at = 0;
     #ticket = 0;
+    #touched = false;
 
     constructor(private readonly host: WorldViewHost) {}
 
@@ -111,6 +112,7 @@ export class WorldView {
     /** Open on the net of the label or sheet entry `uuid` on page `page`. */
     async show(from: NetInstance) {
         this.close();
+        this.#touched = false;
         const container = this.host.container();
         if (!container) return false;
         const ticket = ++this.#ticket;
@@ -178,6 +180,7 @@ export class WorldView {
             sheets_canvas,
             this.#camera,
             () => {
+                this.#touched = true;
                 this.#dirty = true;
             },
             MIN_ZOOM,
@@ -191,6 +194,12 @@ export class WorldView {
         );
         this.#observer = new ResizeObserver(() => {
             this.#resize();
+            // Until the view is moved by hand, it keeps every sheet framed
+            // as the panels around it open and close.
+            if (!this.#touched) {
+                this.#camera.fit_insets = this.host.insets();
+                this.#camera.bbox = this.#world_bounds().grow(GAP / 2);
+            }
             this.#dirty = true;
         });
         this.#observer.observe(root);
@@ -332,8 +341,11 @@ export class WorldView {
             ctx.strokeStyle = "rgba(148, 163, 184, 0.55)";
             ctx.lineWidth = 1;
             ctx.strokeRect(a.x, a.y, c.x - a.x, c.y - a.y);
-            ctx.fillStyle = "rgba(226, 232, 240, 0.9)";
-            ctx.font = "500 12px system-ui, sans-serif";
+            ctx.font = "600 12px system-ui, sans-serif";
+            ctx.lineWidth = 3;
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+            ctx.strokeText(sheet.view.name, a.x, a.y - 4);
+            ctx.fillStyle = "rgba(15, 23, 42, 0.92)";
             ctx.textBaseline = "bottom";
             ctx.fillText(sheet.view.name, a.x, a.y - 4);
         }
