@@ -273,6 +273,49 @@ suite("warm source replacement", () => {
         expect([x, y, w, h]).to.deep.equal([40, 40, 20, 20]);
     });
 
+    test("a click picks what is under the pointer after the camera moved beneath it", async () => {
+        await host.replaceSources({
+            revisionKey: "sheet",
+            sources: [
+                { filename: "root.kicad_sch", content: SHEET_ROOT },
+                { filename: "child.kicad_sch", content: SHEET_CHILD },
+            ],
+        });
+        const viewer = schematicViewer(host) as MountedDocumentViewer & {
+            viewport: {
+                camera: {
+                    center: {
+                        x: number;
+                        y: number;
+                        set(x: number, y: number): void;
+                    };
+                };
+            };
+        };
+        const camera = viewer.viewport.camera;
+        const rect = viewer.canvas.getBoundingClientRect();
+        const pointer = camera.world_to_screen({ x: 10, y: 10 });
+        const client = {
+            clientX: rect.left + pointer.x,
+            clientY: rect.top + pointer.y,
+            bubbles: true,
+        };
+        const selections: Array<{ itemType: string }> = [];
+        host.addEventListener("ecad-viewer:selection", (event) =>
+            selections.push((event as CustomEvent).detail),
+        );
+
+        // The pointer rests over empty canvas...
+        viewer.canvas.dispatchEvent(new MouseEvent("mousemove", client));
+        // ...while the camera pans the sheet underneath it (a fit, a page
+        // switch), and the user clicks without moving.
+        camera.center.set(camera.center.x + 40, camera.center.y + 40);
+        viewer.draw();
+        viewer.canvas.dispatchEvent(new MouseEvent("click", client));
+
+        expect(selections.at(-1)?.itemType).to.equal("sheet");
+    });
+
     test("keeps the camera still while applying measured overlay insets", async () => {
         await host.replaceSources(revision("initial", schematicFixture));
         const viewer = schematicViewer(host);

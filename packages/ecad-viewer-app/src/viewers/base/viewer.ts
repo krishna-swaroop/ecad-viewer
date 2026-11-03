@@ -272,6 +272,14 @@ export abstract class Viewer extends EventTarget {
                 }),
             );
 
+            // The canvas can move without resizing (a layout shift): read its
+            // position afresh whenever the pointer comes in.
+            this.disposables.add(
+                listen(this.canvas, "mouseenter", () => {
+                    this.#cached_rect = null;
+                }),
+            );
+
             this.disposables.add(
                 listen(this.canvas, "mouseleave", () => {
                     if (this.#hover_frame !== null) {
@@ -297,6 +305,7 @@ export abstract class Viewer extends EventTarget {
                     for (const intercept of this.#mode_click_interceptors)
                         if (intercept(e)) return;
                     if (this.click_interceptor?.(e)) return;
+                    this.#refresh_pointer(e);
                     const overlay = this.#overlay_scenes?.hit_test(
                         this.#mouse_position,
                     );
@@ -314,6 +323,7 @@ export abstract class Viewer extends EventTarget {
                     if (this.#comment_mode) return;
                     // Two quick clicks in a tool mode are two points.
                     if (this.#mode_click_interceptors.length) return;
+                    this.#refresh_pointer(e);
                     this.on_dblclick(this.#mouse_position);
                 }),
             );
@@ -509,6 +519,17 @@ export abstract class Viewer extends EventTarget {
 
     #cached_rect: DOMRect | null = null;
     #rect_invalidator_installed = false;
+
+    /**
+     * Map a click to the world from the event itself. The position the last
+     * mousemove left is stale once the camera has moved under a still
+     * pointer (a fit on load, a page switch, a pan), and the canvas may have
+     * moved too.
+     */
+    #refresh_pointer(e: MouseEvent) {
+        this.#cached_rect = null;
+        this.on_mouse_change(e);
+    }
 
     #get_canvas_rect(): DOMRect {
         if (!this.#rect_invalidator_installed) {
