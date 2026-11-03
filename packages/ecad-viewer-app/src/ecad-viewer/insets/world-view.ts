@@ -5,16 +5,18 @@
     included, placed in one world and drawn through a single camera, so the
     view pans, zooms and drags like a sheet. The sheets stay interactive:
     hovering outlines items, a click selects (Shift+click highlights the
-    net), and `~` on a label continues from there. Everything a click picks
-    is reported through the host as a selection on that sheet's own page.
+    net), and `~` on another label chains its net in. Everything a click
+    picks is reported through the host as a selection on that sheet's page.
 
-    Connections are drawn as plain right-angle runs through the gaps between
-    sheets, from each label to where it leads, with the net's name on the run.
-    On opening, the sheets fade in a hop at a time from the starting sheet
-    and each run draws in once its sheet is there; after that the view only
-    redraws when something changes.
+    A chain is one label's reach. The first opens the view; each later one
+    is added in its own colour, linking sheets already shown and bringing in
+    the ones that are not (they join the end of the layout, so nothing on
+    screen moves). Sheets fade in a hop at a time from where their chain
+    started; each connection then grows along a curve from the label it is
+    reached from, ends in an arrowhead, and keeps flowing outward, its
+    dashes alternating with the net's name.
 
-    A double-click on a sheet opens it in the main view.
+    A double-click on a sheet opens it in the main view; Escape closes.
 */
 
 import { BBox, Camera2, Matrix3, Vec2 } from "../../base/math";
@@ -56,35 +58,62 @@ interface Sheet {
     view: SchematicPageView;
     /** World position of the sheet's top-left corner. */
     offset: Vec2;
-    /** Hops from the starting label to the nearest instance on this sheet. */
-    depth: number;
+    /** When it starts fading in (ms, `performance.now()`); 0 is at once. */
+    appear_at: number;
+}
+
+interface Chain {
+    from: NetInstance;
+    links: Array<[NetInstance, NetInstance]>;
+    reached: NetInstance[];
+    color: string;
+    opened_at: number;
+    depth: Map<string, number>;
 }
 
 interface Tokens {
-    accent: string;
-    fg: string;
-    muted: string;
     card: string;
     border: string;
+    muted: string;
     font: string;
 }
+
+/** The first chain's colour, then each added chain's in turn. */
+export const CHAIN_COLORS = [
+    "#ffb020",
+    "#22d3ee",
+    "#c084fc",
+    "#34d399",
+    "#f472b6",
+    "#fb923c",
+];
 
 const GAP = 50;
 const MIN_ZOOM = 0.02;
 const MAX_ZOOM = 100;
 /** One hop's sheets start this long after the previous hop's. */
-const HOP_DELAY = 180;
-/** A sheet fades in over this long; its run then draws in over this long. */
-const SHEET_MS = 320;
-const LINE_MS = 360;
+const HOP_DELAY = 260;
+/** A sheet fades in over this long; its connection then grows over this long. */
+const SHEET_MS = 420;
+const LINE_MS = 480;
 /** A press that moves further than this is a drag, not a click. */
 const CLICK_SLOP = 4;
+/** The flowing pattern: a dash, a space, the name, a space (CSS pixels). */
+const DASH = 14;
+const SPACE = 6;
+const FLOW_SPEED = 1 / 35;
 
 const ease = (t: number) => 1 - Math.pow(1 - Math.min(1, Math.max(0, t)), 3);
 
-/** Rows of sheets, left to right, roughly square overall. */
-export function world_layout(bounds: readonly BBox[], gap = GAP): Vec2[] {
-    const cols = Math.max(1, Math.ceil(Math.sqrt(bounds.length)));
+/**
+ * Rows of `cols` sheets, left to right. With `cols` fixed, adding sheets at
+ * the end never moves the ones before them.
+ */
+export function world_layout(
+    bounds: readonly BBox[],
+    gap = GAP,
+    cols = Math.max(1, Math.ceil(Math.sqrt(bounds.length))),
+): Vec2[] {
     const offsets: Vec2[] = [];
     let y = 0;
     for (let row = 0; row * cols < bounds.length; row++) {
@@ -99,22 +128,83 @@ export function world_layout(bounds: readonly BBox[], gap = GAP): Vec2[] {
     return offsets;
 }
 
-/**
- * A right-angle run from `a` on sheet `ra` to `b` on sheet `rb`, turning in
- * the gap between the two sheets (screen coordinates).
- */
-export function world_route(a: Vec2, ra: BBox, b: Vec2, rb: BBox): Vec2[] {
-    if (ra.x2 <= rb.x || rb.x2 <= ra.x) {
-        const mx = ra.x2 <= rb.x ? (ra.x2 + rb.x) / 2 : (rb.x2 + ra.x) / 2;
-        return [a, new Vec2(mx, a.y), new Vec2(mx, b.y), b];
+/** Where a pattern of `period` repeats along a run of `length`, shifted by `offset`. */
+export function flow_starts(length: number, period: number, offset: number) {
+    const starts: number[] = [];
+    if (period <= 0) return starts;
+    for (let s = (offset % period) - period; s < length; s += period)
+        starts.push(s);
+    return starts;
+}
+
+/** A cubic Bézier sampled by arc length. */
+class Curve {
+    readonly points: Vec2[] = [];
+    readonly lengths: number[] = [0];
+
+    constructor(a: Vec2, c1: Vec2, c2: Vec2, b: Vec2, samples = 64) {
+        for (let i = 0; i <= samples; i++) {
+            const t = i / samples;
+            const u = 1 - t;
+            this.points.push(
+                new Vec2(
+                    u * u * u * a.x +
+                        3 * u * u * t * c1.x +
+                        3 * u * t * t * c2.x +
+                        t * t * t * b.x,
+                    u * u * u * a.y +
+                        3 * u * u * t * c1.y +
+                        3 * u * t * t * c2.y +
+                        t * t * t * b.y,
+                ),
+            );
+            if (i)
+                this.lengths.push(
+                    this.lengths[i - 1]! +
+                        this.points[i]!.sub(this.points[i - 1]!).magnitude,
+                );
+        }
     }
-    // Stacked sheets: turn nearer the upper one, clear of the lower one's
-    // title above its frame.
-    const my =
-        ra.y2 <= rb.y
-            ? ra.y2 + (rb.y - ra.y2) * 0.35
-            : rb.y2 + (ra.y - rb.y2) * 0.35;
-    return [a, new Vec2(a.x, my), new Vec2(b.x, my), b];
+
+    get length() {
+        return this.lengths.at(-1)!;
+    }
+
+    #index(s: number) {
+        let i = 1;
+        while (i < this.lengths.length - 1 && this.lengths[i]! < s) i++;
+        return i;
+    }
+
+    at(s: number): { point: Vec2; angle: number } {
+        const clamped = Math.min(Math.max(s, 0), this.length);
+        const i = this.#index(clamped);
+        const a = this.points[i - 1]!;
+        const b = this.points[i]!;
+        const span = this.lengths[i]! - this.lengths[i - 1]!;
+        const t = span ? (clamped - this.lengths[i - 1]!) / span : 0;
+        return {
+            point: new Vec2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t),
+            angle: Math.atan2(b.y - a.y, b.x - a.x),
+        };
+    }
+
+    /** Trace the part between `from` and `to` (arc lengths) into the current path. */
+    trace(ctx: CanvasRenderingContext2D, from: number, to: number) {
+        const s0 = Math.max(0, from);
+        const s1 = Math.min(this.length, to);
+        if (s1 <= s0) return;
+        const start = this.at(s0).point;
+        ctx.moveTo(start.x, start.y);
+        for (let i = 1; i < this.points.length; i++) {
+            const s = this.lengths[i]!;
+            if (s <= s0) continue;
+            if (s >= s1) break;
+            ctx.lineTo(this.points[i]!.x, this.points[i]!.y);
+        }
+        const end = this.at(s1).point;
+        ctx.lineTo(end.x, end.y);
+    }
 }
 
 export class WorldView {
@@ -126,12 +216,12 @@ export class WorldView {
     #observer: ResizeObserver | null = null;
     #unsubscribe: (() => void) | null = null;
     #sheets = new Map<string, Sheet>();
-    #links: Array<[NetInstance, NetInstance]> = [];
-    #start: NetInstance | null = null;
+    #order: string[] = [];
+    #cols = 1;
+    #chains: Chain[] = [];
     #tokens: Tokens | null = null;
     #frame: number | null = null;
     #sheets_dirty = true;
-    #opened_at = 0;
     #ticket = 0;
     #touched = false;
     #hover: { sheet: Sheet; box: BBox } | null = null;
@@ -146,7 +236,17 @@ export class WorldView {
 
     /** The label the view was opened from. */
     get start(): NetInstance | null {
-        return this.#start;
+        return this.#chains[0]?.from ?? null;
+    }
+
+    /** Whether `at` already starts or is reached by a chain. */
+    traced(at: NetInstance) {
+        const key = instance_key(at);
+        return this.#chains.some(
+            (chain) =>
+                instance_key(chain.from) === key ||
+                chain.reached.some((it) => instance_key(it) === key),
+        );
     }
 
     /** The scene of `page`, while the view shows it. */
@@ -167,12 +267,6 @@ export class WorldView {
         const container = this.host.container();
         if (!container) return false;
         const ticket = ++this.#ticket;
-        const pages = this.host.pages();
-        const { instances, links, depth } = net_closure(pages, from);
-        const keys = pages
-            .map((page) => page.key)
-            .filter((key) => instances.some((it) => it.page === key));
-        if (keys.length < 2) return false;
 
         const root = document.createElement("div");
         root.className = "world-view";
@@ -199,33 +293,11 @@ export class WorldView {
         this.#marks_canvas = marks_canvas;
         this.#tokens = read_tokens(root);
 
-        const views = await Promise.all(
-            keys.map((key) => this.host.page_view(key)),
-        );
-        if (ticket !== this.#ticket) {
-            for (const view of views) view?.release();
+        const added = await this.#add_chain(from, ticket, true);
+        if (!added || ticket !== this.#ticket) {
+            if (ticket === this.#ticket) this.close();
             return false;
         }
-        const shown = views.filter((view): view is SchematicPageView => !!view);
-        const offsets = world_layout(shown.map((view) => view.bounds));
-        shown.forEach((view, i) =>
-            this.#sheets.set(view.key, {
-                view,
-                offset: offsets[i]!,
-                depth: Math.min(
-                    ...instances
-                        .filter((it) => it.page === view.key)
-                        .map((it) => depth.get(instance_key(it)) ?? 0),
-                ),
-            }),
-        );
-        this.#start = from;
-        this.#links = links.filter(
-            ([a, b]) =>
-                a.page !== b.page &&
-                this.#sheets.has(a.page) &&
-                this.#sheets.has(b.page),
-        );
 
         this.#camera.fit_insets = this.host.insets();
         this.#resize();
@@ -256,9 +328,21 @@ export class WorldView {
             this.invalidate();
         });
         this.#observer.observe(root);
-        this.#opened_at = performance.now();
         this.invalidate();
         return true;
+    }
+
+    /**
+     * Chain in the net of `from`, a label on a sheet already shown: its
+     * connections are drawn in the next colour, and sheets it reaches that
+     * are not shown yet join the end of the layout. Nothing happens for a
+     * label already traced.
+     */
+    async chain(from: NetInstance) {
+        if (!this.open || this.traced(from)) return false;
+        const added = await this.#add_chain(from, this.#ticket, false);
+        if (added) this.invalidate();
+        return added;
     }
 
     close() {
@@ -273,8 +357,8 @@ export class WorldView {
         this.#unsubscribe = null;
         for (const sheet of this.#sheets.values()) sheet.view.release();
         this.#sheets.clear();
-        this.#links = [];
-        this.#start = null;
+        this.#order = [];
+        this.#chains = [];
         this.#hover = null;
         this.#selected = null;
         this.#root?.remove();
@@ -283,32 +367,93 @@ export class WorldView {
         this.#marks_canvas = null;
     }
 
+    // --- Chains --------------------------------------------------------
+
+    async #add_chain(from: NetInstance, ticket: number, first: boolean) {
+        const pages = this.host.pages();
+        const { instances, links, depth } = net_closure(pages, from);
+        const keys = pages
+            .map((page) => page.key)
+            .filter((key) => instances.some((it) => it.page === key));
+        // The first chain needs somewhere to go; a later one may stay on
+        // sheets already shown.
+        if (first && keys.length < 2) return false;
+        const fresh = keys.filter((key) => !this.#sheets.has(key));
+        const views = await Promise.all(
+            fresh.map((key) => this.host.page_view(key)),
+        );
+        if (ticket !== this.#ticket) {
+            for (const view of views) view?.release();
+            return false;
+        }
+        const now = performance.now();
+        const color = CHAIN_COLORS[this.#chains.length % CHAIN_COLORS.length]!;
+        const sheet_depth = (key: string) =>
+            Math.min(
+                ...instances
+                    .filter((it) => it.page === key)
+                    .map((it) => depth.get(instance_key(it)) ?? 0),
+            );
+        const added = views.filter((view): view is SchematicPageView => !!view);
+        if (first) this.#cols = Math.max(1, Math.ceil(Math.sqrt(added.length)));
+        for (const view of added) {
+            const d = sheet_depth(view.key);
+            this.#sheets.set(view.key, {
+                view,
+                offset: new Vec2(0, 0),
+                appear_at:
+                    first && d === 0 ? 0 : now + Math.max(0, d - 1) * HOP_DELAY,
+            });
+            this.#order.push(view.key);
+        }
+        const offsets = world_layout(
+            this.#order.map((key) => this.#sheets.get(key)!.view.bounds),
+            GAP,
+            this.#cols,
+        );
+        this.#order.forEach((key, i) => {
+            this.#sheets.get(key)!.offset = offsets[i]!;
+        });
+        const shown = links.filter(
+            ([a, b]) =>
+                a.page !== b.page &&
+                this.#sheets.has(a.page) &&
+                this.#sheets.has(b.page),
+        );
+        this.#chains.push({
+            from,
+            links: shown,
+            reached: instances,
+            color,
+            opened_at: now,
+            depth,
+        });
+        return true;
+    }
+
     // --- Layout and drawing --------------------------------------------
 
     #fit() {
         const all = BBox.combine(
-            [...this.#sheets.values()].map((sheet) => this.#world_rect(sheet)),
+            [...this.#sheets.values()].map((sheet) => {
+                const b = sheet.view.bounds;
+                return new BBox(sheet.offset.x, sheet.offset.y, b.w, b.h);
+            }),
         );
         this.#camera.bbox = all.grow(GAP / 2);
     }
 
-    #world_rect(sheet: Sheet) {
-        const b = sheet.view.bounds;
-        return new BBox(sheet.offset.x, sheet.offset.y, b.w, b.h);
-    }
-
     /** How far this sheet has faded in (0 to 1) at `now`. */
     #arrival(sheet: Sheet, now: number) {
-        if (!sheet.depth) return 1;
-        const start = this.#opened_at + (sheet.depth - 1) * HOP_DELAY;
-        return ease((now - start) / SHEET_MS);
+        if (!sheet.appear_at) return 1;
+        return ease((now - sheet.appear_at) / SHEET_MS);
     }
 
     /** Sheet coordinates → screen (CSS pixels). */
     #sheet_matrix(sheet: Sheet, now = performance.now()): Matrix3 {
         const b = sheet.view.bounds;
         // Arriving sheets settle from slightly smaller, about their centre.
-        const s = 0.97 + 0.03 * this.#arrival(sheet, now);
+        const s = 0.94 + 0.06 * this.#arrival(sheet, now);
         return this.#camera.matrix
             .multiply_self(
                 Matrix3.translation(
@@ -336,24 +481,25 @@ export class WorldView {
         ]);
     }
 
-    #animating(now: number) {
-        let deepest = 0;
+    #sheets_settling(now: number) {
         for (const sheet of this.#sheets.values())
-            deepest = Math.max(deepest, sheet.depth);
-        return now < this.#opened_at + deepest * HOP_DELAY + SHEET_MS + LINE_MS;
+            if (sheet.appear_at && now < sheet.appear_at + SHEET_MS)
+                return true;
+        return false;
     }
 
+    /** The marks flow for as long as the view is open. */
     #schedule() {
         if (this.#frame !== null || !this.#root) return;
         this.#frame = requestAnimationFrame((now) => {
             this.#frame = null;
-            const animating = this.#animating(now);
-            if (this.#sheets_dirty || animating) {
+            if (!this.#root) return;
+            if (this.#sheets_dirty || this.#sheets_settling(now)) {
                 this.#sheets_dirty = false;
                 this.#draw_sheets(now);
             }
             this.#draw_marks(now);
-            if (animating) this.#schedule();
+            this.#schedule();
         });
     }
 
@@ -388,7 +534,8 @@ export class WorldView {
         ctx.fillRect(0, 0, w, h);
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
-        for (const sheet of this.#sheets.values()) {
+        for (const key of this.#order) {
+            const sheet = this.#sheets.get(key)!;
             const alpha = this.#arrival(sheet, now);
             if (alpha <= 0) continue;
             const matrix = this.#sheet_matrix(sheet, now);
@@ -403,13 +550,7 @@ export class WorldView {
             ctx.restore();
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             ctx.globalAlpha = alpha;
-            this.#chip(
-                ctx,
-                tokens,
-                sheet.view.name,
-                new Vec2(r.x, r.y - 6),
-                "above",
-            );
+            this.#title(ctx, tokens, sheet.view.name, new Vec2(r.x, r.y - 6));
             ctx.globalAlpha = 1;
         }
     }
@@ -417,63 +558,62 @@ export class WorldView {
     #draw_marks(now: number) {
         const canvas = this.#marks_canvas;
         const ctx = canvas?.getContext("2d");
-        const tokens = this.#tokens;
-        if (!canvas || !ctx || !tokens) return;
+        if (!canvas || !ctx) return;
         const dpr = window.devicePixelRatio || 1;
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
 
-        for (const [from, to] of this.#links) {
-            const target = this.#sheets.get(to.page);
-            const source = this.#sheets.get(from.page);
-            if (!target || !source) continue;
-            const landed =
-                this.#opened_at +
-                Math.max(0, target.depth - 1) * HOP_DELAY +
-                (target.depth ? SHEET_MS : 0);
-            const progress = ease((now - landed) / LINE_MS);
-            if (progress <= 0) continue;
-            const a = this.#instance_box(from);
-            const b = this.#instance_box(to);
-            if (!a || !b) continue;
-            const route = world_route(
-                a.center,
-                this.#screen_rect(source),
-                b.center,
-                this.#screen_rect(target),
-            );
-            ctx.strokeStyle = tokens.accent;
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            draw_partial(ctx, route, progress);
-            ctx.stroke();
-            ctx.fillStyle = tokens.accent;
-            for (const end of progress < 1
-                ? [a.center]
-                : [a.center, b.center]) {
+        const pulse = 0.5 + 0.5 * Math.sin(now / 300);
+        for (const chain of this.#chains) {
+            const arrived = new Set<string>();
+            for (const [from, to] of chain.links) {
+                const target = this.#sheets.get(to.page);
+                if (!target) continue;
+                // A connection grows once its sheet is there: right away for
+                // a sheet already shown, else when it has faded in.
+                const hop = chain.depth.get(instance_key(to)) ?? 1;
+                const landed = Math.max(
+                    chain.opened_at + Math.max(0, hop - 1) * HOP_DELAY,
+                    target.appear_at ? target.appear_at + SHEET_MS : 0,
+                );
+                const grow = ease((now - landed) / LINE_MS);
+                if (grow <= 0) continue;
+                const a = this.#instance_point(from);
+                const b = this.#instance_point(to);
+                if (!a || !b) continue;
+                const curve = connection(a, b);
+                this.#draw_connection(
+                    ctx,
+                    curve,
+                    chain.color,
+                    to.name,
+                    grow,
+                    now,
+                );
+                if (grow < 1) continue;
+                arrived.add(instance_key(to));
+                const end = curve.at(curve.length);
+                draw_arrowhead(ctx, end.point, end.angle, chain.color);
+            }
+            for (const at of [chain.from, ...chain.links.map(([, to]) => to)]) {
+                const start = at === chain.from;
+                if (!start && !arrived.has(instance_key(at))) continue;
+                const p = this.#instance_point(at);
+                if (!p) continue;
                 ctx.beginPath();
-                ctx.arc(end.x, end.y, 3, 0, Math.PI * 2);
+                ctx.arc(p.x, p.y, (start ? 9 : 6) + 3 * pulse, 0, Math.PI * 2);
+                ctx.strokeStyle = chain.color;
+                ctx.globalAlpha = 0.5 + 0.4 * pulse;
+                ctx.lineWidth = start ? 3 : 2;
+                ctx.stroke();
+                ctx.globalAlpha = 1;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, start ? 4.5 : 3, 0, Math.PI * 2);
+                ctx.fillStyle = chain.color;
                 ctx.fill();
             }
-            if (progress < 1) continue;
-            const mid = route[1]!.add(route[2]!).multiply(0.5);
-            this.#chip(ctx, tokens, to.name, mid, "center");
-        }
-
-        // The label the view started from, and the ones it reached.
-        const marked = [this.#start, ...this.#links.map(([, to]) => to)];
-        for (const [index, at] of marked.entries()) {
-            if (!at) continue;
-            const box = this.#instance_box(at);
-            if (!box) continue;
-            ctx.strokeStyle = tokens.accent;
-            ctx.lineWidth = index === 0 ? 2 : 1.25;
-            ctx.beginPath();
-            const r = box.grow(3);
-            ctx.roundRect(r.x, r.y, r.w, r.h, 3);
-            ctx.stroke();
         }
 
         if (this.#selected) {
@@ -492,35 +632,97 @@ export class WorldView {
         }
     }
 
-    #instance_box(at: NetInstance): BBox | null {
-        const sheet = this.#sheets.get(at.page);
-        const box = sheet?.view.item_bbox(at.uuid);
-        return sheet && box ? this.#screen_box(sheet, box) : null;
+    /**
+     * One connection: a soft glow, then the line. While growing it is solid
+     * up to its tip; once grown it flows outward as dashes alternating with
+     * the net's name, set along the curve.
+     */
+    #draw_connection(
+        ctx: CanvasRenderingContext2D,
+        curve: Curve,
+        color: string,
+        name: string,
+        grow: number,
+        now: number,
+    ) {
+        const reach = curve.length * grow;
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.globalAlpha = 0.22;
+        ctx.lineWidth = 9;
+        ctx.beginPath();
+        curve.trace(ctx, 0, reach);
+        ctx.stroke();
+        ctx.globalAlpha = 0.95;
+        ctx.lineWidth = 2.5;
+        if (grow < 1) {
+            ctx.beginPath();
+            curve.trace(ctx, 0, reach);
+            ctx.stroke();
+            ctx.restore();
+            return;
+        }
+        ctx.font = `600 10px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        const text = ctx.measureText(name).width;
+        const period = DASH + SPACE + text + SPACE;
+        // Too short for the name: plain flowing dashes.
+        const named = curve.length > period * 1.5;
+        const step = named ? period : DASH + SPACE * 1.4;
+        ctx.beginPath();
+        for (const s of flow_starts(curve.length, step, now * FLOW_SPEED))
+            curve.trace(ctx, s, s + DASH);
+        ctx.stroke();
+        if (named) {
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.lineWidth = 3;
+            ctx.strokeStyle = this.host.background();
+            ctx.fillStyle = color;
+            for (const s of flow_starts(curve.length, step, now * FLOW_SPEED)) {
+                const mid = s + DASH + SPACE + text / 2;
+                if (mid - text / 2 < 0 || mid + text / 2 > curve.length)
+                    continue;
+                const { point, angle } = curve.at(mid);
+                // Keep the name upright whichever way the line runs.
+                const upright = Math.cos(angle) < 0 ? angle + Math.PI : angle;
+                ctx.save();
+                ctx.translate(point.x, point.y);
+                ctx.rotate(upright);
+                ctx.strokeText(name, 0, 0.5);
+                ctx.fillText(name, 0, 0.5);
+                ctx.restore();
+            }
+        }
+        ctx.restore();
     }
 
-    /** A small label in Prism's badge style. */
-    #chip(
+    #instance_point(at: NetInstance): Vec2 | null {
+        const sheet = this.#sheets.get(at.page);
+        const box = sheet?.view.item_bbox(at.uuid);
+        return sheet && box ? this.#screen_box(sheet, box).center : null;
+    }
+
+    /** A sheet's name above its frame, in Prism's badge style. */
+    #title(
         ctx: CanvasRenderingContext2D,
         tokens: Tokens,
         text: string,
         at: Vec2,
-        place: "above" | "center",
     ) {
         ctx.font = `500 11px ${tokens.font}`;
         const w = ctx.measureText(text).width + 12;
         const h = 18;
-        const x = place === "center" ? at.x - w / 2 : at.x;
-        const y = place === "center" ? at.y - h / 2 : at.y - h;
         ctx.fillStyle = tokens.card;
         ctx.strokeStyle = tokens.border;
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.roundRect(x, y, w, h, 4);
+        ctx.roundRect(at.x, at.y - h, w, h, 4);
         ctx.fill();
         ctx.stroke();
-        ctx.fillStyle = place === "center" ? tokens.fg : tokens.muted;
+        ctx.fillStyle = tokens.muted;
+        ctx.textAlign = "start";
         ctx.textBaseline = "middle";
-        ctx.fillText(text, x + 6, y + h / 2 + 0.5);
+        ctx.fillText(text, at.x + 6, at.y - h / 2 + 0.5);
     }
 
     // --- Interaction ---------------------------------------------------
@@ -534,11 +736,9 @@ export class WorldView {
             const box = hit?.found.bbox ?? null;
             if (box === (this.#hover?.box ?? null)) return;
             this.#hover = hit && box ? { sheet: hit.sheet, box } : null;
-            this.#schedule();
         });
         canvas.addEventListener("pointerleave", () => {
             this.#hover = null;
-            this.#schedule();
         });
         canvas.addEventListener("click", (event) => {
             const press = this.#press;
@@ -554,7 +754,6 @@ export class WorldView {
             const bbox = hit?.found.bbox ?? null;
             this.#selected =
                 hit && item && bbox ? { sheet: hit.sheet, box: bbox } : null;
-            this.#schedule();
             if (hit)
                 this.host.select(hit.sheet.view, item, {
                     shift: event.shiftKey,
@@ -564,9 +763,9 @@ export class WorldView {
             const hit = this.#hit(event);
             if (!hit) return;
             const key = hit.sheet.view.key;
-            const here = [this.#start, ...this.#links.flat()].find(
-                (it) => it?.page === key,
-            );
+            const here = this.#chains
+                .flatMap((chain) => [chain.from, ...chain.links.flat()])
+                .find((it) => it.page === key);
             this.close();
             this.host.open_page(key, here?.uuid);
         });
@@ -590,43 +789,50 @@ export class WorldView {
     }
 }
 
+/** A connection's curve: out of `a` sideways, into `b` from the side. */
+function connection(a: Vec2, b: Vec2) {
+    const span = Math.hypot(b.x - a.x, b.y - a.y);
+    const bend = Math.max(60, span * 0.3);
+    const dir = b.x >= a.x ? 1 : -1;
+    return new Curve(
+        a,
+        new Vec2(a.x + dir * bend, a.y),
+        new Vec2(b.x - dir * bend, b.y),
+        b,
+    );
+}
+
+function draw_arrowhead(
+    ctx: CanvasRenderingContext2D,
+    tip: Vec2,
+    angle: number,
+    color: string,
+) {
+    const size = 10;
+    ctx.beginPath();
+    ctx.moveTo(tip.x, tip.y);
+    ctx.lineTo(
+        tip.x - size * Math.cos(angle - 0.45),
+        tip.y - size * Math.sin(angle - 0.45),
+    );
+    ctx.lineTo(
+        tip.x - size * Math.cos(angle + 0.45),
+        tip.y - size * Math.sin(angle + 0.45),
+    );
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+}
+
 /** Prism's theme, from the CSS variables it sets on the viewer. */
 function read_tokens(el: HTMLElement): Tokens {
     const style = getComputedStyle(el);
     const read = (name: string, fallback: string) =>
         style.getPropertyValue(name).trim() || fallback;
     return {
-        accent: read("--inset-bottom-fg", "#2563eb"),
-        fg: read("--inset-fg", "#0f172a"),
-        muted: read("--inset-muted", "#64748b"),
         card: read("--inset-bg", "#ffffff"),
         border: read("--inset-border", "#e2e8f0"),
+        muted: read("--inset-muted", "#64748b"),
         font: read("--inset-font", "system-ui, sans-serif"),
     };
-}
-
-/** The first `progress` (0 to 1) of a polyline, by length. */
-function draw_partial(
-    ctx: CanvasRenderingContext2D,
-    points: readonly Vec2[],
-    progress: number,
-) {
-    const lengths = points
-        .slice(1)
-        .map((p, i) => Math.hypot(p.x - points[i]!.x, p.y - points[i]!.y));
-    let left = lengths.reduce((sum, l) => sum + l, 0) * progress;
-    ctx.moveTo(points[0]!.x, points[0]!.y);
-    for (let i = 1; i < points.length; i++) {
-        const a = points[i - 1]!;
-        const b = points[i]!;
-        const l = lengths[i - 1]!;
-        if (left >= l) {
-            ctx.lineTo(b.x, b.y);
-            left -= l;
-            continue;
-        }
-        const t = l ? left / l : 0;
-        ctx.lineTo(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
-        return;
-    }
 }

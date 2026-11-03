@@ -2729,13 +2729,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             );
             return !!viewer;
         }
-        // The same label again closes the view; another one re-roots it.
-        if (
-            world?.open &&
-            world.start?.page === at.page &&
-            world.start.uuid === at.uuid
-        )
-            this.hideWorldView();
+        // Inside the world view `~` only chains another net in (Escape
+        // closes it); from the main view it opens the view.
+        if (world?.open) void world.chain(at);
         else void this.showWorldView(label.page, label.uuid);
         return true;
     }

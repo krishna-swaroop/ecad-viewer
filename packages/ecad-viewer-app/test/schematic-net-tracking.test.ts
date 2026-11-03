@@ -3,8 +3,8 @@ import { SchematicParser } from "kicad-parser";
 
 import { BBox, Vec2 } from "../src/base/math";
 import {
+    flow_starts,
     world_layout,
-    world_route,
 } from "../src/ecad-viewer/insets/world-view";
 import { normalize_schematic_selection } from "../src/ecad-viewer/host-adapter";
 import {
@@ -285,34 +285,30 @@ suite("wired instances", () => {
     });
 });
 
-suite("world view routes", () => {
-    test("side by side sheets turn in the gap between them", () => {
-        const route = world_route(
-            new Vec2(50, 20),
-            new BBox(0, 0, 100, 100),
-            new Vec2(150, 60),
-            new BBox(120, 0, 100, 100),
+suite("world view flow", () => {
+    test("added sheets join the end without moving the ones shown", () => {
+        const first = world_layout(
+            [new BBox(0, 0, 100, 50), new BBox(0, 0, 80, 70)],
+            10,
+            2,
         );
-        expect(route.map((p) => [p.x, p.y])).to.deep.equal([
-            [50, 20],
-            [110, 20],
-            [110, 60],
-            [150, 60],
-        ]);
+        const more = world_layout(
+            [
+                new BBox(0, 0, 100, 50),
+                new BBox(0, 0, 80, 70),
+                new BBox(0, 0, 60, 40),
+            ],
+            10,
+            2,
+        );
+        expect(more.slice(0, 2).map((v) => [v.x, v.y])).to.deep.equal(
+            first.map((v) => [v.x, v.y]),
+        );
+        expect([more[2]!.x, more[2]!.y]).to.deep.equal([0, 80]);
     });
 
-    test("stacked sheets turn in the gap below", () => {
-        const route = world_route(
-            new Vec2(50, 20),
-            new BBox(0, 0, 100, 100),
-            new Vec2(30, 150),
-            new BBox(0, 120, 100, 100),
-        );
-        expect(route.map((p) => [p.x, p.y])).to.deep.equal([
-            [50, 20],
-            [50, 107],
-            [30, 107],
-            [30, 150],
-        ]);
+    test("the dash and name pattern repeats along the run and moves with time", () => {
+        expect(flow_starts(100, 40, 0)).to.deep.equal([-40, 0, 40, 80]);
+        expect(flow_starts(100, 40, 10)).to.deep.equal([-30, 10, 50, 90]);
     });
 });
