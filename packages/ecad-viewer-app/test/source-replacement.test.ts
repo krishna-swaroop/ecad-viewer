@@ -129,6 +129,28 @@ function revision(revisionKey: string, content: string): EcadSourceUpdate {
     };
 }
 
+const SHEET_ROOT = `
+(kicad_sch
+  (version 20250114)
+  (generator "eeschema")
+  (uuid "00000000-0000-0000-0000-000000000001")
+  (paper "A4")
+  (sheet (at 40 40) (size 20 20)
+    (uuid "00000000-0000-0000-0000-0000000000d1")
+    (property "Sheetname" "Child" (at 40 39 0) (effects (font (size 1.27 1.27)) (justify left bottom)))
+    (property "Sheetfile" "child.kicad_sch" (at 40 61 0) (effects (font (size 1.27 1.27)) (justify left top)))
+  )
+)
+`;
+const SHEET_CHILD = `
+(kicad_sch
+  (version 20250114)
+  (generator "eeschema")
+  (uuid "00000000-0000-0000-0000-000000000002")
+  (paper "A4")
+)
+`;
+
 suite("warm source replacement", () => {
     let host: MountedViewer;
 
@@ -230,12 +252,84 @@ suite("warm source replacement", () => {
         expect(viewer.paint_count).to.equal(paintCount);
     });
 
-    test("preserves the visible focal point while applying measured overlay insets", async () => {
+    test("a sheet is picked over a margin but outlined at its own size", async () => {
+        await host.replaceSources({
+            revisionKey: "sheet",
+            sources: [
+                { filename: "root.kicad_sch", content: SHEET_ROOT },
+                { filename: "child.kicad_sch", content: SHEET_CHILD },
+            ],
+        });
+        const viewer = schematicViewer(host) as MountedDocumentViewer & {
+            find_item(pos: { x: number; y: number }): {
+                item: unknown;
+                bbox: { x: number; y: number; w: number; h: number } | null;
+            };
+        };
+        // Picked over a margin around the body, outlined at the body.
+        const near_edge = viewer.find_item({ x: 39, y: 50 });
+        expect(near_edge.item).to.exist;
+        const { x, y, w, h } = near_edge.bbox!;
+        expect([x, y, w, h]).to.deep.equal([40, 40, 20, 20]);
+    });
+
+    test("a click picks what is under the pointer after the camera moved beneath it", async () => {
+        await host.replaceSources({
+            revisionKey: "sheet",
+            sources: [
+                { filename: "root.kicad_sch", content: SHEET_ROOT },
+                { filename: "child.kicad_sch", content: SHEET_CHILD },
+            ],
+        });
+        const viewer = schematicViewer(host) as MountedDocumentViewer & {
+            viewport: {
+                camera: {
+                    center: {
+                        x: number;
+                        y: number;
+                        set(x: number, y: number): void;
+                    };
+                };
+            };
+        };
+        const camera = viewer.viewport.camera;
+        const rect = viewer.canvas.getBoundingClientRect();
+        const pointer = camera.world_to_screen({ x: 10, y: 10 });
+        const client = {
+            clientX: rect.left + pointer.x,
+            clientY: rect.top + pointer.y,
+            bubbles: true,
+        };
+        const selections: Array<{
+            itemType: string;
+            name?: string;
+            page?: string;
+        }> = [];
+        host.addEventListener("ecad-viewer:selection", (event) =>
+            selections.push((event as CustomEvent).detail),
+        );
+
+        // The pointer rests over empty canvas...
+        viewer.canvas.dispatchEvent(new MouseEvent("mousemove", client));
+        // ...while the camera pans the sheet underneath it (a fit, a page
+        // switch), and the user clicks without moving.
+        camera.center.set(camera.center.x + 40, camera.center.y + 40);
+        viewer.draw();
+        viewer.canvas.dispatchEvent(new MouseEvent("click", client));
+
+        expect(selections.at(-1)).to.include({
+            itemType: "sheet",
+            name: "Child",
+            page: "child.kicad_sch",
+        });
+    });
+
+    test("keeps the camera still while applying measured overlay insets", async () => {
         await host.replaceSources(revision("initial", schematicFixture));
         const viewer = schematicViewer(host);
         const camera = viewer.viewport.camera;
-        const oldSafeCenter = camera.fit_viewport_center;
-        const focalPoint = camera.screen_to_world(oldSafeCenter);
+        const probe = { x: 40, y: 30 };
+        const before = camera.screen_to_world(probe);
         const paintCount = viewer.paint_count;
 
         host.setViewportInsets({ left: 180, right: 96, top: 24 });
@@ -246,9 +340,9 @@ suite("warm source replacement", () => {
             top: 24,
             bottom: 0,
         });
-        const projected = camera.world_to_screen(focalPoint);
-        expect(projected.x).to.be.closeTo(camera.fit_viewport_center.x, 0.01);
-        expect(projected.y).to.be.closeTo(camera.fit_viewport_center.y, 0.01);
+        const after = camera.screen_to_world(probe);
+        expect(after.x).to.be.closeTo(before.x, 1e-6);
+        expect(after.y).to.be.closeTo(before.y, 1e-6);
         expect(viewer.paint_count).to.equal(paintCount);
 
         await host.replaceSources(revision("next", schematicFixture));
@@ -258,6 +352,50 @@ suite("warm source replacement", () => {
             top: 24,
             bottom: 0,
         });
+    });
+
+    test("pans just enough to uncover the selection a rail would cover", async () => {
+        await host.replaceSources(revision("initial", schematicFixture));
+        const viewer = schematicViewer(host);
+        const camera = viewer.viewport.camera;
+        const width = camera.viewport_size.x;
+        const height = camera.viewport_size.y;
+        const a = camera.screen_to_world({ x: width - 60, y: height / 2 });
+        const b = camera.screen_to_world({ x: width - 20, y: height / 2 + 20 });
+        const bounds: [number, number, number, number] = [
+            Math.min(a.x, b.x),
+            Math.min(a.y, b.y),
+            Math.abs(b.x - a.x),
+            Math.abs(b.y - a.y),
+        ];
+        host.dispatchEvent(
+            new CustomEvent("ecad-viewer:selection", {
+                detail: { sourceContext: "SCH", itemType: "symbol", bounds },
+            }),
+        );
+
+        host.setViewportInsets({ right: 200 });
+
+        const right = camera.world_to_screen({
+            x: bounds[0] + bounds[2],
+            y: bounds[1],
+        }).x;
+        const left = camera.world_to_screen({ x: bounds[0], y: bounds[1] }).x;
+        // Moved left by exactly the covered part, no further.
+        expect(right).to.be.closeTo(width - 200, 0.01);
+        expect(left).to.be.closeTo(width - 240, 0.01);
+
+        // Nothing selected: a rail never moves the camera.
+        host.setViewportInsets(null);
+        host.dispatchEvent(
+            new CustomEvent("ecad-viewer:selection", {
+                detail: { sourceContext: "SCH", itemType: "" },
+            }),
+        );
+        const probe = camera.screen_to_world({ x: width - 30, y: 10 });
+        host.setViewportInsets({ right: 200 });
+        const after = camera.screen_to_world({ x: width - 30, y: 10 });
+        expect(after.x).to.be.closeTo(probe.x, 1e-6);
     });
 
     test("fits focused bounds inside the unobscured viewport", async () => {

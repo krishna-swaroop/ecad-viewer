@@ -35,7 +35,7 @@ const BOARD = `
   (net 0 "")
   (net 1 "GND")
   (net 2 "SIG")
-  (gr_rect (start 0 0) (end 40 30) (layer "Edge.Cuts") (width 0.1))
+  (gr_rect (start 0 0) (end 40 30) (stroke (width 0.1) (type default)) (fill none) (layer "Edge.Cuts"))
   (footprint "R_0805" (layer "F.Cu") (at 20 10) (uuid "fp-r1")
     (property "Reference" "R1" (at 0 -2 0) (layer "F.SilkS") (uuid "r1-ref") (effects (font (size 1 1) (thickness 0.15))))
     (pad "1" smd rect (at -1 0) (size 1.2 1.2) (layers "F.Cu" "F.Paste" "F.Mask") (net 1 "GND") (uuid "r1-1"))
@@ -108,11 +108,54 @@ suite("PCB measure: snap targets", () => {
         expect(mid.kind).to.equal("track");
         expect(mid.x).to.be.closeTo(9.3, 1e-9);
         expect(mid.y).to.be.closeTo(10, 1e-9);
-        // Arc ends snap too; arcs have no centreline snap.
+        // Arc ends snap too, ahead of the arc itself.
         expect(index.snap(new Vec2(25.1, 5.1), 0.5, all)).to.include({
             kind: "track-end",
             x: 25,
             y: 5,
+        });
+    });
+
+    test("anywhere on a pad's or via's copper snaps to its anchor", () => {
+        // 0.5 mm off R1.1's centre, still on its 1.2 mm pad, with a tiny radius.
+        expect(index.snap(new Vec2(19.5, 10.5), 0.05, all)).to.include({
+            kind: "pad",
+            x: 19,
+            y: 10,
+        });
+        // Just off the pad's corner: nothing.
+        expect(index.snap(new Vec2(19.7, 10.7), 0.05, all).kind).to.equal(
+            "free",
+        );
+        expect(index.snap(new Vec2(16.3, 18.2), 0.05, all)).to.include({
+            kind: "via",
+            x: 16,
+            y: 18,
+        });
+    });
+
+    test("an arc track snaps along its swept part only", () => {
+        // Centre (27, 5), radius 2, sweeping over the top through (27, 3).
+        const on = index.snap(new Vec2(27, 3.2), 0.5, all);
+        expect(on.kind).to.equal("track");
+        expect(on.x).to.be.closeTo(27, 1e-6);
+        expect(on.y).to.be.closeTo(3, 1e-6);
+        expect(index.snap(new Vec2(27, 7.1), 0.5, all).kind).to.equal("free");
+    });
+
+    test("the board edge and its corners snap", () => {
+        expect(index.snap(new Vec2(39.8, 15), 0.5, all)).to.include({
+            kind: "edge",
+            x: 40,
+            y: 15,
+            label: "board edge",
+            net: null,
+        });
+        expect(index.snap(new Vec2(39.9, 0.2), 0.5, all)).to.include({
+            kind: "edge-corner",
+            x: 40,
+            y: 0,
+            label: "edge corner",
         });
     });
 

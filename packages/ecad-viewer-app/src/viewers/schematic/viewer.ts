@@ -4,6 +4,17 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
+import { HighlightMotion } from "./highlight-motion";
+import {
+    LOCAL_TRACE_CHANNEL,
+    NET_HIGHLIGHT_CHANNEL,
+    NET_HIGHLIGHT_DIM,
+    local_trace_scene,
+    net_highlight_scene,
+    type SchematicNetMembers,
+    type SheetGeometry,
+} from "./net-highlight";
+import { pin_stem } from "./painters/pin";
 import { BBox, Matrix3, Vec2 } from "../../base/math";
 import { Color, Polygon, Polyline, Renderer } from "../../graphics";
 import { Canvas2DRenderer } from "../../graphics/canvas2d";
@@ -16,6 +27,7 @@ import {
     Label,
     PinInstance,
     SchematicInstanceContext,
+    SchematicSheet,
 } from "../../kicad/schematic";
 import { DocumentViewer } from "../base/document-viewer";
 import {
@@ -30,7 +42,7 @@ import {
 } from "../base/events";
 import { ViewerType } from "../base/viewer";
 import { LayerNames, LayerSet } from "./layers";
-import { SchematicPainter } from "./painter";
+import { SchematicPainter, sheet_body_bbox } from "./painter";
 import { render_schematic_view } from "./schematic-view";
 import { get_symbol_transform } from "../../kicad/symbol-transform";
 import { apply_schematic_render_defaults } from "./render-state";
@@ -216,7 +228,7 @@ export class SchematicViewer extends DocumentViewer<
         const items = this.layers.query_point_in_order(pos);
         for (const it of items) {
             if (it.bbox.context) {
-                selected = it.bbox;
+                selected = selection_box(it.bbox.context, it.bbox);
                 return {
                     item: it.bbox.context,
                     bbox: selected,
@@ -338,11 +350,157 @@ export class SchematicViewer extends DocumentViewer<
     protected override resolve_loaded(value: boolean) {
         super.resolve_loaded(value);
 
+        if (value) {
+            // A new sheet: its own pins, and a trace belongs to the sheet it
+            // was drawn on.
+            this.#pins_by_uuid = null;
+            this.#local_trace = null;
+            this.#traced_name = null;
+            this.#paint_overlays(performance.now());
+        }
+
         if (value && this.#focus_net_item) {
             this.zoom_fit_item(this.#focus_net_item);
         }
 
         this.#focus_net_item = undefined;
+    }
+
+    /** The nets drawn over the schematic, on every sheet; see net-highlight.ts. */
+    get highlighted_nets(): readonly SchematicNetMembers[] {
+        return this.#highlighted_nets;
+    }
+
+    /**
+     * Whether highlights and traces ease in and out. Off for headless scenes
+     * (insets, the world view), which are redrawn only when told.
+     */
+    set highlight_motion(on: boolean) {
+        this.#highlight_motion.animate = on;
+        this.#trace_motion.animate = on;
+    }
+
+    /**
+     * Replace the highlighted nets. The sheet dims and each net's members on
+     * the open sheet are lit over it; switching sheets keeps the set and
+     * lights it on the new sheet. The change eases in or out, and a net that
+     * joins swells briefly.
+     */
+    set_highlighted_nets(nets: readonly SchematicNetMembers[]) {
+        const before = new Set(this.#highlighted_nets.map((net) => net.name));
+        this.#highlighted_nets = [...nets];
+        // While fading out, the last lit set stays drawn until it is dark.
+        if (nets.length) this.#lit_nets = this.#highlighted_nets;
+        this.#highlight_motion.retarget(
+            nets.length > 0,
+            nets.map((net) => net.name).filter((name) => !before.has(name)),
+            performance.now(),
+        );
+        this.#animate_overlays();
+    }
+
+    /**
+     * Join the open sheet's local labels named `name` with lines, or clear it
+     * (null). Cleared when the sheet changes.
+     */
+    show_local_trace(name: string | null) {
+        if (name) this.#traced_name = name;
+        this.#local_trace = name;
+        this.#trace_motion.retarget(!!name, [], performance.now());
+        this.#animate_overlays();
+    }
+
+    get local_trace(): string | null {
+        return this.#local_trace;
+    }
+
+    #highlighted_nets: SchematicNetMembers[] = [];
+    /** What is drawn: the highlighted set, or the last one while it fades. */
+    #lit_nets: SchematicNetMembers[] = [];
+    #highlight_motion = new HighlightMotion();
+    #local_trace: string | null = null;
+    #traced_name: string | null = null;
+    #trace_motion = new HighlightMotion();
+    #overlay_frame: number | null = null;
+
+    /** Paint the overlays now and keep painting while they move. */
+    #animate_overlays() {
+        const settled = this.#paint_overlays(performance.now());
+        this.draw();
+        if (settled || this.#overlay_frame !== null) return;
+        const step = (now: number) => {
+            this.#overlay_frame = null;
+            if (this.disposables.isDisposed) return;
+            const done = this.#paint_overlays(now);
+            this.draw();
+            if (!done) this.#overlay_frame = requestAnimationFrame(step);
+        };
+        this.#overlay_frame = requestAnimationFrame(step);
+    }
+
+    /** Paint both overlays as of `now`; true once nothing is moving. */
+    #paint_overlays(now: number): boolean {
+        if (!this.layers || !this.document) return true;
+        const sheet: SheetGeometry = {
+            bbox: (uuid) => this.schematic_renderer.get_item_bbox(uuid),
+            pin_stem: (uuid) => this.#pin_stem(uuid),
+        };
+
+        const lit = this.#highlight_motion.sample(now);
+        this.content_dim =
+            lit.intensity > 0
+                ? 1 - (1 - NET_HIGHLIGHT_DIM) * lit.intensity
+                : null;
+        if (lit.intensity > 0 && this.#lit_nets.length) {
+            this.set_overlay_scene(
+                net_highlight_scene(
+                    this.#lit_nets,
+                    this.#instance_context?.sheet_path ?? "",
+                    this.document,
+                    sheet,
+                    lit,
+                ),
+                false,
+            );
+        } else {
+            this.clear_overlay_scene(NET_HIGHLIGHT_CHANNEL);
+            if (lit.settled) this.#lit_nets = [];
+        }
+
+        const traced = this.#trace_motion.sample(now);
+        if (traced.intensity > 0 && this.#traced_name) {
+            this.set_overlay_scene(
+                local_trace_scene(
+                    this.#traced_name,
+                    this.document,
+                    sheet,
+                    traced.intensity,
+                ),
+                false,
+            );
+        } else {
+            this.clear_overlay_scene(LOCAL_TRACE_CHANNEL);
+            if (traced.settled) this.#traced_name = null;
+        }
+        return lit.settled && traced.settled;
+    }
+
+    /** The line of the pin `uuid` on this sheet, if it is one. */
+    #pin_stem(uuid: string): [Vec2, Vec2] | undefined {
+        this.#pins_by_uuid ??= this.#index_pins();
+        const pin = this.#pins_by_uuid.get(uuid);
+        return pin ? pin_stem(pin) : undefined;
+    }
+
+    #pins_by_uuid: Map<string, PinInstance> | null = null;
+
+    #index_pins() {
+        const pins = new Map<string, PinInstance>();
+        for (const symbol of this.schematic.symbols.values())
+            for (const pin of this.#instance_context?.unit_pins(symbol) ??
+                symbol.unit_pins)
+                if (pin.uuid) pins.set(pin.uuid, pin);
+        return pins;
     }
 
     override on_hover(pos: Vec2): void {
@@ -556,7 +714,9 @@ export class SchematicViewer extends DocumentViewer<
     }
 
     public zoom_fit_item(uuid: string) {
-        const bbox = this.schematic_renderer.get_item_bbox(uuid);
+        const sheet = this.document?.sheets?.find((s) => s.uuid === uuid);
+        const recorded = this.schematic_renderer.get_item_bbox(uuid);
+        const bbox = sheet ? sheet_body_bbox(sheet) : recorded;
         if (bbox) {
             this.viewport.camera.bbox = bbox.grow(20);
             this.draw();
@@ -748,4 +908,13 @@ export class SchematicViewer extends DocumentViewer<
         layer.graphics = this.renderer.end_layer();
         layer.graphics.composite_operation = "source-over";
     }
+}
+
+/**
+ * The box a selection outlines. A sheet is picked over its body grown by a
+ * margin, so its edges and entries are easy to hit, but is outlined at its
+ * own size, as KiCad does.
+ */
+function selection_box(item: unknown, recorded: BBox): BBox {
+    return item instanceof SchematicSheet ? sheet_body_bbox(item) : recorded;
 }

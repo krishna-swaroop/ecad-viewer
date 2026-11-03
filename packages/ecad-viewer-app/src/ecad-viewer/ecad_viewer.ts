@@ -1,4 +1,6 @@
 import { later } from "../base/async";
+import { NetTracker, type NetInstancePage } from "./net-tracking";
+import type { SchematicNetMembers } from "../viewers/schematic/net-highlight";
 import { listen } from "../base/events";
 import { BBox, Vec2 } from "../base/math";
 import {
@@ -18,7 +20,7 @@ import {
     normalize_variant_name,
     resolve_variant_request,
 } from "../kicanvas/project";
-import type { NetRef } from "../kicad/net_ref";
+import type { LabelKind, NetRef } from "../kicad/net_ref";
 import {
     EcadHighlightChangeEvent,
     resolve_board_net,
@@ -119,6 +121,7 @@ export type {
     EcadSourceUpdate,
 } from "./host-adapter";
 export type { EcadNetRef, EcadHighlightChangeDetail } from "./highlight";
+export type { SchematicNetMembers } from "../viewers/schematic/net-highlight";
 export { EcadHighlightChangeEvent } from "./highlight";
 export type { NetStatistics, NetStatisticsRef } from "../kicad/net_statistics";
 export {
@@ -450,6 +453,7 @@ import {
     type InsetPeer,
     type InsetProvider,
     type InsetScene3D,
+    type SchematicInsetHost,
 } from "./insets";
 
 export class ECadViewer extends KCUIElement implements InputContainer {
@@ -542,6 +546,14 @@ export class ECadViewer extends KCUIElement implements InputContainer {
 
     constructor() {
         super();
+        // What a rail opening over the canvas must not cover: the item the
+        // last selection event named, in its own view's world space.
+        this.addEventListener(EcadSemanticSelectionEvent.type, (event) => {
+            const detail = (event as EcadSemanticSelectionEvent).detail;
+            this.#last_selection = detail?.bounds
+                ? { context: detail.sourceContext, bounds: detail.bounds }
+                : null;
+        });
         this.addDisposable(this.#project);
         this.addDisposable(this.#reference_project);
         this.provideContext("project", this.#project);
@@ -574,10 +586,14 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.addDisposable(
             listen(window, "keyup", (event) => {
                 this.#inset_link?.key_up(event as KeyboardEvent);
+                this.#tracker.key_up(event as KeyboardEvent);
             }),
         );
         this.addDisposable(
-            listen(window, "blur", () => this.#inset_link?.key_up(null)),
+            listen(window, "blur", () => {
+                this.#inset_link?.key_up(null);
+                this.#tracker.key_up(null);
+            }),
         );
     }
 
@@ -750,13 +766,24 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.#safe_board_viewer()?.set_variant(resolution.effective);
     }
 
+    #last_selection: {
+        context: "SCH" | "PCB";
+        bounds: [number, number, number, number];
+    } | null = null;
+
     #apply_viewport_insets(): void {
         this.#inset_link?.sync();
         // A reload may have replaced the board viewer under measure mode.
         if (this.#measure?.active) this.#measure.attach(this.#measure_viewer());
-        this.#safe_board_viewer()?.set_viewport_insets(this.#viewport_insets);
+        const reveal = this.#last_selection;
+        const box = reveal ? new BBox(...reveal.bounds) : null;
+        this.#safe_board_viewer()?.set_viewport_insets(
+            this.#viewport_insets,
+            reveal?.context === "PCB" ? box : null,
+        );
         this.#safe_schematic_viewer()?.set_viewport_insets(
             this.#viewport_insets,
+            reveal?.context === "SCH" ? box : null,
         );
     }
 
@@ -2543,6 +2570,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
      */
     public clearSelection(options: { keepHighlights?: boolean } = {}): void {
         this.#probe_generation += 1;
+        this.#last_selection = null;
         const board_viewer = this.#safe_board_viewer();
         const had_nets = (board_viewer?.highlighted_nets.size ?? 0) > 0;
         board_viewer?.clear_selection(options.keepHighlights === true);
@@ -2597,6 +2625,34 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     /** Fit the board camera to the highlighted copper. False when empty. */
+    /**
+     * Highlight nets on the schematic: every sheet dims and each net's
+     * members are drawn over it, on whichever sheet is open. The host supplies
+     * the members (the viewer has no netlist); an empty list clears it.
+     */
+    /**
+     * World view: every sheet the net of a label, sheet entry or power symbol
+     * reaches, on one canvas that pans and zooms like a sheet, with the
+     * connections between them. `~` on the schematic opens it too.
+     */
+    public async showWorldView(page: string, uuid: string): Promise<boolean> {
+        await this.ready;
+        return this.#tracker.show_world_view(page, uuid);
+    }
+
+    public hideWorldView() {
+        this.#tracker.hide_world_view();
+    }
+
+    public async setSchematicHighlightedNets(
+        nets: readonly SchematicNetMembers[],
+    ): Promise<void> {
+        await this.ready;
+        this.#safe_schematic_viewer()?.set_highlighted_nets(nets);
+        this.#schematic_inset_provider?.set_highlighted_nets(nets);
+        this.#tracker.set_highlighted_nets(nets);
+    }
+
     public focusHighlightedNets(): boolean {
         return this.#safe_board_viewer()?.focus_highlighted_nets() ?? false;
     }
@@ -2802,7 +2858,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         uuid: string;
         sheet: string;
         name: string;
-        kind?: "global" | "net" | "hierarchical";
+        kind?: LabelKind;
     }> {
         const candidates = [name];
         if (name.includes("/")) {
@@ -2829,6 +2885,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
      */
     public async focusLabelInstance(uuid: string): Promise<boolean> {
         await this.ready;
+        // Navigating the main view brings it back in front.
+        this.hideWorldView();
         const ref = this.#project.find_net_item(uuid);
         if (!ref) return false;
         const sch = this.#project.file_by_name(ref.sheet_name);
@@ -3137,6 +3195,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
      * Awaits project readiness first. Uses the instance-tree page model.
      */
     public async showPage(pageId: string): Promise<void> {
+        this.hideWorldView();
         this.#trace_transition("page.show.request", {
             status: "start",
             requestedPage: pageId,
@@ -3263,6 +3322,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             return;
         }
         if (!this.has_sch) return;
+        if (this.#tracker.key_down(event)) {
+            event.preventDefault();
+            return;
+        }
 
         const direction =
             event.key === "[" || event.code === "BracketLeft"
@@ -4249,6 +4312,25 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     #inset_link: InsetLink | null = null;
+    /** `~` on the schematic and the world view it opens. */
+    #tracker = new NetTracker({
+        pages: () => this.#net_instance_pages(),
+        viewer: () => this.#safe_schematic_viewer(),
+        scene_host: () => this.#schematic_provider_host(),
+        showing: () => this.#active_tab === TabKind.sch,
+        select: (detail) =>
+            this.dispatchEvent(
+                new EcadSemanticSelectionEvent(
+                    detail ?? { sourceContext: "SCH", itemType: "" },
+                ),
+            ),
+        open_page: (page, uuid) => void this.#open_page_at(page, uuid),
+    });
+
+    async #open_page_at(page: string, uuid?: string) {
+        await this.showPage(page);
+        if (uuid) this.#safe_schematic_viewer()?.zoom_fit_item(uuid);
+    }
 
     /**
      * Link this element to the one holding the other document (schematic ↔
@@ -4271,6 +4353,26 @@ export class ECadViewer extends KCUIElement implements InputContainer {
      */
     public enableInsets() {
         this.#ensure_inset_link();
+    }
+
+    /** Every schematic page instance with its place in the hierarchy. */
+    #net_instance_pages(): NetInstancePage[] {
+        return this.#project.pages.flatMap((page) => {
+            const document = page.document;
+            return document instanceof KicadSch
+                ? [
+                      {
+                          key: page.project_path,
+                          name: page.name ?? document.filename,
+                          document,
+                          parent_key: page.parent_project_path,
+                          sheet_uuid: page.sheet_uuid,
+                          sheet_path: page.sheet_path,
+                          context: page.schematic_context,
+                      },
+                  ]
+                : [];
+        });
     }
 
     #ensure_inset_link(): InsetLink {
@@ -4447,7 +4549,20 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             return this.#board_inset_provider;
         }
         if (!this.has_sch) return null;
-        this.#schematic_inset_provider ??= new SchematicInsetProvider({
+        if (this.#schematic_inset_provider)
+            return this.#schematic_inset_provider;
+        this.#schematic_inset_provider = new SchematicInsetProvider(
+            this.#schematic_provider_host(),
+        );
+        this.#schematic_inset_provider.set_highlighted_nets(
+            this.#safe_schematic_viewer()?.highlighted_nets ?? [],
+        );
+        return this.#schematic_inset_provider;
+    }
+
+    /** What the schematic scene providers read: pages, theme, variant. */
+    #schematic_provider_host(): SchematicInsetHost {
+        return {
             pages: () =>
                 this.#project.pages.flatMap((page) => {
                     const document = page.document;
@@ -4467,8 +4582,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 themes.default.schematic,
             container: () => this.shadowRoot ?? document.body,
             variant: () => this.getVariant(),
-        });
-        return this.#schematic_inset_provider;
+        };
     }
 
     /** Inset render timings and the GPU-sync switch, for benchmarks. */
@@ -4580,6 +4694,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         // A click on empty canvas: tell the host so it can deselect, rather than
         // swallowing it and leaving the previous selection stuck.
         if (!item) {
+            this.#tracker.selected_in_main(null, null);
             this.dispatchEvent(
                 new EcadSemanticSelectionEvent({
                     sourceContext: "SCH",
@@ -4597,6 +4712,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             viewer?.instance_context,
         );
         if (!detail) return;
+        this.#tracker.selected_in_main(
+            item,
+            viewer?.instance_context?.project_path ?? null,
+        );
         this.#attach_item_bounds_sch(detail, item, viewer!);
         detail.operation = select.detail.operation ?? "replace";
         if (select.detail.modifiers) detail.modifiers = select.detail.modifiers;

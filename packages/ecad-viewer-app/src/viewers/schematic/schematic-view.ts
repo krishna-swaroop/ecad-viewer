@@ -63,3 +63,28 @@ export function render_schematic_view(
     schematic_view_stats.ms += performance.now() - t0;
     return true;
 }
+
+/**
+ * Draw the scene through `matrix` (world → CSS pixels) into `ctx` without
+ * clearing it, so several sheets can share one canvas (the world view).
+ * The caller sets any clip on `ctx` first.
+ */
+export function render_schematic_into(
+    host: SchematicViewHost,
+    ctx: CanvasRenderingContext2D,
+    matrix: Matrix3,
+    dpr: number,
+) {
+    const renderer = host.renderer as Canvas2DRenderer;
+    if (!host.layers) return;
+    const saved_ctx = renderer.ctx2d;
+    const saved_base = renderer.base_transform;
+    renderer.ctx2d = ctx;
+    renderer.base_transform = Matrix3.scaling(dpr, dpr);
+    try {
+        host.render_layers(matrix);
+    } finally {
+        renderer.ctx2d = saved_ctx;
+        renderer.base_transform = saved_base;
+    }
+}

@@ -12,7 +12,7 @@
     idle scene is dropped.
 */
 
-import { BBox, Vec2 } from "../../base/math";
+import { BBox, Matrix3, Vec2 } from "../../base/math";
 import type { SchematicTheme } from "../../kicad";
 import {
     PinInstance,
@@ -20,6 +20,8 @@ import {
     type SchematicInstanceContext,
     type SchematicSymbol,
 } from "../../kicad/schematic";
+import type { SchematicNetMembers } from "../../viewers/schematic/net-highlight";
+import { render_schematic_into } from "../../viewers/schematic/schematic-view";
 import { SchematicViewer } from "../../viewers/schematic/viewer";
 import { inset_matrix, type InsetCamera } from "./camera";
 import {
@@ -57,6 +59,31 @@ interface Scene {
     used: number;
 }
 
+/** One page instance's scene, drawn by the caller (the net map). */
+export interface SchematicPageView {
+    key: string;
+    name: string;
+    page: SchematicInsetPage;
+    /** The item at a point of this page (sheet coordinates), as a click finds it. */
+    item_at(point: Vec2): { item: unknown; bbox: BBox | null };
+    /** Join this page's local labels named `name` (null clears). */
+    show_local_trace(name: string | null): void;
+    local_trace(): string | null;
+    bounds: BBox;
+    item_bbox(uuid: string): BBox | undefined;
+    render(canvas: HTMLCanvasElement, camera: InsetCamera): void;
+    /**
+     * Draw into a shared canvas through `matrix`, without clearing it and
+     * without dimming the sheet under a net highlight.
+     */
+    render_into(
+        ctx: CanvasRenderingContext2D,
+        matrix: Matrix3,
+        dpr: number,
+    ): void;
+    release(): void;
+}
+
 const DEFAULT_CAP = 4;
 
 const center = (box: BBox) => new Vec2(box.x + box.w / 2, box.y + box.h / 2);
@@ -67,10 +94,13 @@ export class SchematicInsetProvider implements InsetProvider {
     #targets = new WeakMap<InsetTarget, string>();
     #clock = 0;
     #listeners = new Set<() => void>();
+    #nets: readonly SchematicNetMembers[] = [];
 
     constructor(
         private readonly host: SchematicInsetHost,
         private readonly cap = DEFAULT_CAP,
+        /** Draw each page's frame and border grid (the world view does). */
+        private readonly drawing_sheet = false,
     ) {}
 
     /** Scenes currently held; for tests and diagnostics. */
@@ -142,6 +172,64 @@ export class SchematicInsetProvider implements InsetProvider {
         };
         this.#targets.set(target, scene.key);
         return target;
+    }
+
+    /**
+     * A whole page instance as a scene the caller draws through its own
+     * camera (the net map's tiles). Held until `release`.
+     */
+    async page_view(page_key: string): Promise<SchematicPageView | null> {
+        const page = this.host.pages().find((p) => p.key === page_key);
+        if (!page) return null;
+        const scene = this.#acquire(page);
+        await scene.ready;
+        if (!this.#scenes.has(scene.key)) return null;
+        const renderer = scene.viewer.schematic_renderer;
+        let released = false;
+        return {
+            key: page.key,
+            name: page.name,
+            page,
+            item_at: (point) =>
+                scene.viewer.find_item(point) as {
+                    item: unknown;
+                    bbox: BBox | null;
+                },
+            show_local_trace: (name) => scene.viewer.show_local_trace(name),
+            local_trace: () => scene.viewer.local_trace,
+            bounds: renderer.scene_bbox,
+            item_bbox: (uuid) => renderer.get_item_bbox(uuid),
+            render: (canvas, camera) => {
+                scene.used = ++this.#clock;
+                scene.viewer.render_view(canvas, (w, h) =>
+                    inset_matrix(camera, w, h),
+                );
+            },
+            render_into: (ctx, matrix, dpr) => {
+                scene.used = ++this.#clock;
+                const dim = scene.viewer.content_dim;
+                scene.viewer.content_dim = null;
+                try {
+                    render_schematic_into(scene.viewer, ctx, matrix, dpr);
+                } finally {
+                    scene.viewer.content_dim = dim;
+                }
+            },
+            release: () => {
+                if (released) return;
+                released = true;
+                scene.refs = Math.max(0, scene.refs - 1);
+                this.#evict();
+            },
+        };
+    }
+
+    /** The main view's highlighted nets: every scene draws them too. */
+    set_highlighted_nets(nets: readonly SchematicNetMembers[]) {
+        this.#nets = nets;
+        for (const scene of this.#scenes.values())
+            scene.viewer.set_highlighted_nets(nets);
+        for (const listener of this.#listeners) listener();
     }
 
     hit_test(target: InsetTarget, world: Vec2): InsetHit | null {
@@ -230,13 +318,16 @@ export class SchematicInsetProvider implements InsetProvider {
                 false,
                 this.host.theme(),
             );
-            viewer.show_drawing_sheet = false;
+            viewer.show_drawing_sheet = this.drawing_sheet;
+            // Scenes are drawn when asked, so their highlights land at once.
+            viewer.highlight_motion = false;
             const ready = (async () => {
                 await viewer.setup();
                 if (page.context) viewer.set_instance_context(page.context);
                 const variant = this.host.variant?.();
                 if (variant !== undefined) viewer.set_variant(variant);
                 await viewer.load(page.document);
+                if (this.#nets.length) viewer.set_highlighted_nets(this.#nets);
             })();
             scene = {
                 key: page.key,

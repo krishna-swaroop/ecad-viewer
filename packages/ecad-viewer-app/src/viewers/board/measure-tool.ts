@@ -2,9 +2,10 @@
  * PCB measure mode: click two points, read the distance.
  *
  * The first click places A, the second places B and keeps the result on
- * screen; a third click starts over from a new A. The pointer snaps to pad
- * centres, via centres, track ends and track centrelines within a few
- * screen pixels; holding Shift places a free point. Drag still pans. The
+ * screen; a third click starts over from a new A. The pointer snaps as
+ * measure.ts describes (pads and vias anywhere on their copper, then track
+ * ends, edge corners, tracks and the board edge within a few screen
+ * pixels); holding Shift places a free point. Drag still pans. The
  * drawing is an overlay channel on the board viewer, so it pans and zooms
  * with the board and never touches the board's own layers.
  */
@@ -337,7 +338,7 @@ function line(
     };
 }
 
-/** Square for a pad, ring for a via, small square for a track end, dot otherwise. */
+/** Square for a pad, ring for a via, small square for a track end or edge corner, dot otherwise. */
 function marker(id: string, snap: MeasureSnap): EcadOverlayPrimitive[] {
     const anchor = { kind: "world" as const, x: snap.x, y: snap.y };
     const dot: EcadOverlayPrimitive = {
@@ -392,6 +393,7 @@ function marker(id: string, snap: MeasureSnap): EcadOverlayPrimitive[] {
                 dot,
             ];
         case "track-end":
+        case "edge-corner":
             return [...box(4), dot];
         default:
             return [dot];
