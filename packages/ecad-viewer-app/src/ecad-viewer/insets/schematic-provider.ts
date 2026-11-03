@@ -63,6 +63,12 @@ interface Scene {
 export interface SchematicPageView {
     key: string;
     name: string;
+    page: SchematicInsetPage;
+    /** The item at a point of this page (sheet coordinates), as a click finds it. */
+    item_at(point: Vec2): { item: unknown; bbox: BBox | null };
+    /** Join this page's local labels named `name` (null clears). */
+    show_local_trace(name: string | null): void;
+    local_trace(): string | null;
     bounds: BBox;
     item_bbox(uuid: string): BBox | undefined;
     render(canvas: HTMLCanvasElement, camera: InsetCamera): void;
@@ -93,6 +99,8 @@ export class SchematicInsetProvider implements InsetProvider {
     constructor(
         private readonly host: SchematicInsetHost,
         private readonly cap = DEFAULT_CAP,
+        /** Draw each page's frame and border grid (the world view does). */
+        private readonly drawing_sheet = false,
     ) {}
 
     /** Scenes currently held; for tests and diagnostics. */
@@ -181,6 +189,14 @@ export class SchematicInsetProvider implements InsetProvider {
         return {
             key: page.key,
             name: page.name,
+            page,
+            item_at: (point) =>
+                scene.viewer.find_item(point) as {
+                    item: unknown;
+                    bbox: BBox | null;
+                },
+            show_local_trace: (name) => scene.viewer.show_local_trace(name),
+            local_trace: () => scene.viewer.local_trace,
             bounds: renderer.scene_bbox,
             item_bbox: (uuid) => renderer.get_item_bbox(uuid),
             render: (canvas, camera) => {
@@ -302,7 +318,7 @@ export class SchematicInsetProvider implements InsetProvider {
                 false,
                 this.host.theme(),
             );
-            viewer.show_drawing_sheet = false;
+            viewer.show_drawing_sheet = this.drawing_sheet;
             const ready = (async () => {
                 await viewer.setup();
                 if (page.context) viewer.set_instance_context(page.context);

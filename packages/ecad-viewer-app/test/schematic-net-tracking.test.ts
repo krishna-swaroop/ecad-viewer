@@ -1,8 +1,11 @@
 import { expect } from "@esm-bundle/chai";
 import { SchematicParser } from "kicad-parser";
 
-import { BBox } from "../src/base/math";
-import { world_layout } from "../src/ecad-viewer/insets/world-view";
+import { BBox, Vec2 } from "../src/base/math";
+import {
+    world_layout,
+    world_route,
+} from "../src/ecad-viewer/insets/world-view";
 import { normalize_schematic_selection } from "../src/ecad-viewer/host-adapter";
 import {
     net_closure,
@@ -279,5 +282,37 @@ suite("wired instances", () => {
         expect(wired_instances(pages, from).map((it) => it.name)).to.deep.equal(
             ["B"],
         );
+    });
+});
+
+suite("world view routes", () => {
+    test("side by side sheets turn in the gap between them", () => {
+        const route = world_route(
+            new Vec2(50, 20),
+            new BBox(0, 0, 100, 100),
+            new Vec2(150, 60),
+            new BBox(120, 0, 100, 100),
+        );
+        expect(route.map((p) => [p.x, p.y])).to.deep.equal([
+            [50, 20],
+            [110, 20],
+            [110, 60],
+            [150, 60],
+        ]);
+    });
+
+    test("stacked sheets turn in the gap below", () => {
+        const route = world_route(
+            new Vec2(50, 20),
+            new BBox(0, 0, 100, 100),
+            new Vec2(30, 150),
+            new BBox(0, 120, 100, 100),
+        );
+        expect(route.map((p) => [p.x, p.y])).to.deep.equal([
+            [50, 20],
+            [50, 110],
+            [30, 110],
+            [30, 150],
+        ]);
     });
 });

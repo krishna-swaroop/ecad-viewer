@@ -454,6 +454,8 @@ import {
     type InsetPeer,
     type InsetProvider,
     type InsetScene3D,
+    type SchematicInsetHost,
+    type SchematicPageView,
 } from "./insets";
 
 export class ECadViewer extends KCUIElement implements InputContainer {
@@ -2617,13 +2619,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
      */
     public async showWorldView(page: string, uuid: string): Promise<boolean> {
         await this.ready;
-        const viewer = this.#safe_schematic_viewer();
-        const provider = this.insetProvider(
-            "sch",
-        ) as SchematicInsetProvider | null;
-        if (!viewer || !provider) return false;
+        if (!this.#safe_schematic_viewer()) return false;
         const from = net_instance_at(this.#net_instance_pages(), page, uuid);
         if (!from) return false;
+        const provider = this.#world_scene_provider();
         this.#world_view ??= new WorldView({
             container: () => {
                 // The canvas sits in the viewer element's shadow root; the
@@ -2642,7 +2641,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             },
             pages: () => this.#net_instance_pages(),
             page_view: (key) => provider.page_view(key),
+            subscribe: (listener) => provider.subscribe(listener),
             open_page: (key, item) => void this.#open_world_page(key, item),
+            select: (view, item, modifiers) =>
+                this.#relay_world_selection(view, item, modifiers),
             background: () =>
                 this.#safe_schematic_viewer()?.renderer.background_color.to_css() ??
                 "#000",
@@ -2652,6 +2654,41 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 null,
         });
         return this.#world_view.show(from);
+    }
+
+    /**
+     * A click on a sheet in the world view, reported like a click on the
+     * main schematic but on that sheet's own page instance.
+     */
+    #relay_world_selection(
+        view: SchematicPageView,
+        item: unknown | null,
+        modifiers: { shift: boolean },
+    ) {
+        if (!item) {
+            this.#selected_label = null;
+            this.dispatchEvent(
+                new EcadSemanticSelectionEvent({
+                    sourceContext: "SCH",
+                    itemType: "",
+                }),
+            );
+            return;
+        }
+        const detail = normalize_schematic_selection(
+            item,
+            view.page.document,
+            view.page.context,
+        );
+        if (!detail) return;
+        detail.operation = modifiers.shift ? "toggle" : "replace";
+        this.#selected_label =
+            item instanceof Label && item.uuid
+                ? { page: view.key, uuid: item.uuid }
+                : null;
+        this.dispatchEvent(new EcadSemanticSelectionEvent(detail));
+        if (this.#tilde_held && this.#selected_label)
+            this.#trace_label(this.#selected_label);
     }
 
     public hideWorldView() {
@@ -2669,21 +2706,36 @@ export class ECadViewer extends KCUIElement implements InputContainer {
      * view. Returns whether anything was shown.
      */
     #trace_label(label: { page: string; uuid: string }): boolean {
-        const viewer = this.#safe_schematic_viewer();
-        if (!viewer) return false;
         const at = net_instance_at(
             this.#net_instance_pages(),
             label.page,
             label.uuid,
         );
         if (!at) return false;
+        const world = this.#world_view;
         if (at.kind === "local") {
-            viewer.show_local_trace(
+            // Inside the world view the trace goes on that sheet there.
+            const scene = world?.open ? world.view(at.page) : null;
+            if (scene) {
+                scene.show_local_trace(
+                    scene.local_trace() === at.name ? null : at.name,
+                );
+                world!.invalidate();
+                return true;
+            }
+            const viewer = this.#safe_schematic_viewer();
+            viewer?.show_local_trace(
                 viewer.local_trace === at.name ? null : at.name,
             );
-            return true;
+            return !!viewer;
         }
-        if (this.#world_view?.open) this.hideWorldView();
+        // The same label again closes the view; another one re-roots it.
+        if (
+            world?.open &&
+            world.start?.page === at.page &&
+            world.start.uuid === at.uuid
+        )
+            this.hideWorldView();
         else void this.showWorldView(label.page, label.uuid);
         return true;
     }
@@ -2694,6 +2746,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         await this.ready;
         this.#safe_schematic_viewer()?.set_highlighted_nets(nets);
         this.#schematic_inset_provider?.set_highlighted_nets(nets);
+        this.#world_provider?.set_highlighted_nets(nets);
     }
 
     public focusHighlightedNets(): boolean {
@@ -2928,6 +2981,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
      */
     public async focusLabelInstance(uuid: string): Promise<boolean> {
         await this.ready;
+        // Navigating the main view brings it back in front.
+        this.hideWorldView();
         const ref = this.#project.find_net_item(uuid);
         if (!ref) return false;
         const sch = this.#project.file_by_name(ref.sheet_name);
@@ -3236,6 +3291,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
      * Awaits project readiness first. Uses the instance-tree page model.
      */
     public async showPage(pageId: string): Promise<void> {
+        this.hideWorldView();
         this.#trace_transition("page.show.request", {
             status: "start",
             requestedPage: pageId,
@@ -4369,6 +4425,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
 
     #inset_link: InsetLink | null = null;
     #world_view: WorldView | null = null;
+    #world_provider: SchematicInsetProvider | null = null;
     /** The last label or sheet entry selected on the schematic, for `~`. */
     #selected_label: { page: string; uuid: string } | null = null;
     #tilde_held = false;
@@ -4591,7 +4648,18 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         if (!this.has_sch) return null;
         if (this.#schematic_inset_provider)
             return this.#schematic_inset_provider;
-        this.#schematic_inset_provider = new SchematicInsetProvider({
+        this.#schematic_inset_provider = new SchematicInsetProvider(
+            this.#schematic_provider_host(),
+        );
+        this.#schematic_inset_provider.set_highlighted_nets(
+            this.#safe_schematic_viewer()?.highlighted_nets ?? [],
+        );
+        return this.#schematic_inset_provider;
+    }
+
+    /** What the schematic scene providers read: pages, theme, variant. */
+    #schematic_provider_host(): SchematicInsetHost {
+        return {
             pages: () =>
                 this.#project.pages.flatMap((page) => {
                     const document = page.document;
@@ -4611,11 +4679,25 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 themes.default.schematic,
             container: () => this.shadowRoot ?? document.body,
             variant: () => this.getVariant(),
-        });
-        this.#schematic_inset_provider.set_highlighted_nets(
-            this.#safe_schematic_viewer()?.highlighted_nets ?? [],
-        );
-        return this.#schematic_inset_provider;
+        };
+    }
+
+    /**
+     * The world view's scenes: whole sheets with their frame, kept apart
+     * from the insets' (which leave the frame out).
+     */
+    #world_scene_provider(): SchematicInsetProvider {
+        if (!this.#world_provider) {
+            this.#world_provider = new SchematicInsetProvider(
+                this.#schematic_provider_host(),
+                12,
+                true,
+            );
+            this.#world_provider.set_highlighted_nets(
+                this.#safe_schematic_viewer()?.highlighted_nets ?? [],
+            );
+        }
+        return this.#world_provider;
     }
 
     /** Inset render timings and the GPU-sync switch, for benchmarks. */
