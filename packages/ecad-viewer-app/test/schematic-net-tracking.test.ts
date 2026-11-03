@@ -310,8 +310,8 @@ suite("world view routes", () => {
         );
         expect(route.map((p) => [p.x, p.y])).to.deep.equal([
             [50, 20],
-            [50, 110],
-            [30, 110],
+            [50, 107],
+            [30, 107],
             [30, 150],
         ]);
     });

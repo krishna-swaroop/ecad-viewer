@@ -69,7 +69,7 @@ interface Tokens {
     font: string;
 }
 
-const GAP = 30;
+const GAP = 50;
 const MIN_ZOOM = 0.02;
 const MAX_ZOOM = 100;
 /** One hop's sheets start this long after the previous hop's. */
@@ -108,7 +108,12 @@ export function world_route(a: Vec2, ra: BBox, b: Vec2, rb: BBox): Vec2[] {
         const mx = ra.x2 <= rb.x ? (ra.x2 + rb.x) / 2 : (rb.x2 + ra.x) / 2;
         return [a, new Vec2(mx, a.y), new Vec2(mx, b.y), b];
     }
-    const my = ra.y2 <= rb.y ? (ra.y2 + rb.y) / 2 : (rb.y2 + ra.y) / 2;
+    // Stacked sheets: turn nearer the upper one, clear of the lower one's
+    // title above its frame.
+    const my =
+        ra.y2 <= rb.y
+            ? ra.y2 + (rb.y - ra.y2) * 0.35
+            : rb.y2 + (ra.y - rb.y2) * 0.35;
     return [a, new Vec2(a.x, my), new Vec2(b.x, my), b];
 }
 
