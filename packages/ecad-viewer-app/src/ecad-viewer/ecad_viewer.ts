@@ -1,4 +1,9 @@
 import { later } from "../base/async";
+import {
+    net_instance_at,
+    net_instances,
+    type NetInstancePage,
+} from "./insets/net-instances";
 import type { SchematicNetMembers } from "../viewers/schematic/net-highlight";
 import { listen } from "../base/events";
 import { BBox, Vec2 } from "../base/math";
@@ -2609,6 +2614,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     ): Promise<void> {
         await this.ready;
         this.#safe_schematic_viewer()?.set_highlighted_nets(nets);
+        this.#schematic_inset_provider?.set_highlighted_nets(nets);
     }
 
     public focusHighlightedNets(): boolean {
@@ -4287,6 +4293,24 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.#ensure_inset_link();
     }
 
+    /** Every schematic page instance with its place in the hierarchy. */
+    #net_instance_pages(): NetInstancePage[] {
+        return this.#project.pages.flatMap((page) => {
+            const document = page.document;
+            return document instanceof KicadSch
+                ? [
+                      {
+                          key: page.project_path,
+                          name: page.name ?? document.filename,
+                          document,
+                          parent_key: page.parent_project_path,
+                          sheet_uuid: page.sheet_uuid,
+                      },
+                  ]
+                : [];
+        });
+    }
+
     #ensure_inset_link(): InsetLink {
         this.#inset_link ??= new InsetLink({
             insetProvider: (kind) => this.insetProvider(kind),
@@ -4300,6 +4324,11 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 if (on) this.setMeasureMode(false);
                 this.#inset_link?.peer?.syncInsetMode?.(on);
                 this.#emit_inset_mode(on);
+            },
+            net_instances: (page, uuid) => {
+                const pages = this.#net_instance_pages();
+                const from = net_instance_at(pages, page, uuid);
+                return from ? net_instances(pages, from) : [];
             },
         });
         this.#inset_link.sync();

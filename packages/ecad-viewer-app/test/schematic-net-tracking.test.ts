@@ -3,6 +3,11 @@ import { SchematicParser } from "kicad-parser";
 
 import { BBox } from "../src/base/math";
 import { normalize_schematic_selection } from "../src/ecad-viewer/host-adapter";
+import {
+    net_instance_at,
+    net_instances,
+    type NetInstancePage,
+} from "../src/ecad-viewer/insets/net-instances";
 import { KicadSch } from "../src/kicad/schematic";
 import {
     NET_HIGHLIGHT_CHANNEL,
@@ -100,5 +105,77 @@ suite("schematic net tracking", () => {
         );
         expect(scene.visible).to.equal(false);
         expect(scene.primitives).to.deep.equal([]);
+    });
+});
+
+const CHILD_LABEL = "00000000-0000-0000-0000-0000000000e1";
+const GLOBAL_A = "00000000-0000-0000-0000-0000000000f1";
+const GLOBAL_B = "00000000-0000-0000-0000-0000000000f2";
+
+const CHILD = `
+(kicad_sch
+  (version 20250114)
+  (generator "eeschema")
+  (uuid "00000000-0000-0000-0000-000000000002")
+  (hierarchical_label "SDA" (shape input) (at 10 10 180) (effects (font (size 1.27 1.27))) (uuid "${CHILD_LABEL}"))
+  (global_label "VBUS" (shape input) (at 30 10 0) (effects (font (size 1.27 1.27))) (uuid "${GLOBAL_B}"))
+)
+`;
+
+const ROOT_WITH_GLOBAL = ROOT.replace(
+    "  (sheet",
+    `  (global_label "VBUS" (shape input) (at 5 50 0) (effects (font (size 1.27 1.27))) (uuid "${GLOBAL_A}"))\n  (sheet`,
+);
+
+function hierarchy(): NetInstancePage[] {
+    const parser = new SchematicParser();
+    return [
+        {
+            key: "root",
+            name: "Root",
+            document: new KicadSch(
+                "root.kicad_sch",
+                parser.parse(ROOT_WITH_GLOBAL),
+            ),
+        },
+        {
+            key: "child",
+            name: "Child",
+            document: new KicadSch("child.kicad_sch", parser.parse(CHILD)),
+            parent_key: "root",
+            sheet_uuid: "00000000-0000-0000-0000-0000000000d1",
+        },
+    ];
+}
+
+suite("net instances", () => {
+    test("a sheet entry leads into its child sheet's hierarchical label", () => {
+        const pages = hierarchy();
+        const from = net_instance_at(pages, "root", ENTRY)!;
+        expect(from.kind).to.equal("sheet-pin");
+        expect(net_instances(pages, from)).to.deep.equal([
+            {
+                page: "child",
+                uuid: CHILD_LABEL,
+                name: "SDA",
+                kind: "hierarchical",
+            },
+        ]);
+    });
+
+    test("a hierarchical label leads up to the entry that instantiates its sheet", () => {
+        const pages = hierarchy();
+        const from = net_instance_at(pages, "child", CHILD_LABEL)!;
+        expect(
+            net_instances(pages, from).map((it) => [it.page, it.uuid]),
+        ).to.deep.equal([["root", ENTRY]]);
+    });
+
+    test("a global label leads to every other global label of its name", () => {
+        const pages = hierarchy();
+        const from = net_instance_at(pages, "root", GLOBAL_A)!;
+        expect(net_instances(pages, from).map((it) => it.uuid)).to.deep.equal([
+            GLOBAL_B,
+        ]);
     });
 });

@@ -74,6 +74,13 @@ export interface OpenInsetRequest {
     show_missing?: boolean;
     /** Panel size in CSS pixels (including the header). */
     size?: { w: number; h: number };
+    /**
+     * Open a schematic item (label or sheet entry) on a page instance rather
+     * than a designator's pin: net insets.
+     */
+    item?: { page: string; uuid: string };
+    /** Chain colour, when several roots belong together (a net's insets). */
+    color?: string;
 }
 
 export class Inset implements InsetSource {
@@ -379,10 +386,12 @@ export class InsetSession {
         // Readiness as of the resolve: a document that finishes loading
         // meanwhile still answered "nothing yet", not "absent".
         const was_ready = provider.ready?.() !== false;
-        const target = await provider.resolve(
-            request.reference,
-            request.number,
-        );
+        const target = request.item
+            ? ((await provider.resolve_item?.(
+                  request.item.page,
+                  request.item.uuid,
+              )) ?? null)
+            : await provider.resolve(request.reference, request.number);
         // Still loading is not the same as absent: a "loading" header that
         // the host replaces once the document is ready.
         const loading = !target && (!was_ready || provider.ready?.() === false);
@@ -427,6 +436,7 @@ export class InsetSession {
 
         const color =
             request.parent?.color ??
+            request.color ??
             CHAIN_COLORS[this.#next_color++ % CHAIN_COLORS.length]!;
         const camera: InsetCamera = {
             center: new Vec2(0, 0),
@@ -531,6 +541,11 @@ export class InsetSession {
         if (!missing) inset.fit();
         this.#listen_keys(true);
         return inset;
+    }
+
+    /** A fresh chain colour, for a group of root insets that belong together. */
+    next_color(): string {
+        return CHAIN_COLORS[this.#next_color++ % CHAIN_COLORS.length]!;
     }
 
     pin(inset: Inset) {

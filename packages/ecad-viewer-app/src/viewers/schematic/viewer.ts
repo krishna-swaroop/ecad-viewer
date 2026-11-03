@@ -27,6 +27,7 @@ import { DocumentViewer } from "../base/document-viewer";
 import {
     HierarchicalSheetPinClickEvent,
     KiCanvasProbeEvent,
+    SchematicLabelProbeEvent,
     KiCanvasSelectEvent,
     select_modifiers,
     LabelClickEvent,
@@ -397,6 +398,10 @@ export class SchematicViewer extends DocumentViewer<
                 ? it.item
                 : null,
         );
+        this.#update_label_probe(
+            it.item instanceof Label && it.item.uuid ? it.item : null,
+            it.bbox,
+        );
 
         // An embedded hyperlink advertises itself with a pointer cursor so
         // users can tell the text is interactive. This must run before the
@@ -436,10 +441,37 @@ export class SchematicViewer extends DocumentViewer<
 
     protected override on_pointer_leave(): void {
         this.#update_probe_hover(null);
+        this.#update_label_probe(null, null);
         this.#last_hover_bbox = null;
         this.#update_link_cursor(null);
         this.layers.overlay.clear();
         this.draw();
+    }
+
+    #last_label: Label | null = null;
+
+    #update_label_probe(label: Label | null, bbox: BBox | null) {
+        // Sheet entries are rebuilt on every read, so compare by uuid.
+        if (label?.uuid === this.#last_label?.uuid) return;
+        const had = this.#last_label;
+        this.#last_label = label;
+        if (had && !label) {
+            this.dispatchEvent(
+                new SchematicLabelProbeEvent({ phase: "leave" }),
+            );
+            return;
+        }
+        if (!label?.uuid) return;
+        const at = bbox?.center ?? label.at.position;
+        this.dispatchEvent(
+            new SchematicLabelProbeEvent({
+                phase: "hover",
+                page: this.#instance_context?.project_path ?? this.sch_name,
+                uuid: label.uuid,
+                name: label.text,
+                anchor: { x: at.x, y: at.y },
+            }),
+        );
     }
 
     #update_link_cursor(item: unknown) {

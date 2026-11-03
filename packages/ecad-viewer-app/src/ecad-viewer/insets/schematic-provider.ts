@@ -20,6 +20,7 @@ import {
     type SchematicInstanceContext,
     type SchematicSymbol,
 } from "../../kicad/schematic";
+import type { SchematicNetMembers } from "../../viewers/schematic/net-highlight";
 import { SchematicViewer } from "../../viewers/schematic/viewer";
 import { inset_matrix, type InsetCamera } from "./camera";
 import {
@@ -67,6 +68,7 @@ export class SchematicInsetProvider implements InsetProvider {
     #targets = new WeakMap<InsetTarget, string>();
     #clock = 0;
     #listeners = new Set<() => void>();
+    #nets: readonly SchematicNetMembers[] = [];
 
     constructor(
         private readonly host: SchematicInsetHost,
@@ -142,6 +144,55 @@ export class SchematicInsetProvider implements InsetProvider {
         };
         this.#targets.set(target, scene.key);
         return target;
+    }
+
+    async resolve_item(
+        page_key: string,
+        uuid: string,
+    ): Promise<InsetTarget | null> {
+        const page = this.host.pages().find((p) => p.key === page_key);
+        if (!page) return null;
+        const scene = this.#acquire(page);
+        await scene.ready;
+        if (!this.#scenes.has(scene.key)) return null;
+        const box = scene.viewer.schematic_renderer.get_item_bbox(uuid);
+        if (!box) {
+            scene.refs = Math.max(0, scene.refs - 1);
+            this.#evict();
+            return null;
+        }
+        const name =
+            page.document.labels.find((label) => label.uuid === uuid)?.text ??
+            page.document.sheets
+                .flatMap((sheet) => sheet.pins)
+                .find((pin) => pin.uuid === uuid)?.name ??
+            "";
+        const target: InsetTarget = {
+            kind: "sch",
+            reference: name,
+            number: "",
+            detail: page.name,
+            side: "sch",
+            focus: local_focus(
+                box,
+                box,
+                SCHEMATIC_FOCUS_LIMIT,
+                SCHEMATIC_FOCUS_WINDOW,
+            ),
+            anchor: center(box),
+            anchor_box: box,
+            mirror: false,
+        };
+        this.#targets.set(target, scene.key);
+        return target;
+    }
+
+    /** The main view's highlighted nets: every scene draws them too. */
+    set_highlighted_nets(nets: readonly SchematicNetMembers[]) {
+        this.#nets = nets;
+        for (const scene of this.#scenes.values())
+            scene.viewer.set_highlighted_nets(nets);
+        for (const listener of this.#listeners) listener();
     }
 
     hit_test(target: InsetTarget, world: Vec2): InsetHit | null {
@@ -237,6 +288,7 @@ export class SchematicInsetProvider implements InsetProvider {
                 const variant = this.host.variant?.();
                 if (variant !== undefined) viewer.set_variant(variant);
                 await viewer.load(page.document);
+                if (this.#nets.length) viewer.set_highlighted_nets(this.#nets);
             })();
             scene = {
                 key: page.key,
