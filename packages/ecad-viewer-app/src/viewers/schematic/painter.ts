@@ -426,11 +426,8 @@ class PropertyPainter extends SchematicItemPainter {
         // A field carrying an embedded hyperlink is painted separately (see
         // SchematicPainter.items_for) so it gets its own pick bbox; nested
         // field painting merges into the parent symbol's bbox and the link
-        // would be unreachable. It only needs the invisible interactive
-        // layer for that.
-        return item.hyperlink
-            ? [LayerNames.interactive]
-            : [LayerNames.symbol_field, LayerNames.interactive];
+        // would be unreachable.
+        return [LayerNames.symbol_field, LayerNames.interactive];
     }
     paint(layer: ViewLayer, p: schematic_items.Property) {
         // KiCad stores property visibility on the property itself.  The text
