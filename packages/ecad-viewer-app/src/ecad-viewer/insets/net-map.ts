@@ -28,7 +28,7 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 
 export interface NetMapHost {
     /** Where the map mounts: beside the schematic canvas, positioned over it. */
-    container(): Node | null;
+    container(): ParentNode | null;
     pages(): NetInstancePage[];
     page_view(key: string): Promise<SchematicPageView | null>;
     /** Show `page` in the main view (a tile was clicked). */

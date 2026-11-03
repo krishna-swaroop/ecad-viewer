@@ -2639,7 +2639,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                     getComputedStyle(host).position === "static"
                 )
                     host.style.position = "relative";
-                return parent ?? null;
+                return (parent as ParentNode | null) ?? null;
             },
             pages: () => this.#net_instance_pages(),
             page_view: (key) => provider.page_view(key),
