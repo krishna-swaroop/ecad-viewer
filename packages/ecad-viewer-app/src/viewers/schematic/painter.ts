@@ -724,7 +724,7 @@ class SchematicSheetPainter extends SchematicItemPainter {
 }
 
 /** The sheet rectangle alone — KiCad's SCH_SHEET::GetBodyBoundingBox. */
-function sheet_body_bbox(ss: schematic_items.SchematicSheet): BBox {
+export function sheet_body_bbox(ss: schematic_items.SchematicSheet): BBox {
     return new BBox(ss.at.position.x, ss.at.position.y, ss.size.x, ss.size.y);
 }
 

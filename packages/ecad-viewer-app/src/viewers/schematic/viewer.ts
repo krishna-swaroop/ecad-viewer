@@ -27,6 +27,7 @@ import {
     Label,
     PinInstance,
     SchematicInstanceContext,
+    SchematicSheet,
 } from "../../kicad/schematic";
 import { DocumentViewer } from "../base/document-viewer";
 import {
@@ -41,7 +42,7 @@ import {
 } from "../base/events";
 import { ViewerType } from "../base/viewer";
 import { LayerNames, LayerSet } from "./layers";
-import { SchematicPainter } from "./painter";
+import { SchematicPainter, sheet_body_bbox } from "./painter";
 import { render_schematic_view } from "./schematic-view";
 import { get_symbol_transform } from "../../kicad/symbol-transform";
 import { apply_schematic_render_defaults } from "./render-state";
@@ -227,7 +228,7 @@ export class SchematicViewer extends DocumentViewer<
         const items = this.layers.query_point_in_order(pos);
         for (const it of items) {
             if (it.bbox.context) {
-                selected = it.bbox;
+                selected = selection_box(it.bbox.context, it.bbox);
                 return {
                     item: it.bbox.context,
                     bbox: selected,
@@ -713,7 +714,9 @@ export class SchematicViewer extends DocumentViewer<
     }
 
     public zoom_fit_item(uuid: string) {
-        const bbox = this.schematic_renderer.get_item_bbox(uuid);
+        const sheet = this.document?.sheets?.find((s) => s.uuid === uuid);
+        const recorded = this.schematic_renderer.get_item_bbox(uuid);
+        const bbox = sheet ? sheet_body_bbox(sheet) : recorded;
         if (bbox) {
             this.viewport.camera.bbox = bbox.grow(20);
             this.draw();
@@ -905,4 +908,13 @@ export class SchematicViewer extends DocumentViewer<
         layer.graphics = this.renderer.end_layer();
         layer.graphics.composite_operation = "source-over";
     }
+}
+
+/**
+ * The box a selection outlines. A sheet is picked over its body grown by a
+ * margin, so its edges and entries are easy to hit, but is outlined at its
+ * own size, as KiCad does.
+ */
+function selection_box(item: unknown, recorded: BBox): BBox {
+    return item instanceof SchematicSheet ? sheet_body_bbox(item) : recorded;
 }

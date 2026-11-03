@@ -129,6 +129,28 @@ function revision(revisionKey: string, content: string): EcadSourceUpdate {
     };
 }
 
+const SHEET_ROOT = `
+(kicad_sch
+  (version 20250114)
+  (generator "eeschema")
+  (uuid "00000000-0000-0000-0000-000000000001")
+  (paper "A4")
+  (sheet (at 40 40) (size 20 20)
+    (uuid "00000000-0000-0000-0000-0000000000d1")
+    (property "Sheetname" "Child" (at 40 39 0) (effects (font (size 1.27 1.27)) (justify left bottom)))
+    (property "Sheetfile" "child.kicad_sch" (at 40 61 0) (effects (font (size 1.27 1.27)) (justify left top)))
+  )
+)
+`;
+const SHEET_CHILD = `
+(kicad_sch
+  (version 20250114)
+  (generator "eeschema")
+  (uuid "00000000-0000-0000-0000-000000000002")
+  (paper "A4")
+)
+`;
+
 suite("warm source replacement", () => {
     let host: MountedViewer;
 
@@ -228,6 +250,27 @@ suite("warm source replacement", () => {
             0.01,
         );
         expect(viewer.paint_count).to.equal(paintCount);
+    });
+
+    test("a sheet is picked over a margin but outlined at its own size", async () => {
+        await host.replaceSources({
+            revisionKey: "sheet",
+            sources: [
+                { filename: "root.kicad_sch", content: SHEET_ROOT },
+                { filename: "child.kicad_sch", content: SHEET_CHILD },
+            ],
+        });
+        const viewer = schematicViewer(host) as MountedDocumentViewer & {
+            find_item(pos: { x: number; y: number }): {
+                item: unknown;
+                bbox: { x: number; y: number; w: number; h: number } | null;
+            };
+        };
+        // Picked over a margin around the body, outlined at the body.
+        const near_edge = viewer.find_item({ x: 39, y: 50 });
+        expect(near_edge.item).to.exist;
+        const { x, y, w, h } = near_edge.bbox!;
+        expect([x, y, w, h]).to.deep.equal([40, 40, 20, 20]);
     });
 
     test("keeps the camera still while applying measured overlay insets", async () => {
