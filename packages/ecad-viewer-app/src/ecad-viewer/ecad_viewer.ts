@@ -1,6 +1,10 @@
 import { later } from "../base/async";
 import { WorldView } from "./insets/world-view";
-import { net_instance_at, type NetInstancePage } from "./insets/net-instances";
+import {
+    net_instance_at,
+    wire_instance,
+    type NetInstancePage,
+} from "./insets/net-instances";
 import type { SchematicNetMembers } from "../viewers/schematic/net-highlight";
 import { listen } from "../base/events";
 import { BBox, Vec2 } from "../base/math";
@@ -38,7 +42,7 @@ import { KCBoardAppElement } from "../kicanvas/elements/kc-board/app";
 import { KCSchematicAppElement } from "../kicanvas/elements/kc-schematic/app";
 import { BomApp } from "../kicanvas/elements/bom/app";
 import { KicadPCB, KicadSch } from "../kicad";
-import { Label, type SchematicInstanceContext } from "../kicad/schematic";
+import { Label, Wire, type SchematicInstanceContext } from "../kicad/schematic";
 
 import { is_3d_model, is_kicad, TabHeaderElement } from "./tab_header";
 import {
@@ -2683,7 +2687,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         if (!detail) return;
         detail.operation = modifiers.shift ? "toggle" : "replace";
         this.#selected_label =
-            item instanceof Label && item.uuid
+            (item instanceof Label || item instanceof Wire) && item.uuid
                 ? { page: view.key, uuid: item.uuid }
                 : null;
         this.dispatchEvent(new EcadSemanticSelectionEvent(detail));
@@ -2706,11 +2710,11 @@ export class ECadViewer extends KCUIElement implements InputContainer {
      * view. Returns whether anything was shown.
      */
     #trace_label(label: { page: string; uuid: string }): boolean {
-        const at = net_instance_at(
-            this.#net_instance_pages(),
-            label.page,
-            label.uuid,
-        );
+        // A wire traces from the label or sheet entry it carries.
+        const pages = this.#net_instance_pages();
+        const at =
+            net_instance_at(pages, label.page, label.uuid) ??
+            wire_instance(pages, label.page, label.uuid);
         if (!at) return false;
         const world = this.#world_view;
         if (at.kind === "local") {
@@ -2732,7 +2736,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         // Inside the world view `~` only chains another net in (Escape
         // closes it); from the main view it opens the view.
         if (world?.open) void world.chain(at);
-        else void this.showWorldView(label.page, label.uuid);
+        else void this.showWorldView(at.page, at.uuid);
         return true;
     }
 
@@ -4826,7 +4830,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         // `~` acts on the selected label or sheet entry: held while
         // clicking, or pressed after the click.
         this.#selected_label =
-            item instanceof Label && item.uuid && viewer?.instance_context
+            (item instanceof Label || item instanceof Wire) &&
+            item.uuid &&
+            viewer?.instance_context
                 ? {
                       page: viewer.instance_context.project_path,
                       uuid: item.uuid,

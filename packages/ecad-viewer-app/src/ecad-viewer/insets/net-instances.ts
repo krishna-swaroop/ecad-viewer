@@ -214,24 +214,18 @@ const on_segment = (p: Vec2, a: Vec2, b: Vec2) => {
     );
 };
 
-/**
- * The labels and sheet entries on `at`'s own sheet that wires join it to:
- * wires touching end to end, or an end on another's run, form one net.
- */
-export function wired_instances(
+/** The labels and sheet entries on a page, with where they connect. */
+function connection_points(
     pages: readonly NetInstancePage[],
-    at: NetInstance,
-): NetInstance[] {
-    const page = pages.find((candidate) => candidate.key === at.page);
-    if (!page) return [];
-    const doc = page.document;
+    page: NetInstancePage,
+) {
     const points: Array<{ instance: NetInstance; at: Vec2 }> = [];
-    for (const label of doc.labels) {
+    for (const label of page.document.labels) {
         if (!label.uuid) continue;
         const found = net_instance_at(pages, page.key, label.uuid);
         if (found) points.push({ instance: found, at: label.at.position });
     }
-    for (const sheet of doc.sheets)
+    for (const sheet of page.document.sheets)
         for (const pin of sheet.pins)
             if (pin.uuid)
                 points.push({
@@ -243,42 +237,87 @@ export function wired_instances(
                     },
                     at: pin.at.position,
                 });
-    const start = points.find((point) => point.instance.uuid === at.uuid);
-    if (!start) return [];
-    const segments = doc.wires.flatMap((wire) =>
-        wire.pts.slice(1).map((end, i) => [wire.pts[i]!, end] as const),
+    return points;
+}
+
+/**
+ * The labels and sheet entries wires join to the segments `seed` picks:
+ * wires touching end to end, or an end on another's run, form one net.
+ */
+function wired_from(
+    pages: readonly NetInstancePage[],
+    page: NetInstancePage,
+    seed: (segment: readonly [Vec2, Vec2], wire: string) => boolean,
+): NetInstance[] {
+    const segments = page.document.wires.flatMap((wire) =>
+        wire.pts
+            .slice(1)
+            .map((end, i) => ({
+                ends: [wire.pts[i]!, end] as const,
+                wire: wire.uuid,
+            })),
     );
     const touches = (p: Vec2, [a, b]: readonly [Vec2, Vec2]) =>
         on_segment(p, a, b);
     const reached = new Set<number>();
     const queue: number[] = [];
     segments.forEach((segment, i) => {
-        if (touches(start.at, segment)) {
+        if (seed(segment.ends, segment.wire)) {
             reached.add(i);
             queue.push(i);
         }
     });
     while (queue.length) {
-        const [a, b] = segments[queue.shift()!]!;
-        segments.forEach((segment, i) => {
+        const [a, b] = segments[queue.shift()!]!.ends;
+        segments.forEach(({ ends }, i) => {
             if (reached.has(i)) return;
-            const [c, d] = segment;
+            const [c, d] = ends;
             if (
                 touches(c, [a, b]) ||
                 touches(d, [a, b]) ||
-                touches(a, segment) ||
-                touches(b, segment)
+                touches(a, ends) ||
+                touches(b, ends)
             ) {
                 reached.add(i);
                 queue.push(i);
             }
         });
     }
-    return points
-        .filter(
-            (point) =>
-                point.instance.uuid !== at.uuid &&
-                [...reached].some((i) => touches(point.at, segments[i]!)),
+    return connection_points(pages, page)
+        .filter((point) =>
+            [...reached].some((i) => touches(point.at, segments[i]!.ends)),
         )
         .map((point) => point.instance);
+}
+
+/** The labels and sheet entries on `at`'s own sheet that wires join it to. */
+export function wired_instances(
+    pages: readonly NetInstancePage[],
+    at: NetInstance,
+): NetInstance[] {
+    const page = pages.find((candidate) => candidate.key === at.page);
+    if (!page) return [];
+    const start = connection_points(pages, page).find(
+        (point) => point.instance.uuid === at.uuid,
+    );
+    if (!start) return [];
+    return wired_from(pages, page, (ends) =>
+        on_segment(start.at, ends[0], ends[1]),
+    ).filter((it) => it.uuid !== at.uuid);
+}
+
+/**
+ * The label or sheet entry to trace a wire's net from: one that leaves the
+ * sheet (global, hierarchical, entry) if the wire reaches any, else a local
+ * label. Null when the wire carries no label at all.
+ */
+export function wire_instance(
+    pages: readonly NetInstancePage[],
+    page_key: string,
+    wire_uuid: string,
+): NetInstance | null {
+    const page = pages.find((candidate) => candidate.key === page_key);
+    if (!page) return null;
+    const found = wired_from(pages, page, (_ends, wire) => wire === wire_uuid);
+    return found.find((it) => it.kind !== "local") ?? found[0] ?? null;
 }

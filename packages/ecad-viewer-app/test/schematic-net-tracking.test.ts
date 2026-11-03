@@ -12,6 +12,7 @@ import {
     net_closure,
     net_instance_at,
     net_instances,
+    wire_instance,
     wired_instances,
     type NetInstancePage,
 } from "../src/ecad-viewer/insets/net-instances";
@@ -283,6 +284,11 @@ suite("wired instances", () => {
         expect(wired_instances(pages, from).map((it) => it.name)).to.deep.equal(
             ["B"],
         );
+        // A wire traces from a label it carries.
+        expect(
+            wire_instance(pages, "w", "00000000-0000-0000-0000-000000000202")
+                ?.name,
+        ).to.equal("A");
     });
 });
 
