@@ -52,6 +52,8 @@ export type EcadSemanticSelectionDetail = {
     netCode?: number;
     sheet?: string;
     page?: string;
+    /** The item's own name where it is not a reference, net or pin: a sheet's. */
+    name?: string;
     layer?: string;
     /** World-space center point of the selected item, when resolvable. */
     x?: number;
@@ -191,7 +193,12 @@ export function normalize_schematic_selection(
         return { ...base, itemType: "sheet-pin", net: item.name };
     }
     if (item instanceof SchematicSheet) {
-        return { ...base, itemType: "sheet", page: item.sheetfile };
+        return {
+            ...base,
+            itemType: "sheet",
+            page: item.sheetfile,
+            name: item.sheetname,
+        };
     }
     return { ...base, itemType: item.constructor.name || "schematic-item" };
 }

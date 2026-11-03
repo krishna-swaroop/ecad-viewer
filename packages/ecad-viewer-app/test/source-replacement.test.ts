@@ -300,7 +300,11 @@ suite("warm source replacement", () => {
             clientY: rect.top + pointer.y,
             bubbles: true,
         };
-        const selections: Array<{ itemType: string }> = [];
+        const selections: Array<{
+            itemType: string;
+            name?: string;
+            page?: string;
+        }> = [];
         host.addEventListener("ecad-viewer:selection", (event) =>
             selections.push((event as CustomEvent).detail),
         );
@@ -313,7 +317,11 @@ suite("warm source replacement", () => {
         viewer.draw();
         viewer.canvas.dispatchEvent(new MouseEvent("click", client));
 
-        expect(selections.at(-1)?.itemType).to.equal("sheet");
+        expect(selections.at(-1)).to.include({
+            itemType: "sheet",
+            name: "Child",
+            page: "child.kicad_sch",
+        });
     });
 
     test("keeps the camera still while applying measured overlay insets", async () => {
