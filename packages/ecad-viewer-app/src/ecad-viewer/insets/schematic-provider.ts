@@ -12,7 +12,7 @@
     idle scene is dropped.
 */
 
-import { BBox, Vec2 } from "../../base/math";
+import { BBox, Matrix3, Vec2 } from "../../base/math";
 import type { SchematicTheme } from "../../kicad";
 import {
     PinInstance,
@@ -21,6 +21,7 @@ import {
     type SchematicSymbol,
 } from "../../kicad/schematic";
 import type { SchematicNetMembers } from "../../viewers/schematic/net-highlight";
+import { render_schematic_into } from "../../viewers/schematic/schematic-view";
 import { SchematicViewer } from "../../viewers/schematic/viewer";
 import { inset_matrix, type InsetCamera } from "./camera";
 import {
@@ -65,6 +66,15 @@ export interface SchematicPageView {
     bounds: BBox;
     item_bbox(uuid: string): BBox | undefined;
     render(canvas: HTMLCanvasElement, camera: InsetCamera): void;
+    /**
+     * Draw into a shared canvas through `matrix`, without clearing it and
+     * without dimming the sheet under a net highlight.
+     */
+    render_into(
+        ctx: CanvasRenderingContext2D,
+        matrix: Matrix3,
+        dpr: number,
+    ): void;
     release(): void;
 }
 
@@ -156,47 +166,6 @@ export class SchematicInsetProvider implements InsetProvider {
         return target;
     }
 
-    async resolve_item(
-        page_key: string,
-        uuid: string,
-    ): Promise<InsetTarget | null> {
-        const page = this.host.pages().find((p) => p.key === page_key);
-        if (!page) return null;
-        const scene = this.#acquire(page);
-        await scene.ready;
-        if (!this.#scenes.has(scene.key)) return null;
-        const box = scene.viewer.schematic_renderer.get_item_bbox(uuid);
-        if (!box) {
-            scene.refs = Math.max(0, scene.refs - 1);
-            this.#evict();
-            return null;
-        }
-        const name =
-            page.document.labels.find((label) => label.uuid === uuid)?.text ??
-            page.document.sheets
-                .flatMap((sheet) => sheet.pins)
-                .find((pin) => pin.uuid === uuid)?.name ??
-            "";
-        const target: InsetTarget = {
-            kind: "sch",
-            reference: name,
-            number: "",
-            detail: page.name,
-            side: "sch",
-            focus: local_focus(
-                box,
-                box,
-                SCHEMATIC_FOCUS_LIMIT,
-                SCHEMATIC_FOCUS_WINDOW,
-            ),
-            anchor: center(box),
-            anchor_box: box,
-            mirror: false,
-        };
-        this.#targets.set(target, scene.key);
-        return target;
-    }
-
     /**
      * A whole page instance as a scene the caller draws through its own
      * camera (the net map's tiles). Held until `release`.
@@ -219,6 +188,16 @@ export class SchematicInsetProvider implements InsetProvider {
                 scene.viewer.render_view(canvas, (w, h) =>
                     inset_matrix(camera, w, h),
                 );
+            },
+            render_into: (ctx, matrix, dpr) => {
+                scene.used = ++this.#clock;
+                const dim = scene.viewer.content_dim;
+                scene.viewer.content_dim = null;
+                try {
+                    render_schematic_into(scene.viewer, ctx, matrix, dpr);
+                } finally {
+                    scene.viewer.content_dim = dim;
+                }
             },
             release: () => {
                 if (released) return;

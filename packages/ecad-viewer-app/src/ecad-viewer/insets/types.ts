@@ -78,11 +78,6 @@ export interface InsetHit {
 export interface InsetProvider {
     readonly kind: InsetKind;
     resolve(reference: string, number: string): Promise<InsetTarget | null>;
-    /**
-     * A schematic item (a label or sheet entry) by uuid on one page instance,
-     * for insets that follow a net between sheets.
-     */
-    resolve_item?(page: string, uuid: string): Promise<InsetTarget | null>;
     /** Draw `target`'s scene through `camera` into the inset's 2D canvas. */
     render(
         target: InsetTarget,

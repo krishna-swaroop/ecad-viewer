@@ -57,6 +57,8 @@ export function net_highlight_scene(
     sheet_path: string,
     document: KicadSch,
     item_bbox: (uuid: string) => BBox | undefined,
+    /** 1 when a net was just highlighted, easing to 0: a brighter, wider glow. */
+    flash = 0,
 ): EcadOverlayScene {
     const primitives: EcadOverlayPrimitive[] = [];
     const origin = { kind: "world" as const, x: 0, y: 0 };
@@ -76,8 +78,8 @@ export function net_highlight_scene(
                     anchor: origin,
                     points,
                     stroke: color,
-                    strokeWidth: 1.2,
-                    opacity: 0.25,
+                    strokeWidth: 1.2 + 2.4 * flash,
+                    opacity: 0.25 + 0.4 * flash,
                 },
                 {
                     id: `wire:${wire.uuid}`,
@@ -154,6 +156,76 @@ export function net_highlight_scene(
     }
     return {
         channelId: NET_HIGHLIGHT_CHANNEL,
+        context: "SCH",
+        placement: "foreground",
+        visible: primitives.length > 0,
+        primitives,
+    };
+}
+
+export const LOCAL_TRACE_CHANNEL = "schematic-local-trace";
+
+/**
+ * The open sheet's local labels named `name`, joined in a chain: each label
+ * outlined with a glow, and a dashed line from each to the next.
+ */
+export function local_trace_scene(
+    name: string,
+    document: KicadSch,
+    item_bbox: (uuid: string) => BBox | undefined,
+    color = DEFAULT_COLORS[0]!,
+): EcadOverlayScene {
+    const boxes: BBox[] = [];
+    for (const label of document.labels) {
+        if (!(label instanceof NetLabel) || label.text !== name || !label.uuid)
+            continue;
+        const box = item_bbox(label.uuid);
+        if (box) boxes.push(box);
+    }
+    boxes.sort((a, b) => a.x - b.x || a.y - b.y);
+    const primitives: EcadOverlayPrimitive[] = [];
+    const origin = { kind: "world" as const, x: 0, y: 0 };
+    boxes.forEach((box, i) => {
+        primitives.push({
+            id: `label:${i}`,
+            kind: "bbox",
+            anchor: { kind: "bbox", bounds: [box.x, box.y, box.w, box.h] },
+            padding: 0.4,
+            stroke: color,
+            fill: color,
+            strokeWidth: 0.3,
+            opacity: 0.45,
+        });
+        if (!i) return;
+        const a = boxes[i - 1]!.center;
+        const b = box.center;
+        const points: Array<[number, number]> = [
+            [a.x, a.y],
+            [b.x, b.y],
+        ];
+        primitives.push(
+            {
+                id: `glow:${i}`,
+                kind: "polyline",
+                anchor: origin,
+                points,
+                stroke: color,
+                strokeWidth: 1.4,
+                opacity: 0.2,
+            },
+            {
+                id: `line:${i}`,
+                kind: "polyline",
+                anchor: origin,
+                points,
+                stroke: color,
+                strokeWidth: 0.35,
+                dash: [1.5, 1],
+            },
+        );
+    });
+    return {
+        channelId: LOCAL_TRACE_CHANNEL,
         context: "SCH",
         placement: "foreground",
         visible: primitives.length > 0,

@@ -146,3 +146,48 @@ export function net_instances(
     }
     return found;
 }
+
+/** A label's whole reach across sheets: every instance and the hops between. */
+export interface NetClosure {
+    instances: NetInstance[];
+    /** Each hop, from the side nearer the starting label to the farther. */
+    links: Array<[NetInstance, NetInstance]>;
+    /** Hops from the starting label, by `page#uuid`. */
+    depth: Map<string, number>;
+}
+
+export const instance_key = (it: NetInstance) => `${it.page}#${it.uuid}`;
+
+/**
+ * Follow `from` across sheets until nothing new turns up: global labels by
+ * name, sheet entries down and hierarchical labels up. Every link points
+ * away from `from`. Global labels of one name fan out from the first of
+ * them reached, so a click on one shows a line to each of the others.
+ */
+export function net_closure(
+    pages: readonly NetInstancePage[],
+    from: NetInstance,
+): NetClosure {
+    const key = instance_key;
+    const found = new Map<string, NetInstance>([[key(from), from]]);
+    const depth = new Map<string, number>([[key(from), 0]]);
+    const links: Array<[NetInstance, NetInstance]> = [];
+    const linked = new Set<string>();
+    const queue = [from];
+    while (queue.length) {
+        const at = queue.shift()!;
+        if (at.kind === "local") continue;
+        for (const other of net_instances(pages, at)) {
+            const id = [key(at), key(other)].sort().join("|");
+            if (found.has(key(other))) continue;
+            found.set(key(other), other);
+            depth.set(key(other), depth.get(key(at))! + 1);
+            queue.push(other);
+            if (!linked.has(id)) {
+                linked.add(id);
+                links.push([at, other]);
+            }
+        }
+    }
+    return { instances: [...found.values()], links, depth };
+}

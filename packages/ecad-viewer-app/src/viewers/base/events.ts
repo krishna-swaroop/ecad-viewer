@@ -109,28 +109,6 @@ export class KiCanvasProbeEvent extends KiCanvasEvent<KiCanvasProbeDetail> {
     }
 }
 
-/**
- * The pointer is on a schematic label or sheet entry (or left it), for insets
- * that follow a net across sheets. `page` is the sheet instance.
- */
-export type SchematicLabelProbeDetail =
-    | {
-          phase: "hover";
-          page: string;
-          uuid: string;
-          name: string;
-          anchor: { x: number; y: number };
-      }
-    | { phase: "leave" };
-
-export class SchematicLabelProbeEvent extends KiCanvasEvent<SchematicLabelProbeDetail> {
-    static readonly type = "kicanvas:label-probe";
-
-    constructor(detail: SchematicLabelProbeDetail) {
-        super(SchematicLabelProbeEvent.type, detail, true);
-    }
-}
-
 export class EcadOverlayClickEvent extends KiCanvasEvent<OverlayHit> {
     static readonly type = "ecad-viewer:overlay-click";
 
@@ -507,7 +485,6 @@ export interface KiCanvasEventMap {
     [KiCanvasLoadEvent.type]: KiCanvasLoadEvent;
     [KiCanvasSelectEvent.type]: KiCanvasSelectEvent;
     [KiCanvasProbeEvent.type]: KiCanvasProbeEvent;
-    [SchematicLabelProbeEvent.type]: SchematicLabelProbeEvent;
     [EcadOverlayClickEvent.type]: EcadOverlayClickEvent;
     [EcadOverlayHoverEvent.type]: EcadOverlayHoverEvent;
     [EcadOverlayLeaveEvent.type]: EcadOverlayLeaveEvent;

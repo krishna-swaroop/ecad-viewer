@@ -11,9 +11,7 @@
 import { Vec2 } from "../../base/math";
 import {
     KiCanvasProbeEvent,
-    SchematicLabelProbeEvent,
     type KiCanvasProbeDetail,
-    type SchematicLabelProbeDetail,
 } from "../../viewers/base/events";
 import type { Viewer } from "../../viewers/base/viewer";
 import type { InsetCamera } from "./camera";
@@ -43,20 +41,7 @@ export interface InsetLinkHost extends InsetPeer {
     source_viewers(): Partial<Record<InsetKind, Viewer | null>>;
     /** Inset mode changed here (key or API); the host tells its peer. */
     mode_changed?(on: boolean): void;
-    /**
-     * Where a schematic label or sheet entry leads (net insets): the other
-     * instances of its net, as page instance + item uuid.
-     */
-    net_instances?(
-        page: string,
-        uuid: string,
-    ): { page: string; uuid: string }[];
 }
-
-/** At most this many insets open for one label's net. */
-export const MAX_NET_INSETS = 4;
-
-type LabelHover = Extract<SchematicLabelProbeDetail, { phase: "hover" }>;
 
 export const HOVER_OPEN_DELAY_MS = 180;
 export const HOVER_CLOSE_DELAY_MS = 700;
@@ -130,14 +115,6 @@ class LazyProvider implements InsetProvider {
         return target;
     }
 
-    async resolve_item(page: string, uuid: string) {
-        const provider = this.find();
-        this.#attach(provider);
-        const target = (await provider?.resolve_item?.(page, uuid)) ?? null;
-        if (target && provider) this.#owners.set(target, provider);
-        return target;
-    }
-
     render(
         target: InsetTarget,
         camera: InsetCamera,
@@ -201,13 +178,6 @@ export class InsetLink {
     /** A click landed while the other document loaded: pin it once open. */
     #pin_when_ready: HoverDetail | null = null;
 
-    /** The label or sheet entry under the pointer (net insets). */
-    #label: { viewer: Viewer; detail: LabelHover } | null = null;
-    /** The insets one label opened; kept once clicked. */
-    #fan: { uuid: string; insets: Inset[]; kept: boolean } | null = null;
-    #fan_timer: number | null = null;
-    #fan_close_timer: number | null = null;
-
     constructor(private readonly host: InsetLinkHost) {
         this.session.on_hit = (inset, hit) => this.#on_inset_hit(inset, hit);
         this.session.on_click = (inset) => this.#on_inset_click(inset);
@@ -251,7 +221,6 @@ export class InsetLink {
         if (!on && !this.#peeking) {
             this.#clear_timers();
             this.session.close_previews();
-            this.#close_fan(false);
         } else if (on && this.#hover) {
             this.#schedule_open(this.#hover.viewer, this.#hover.detail, 0);
         }
@@ -286,12 +255,6 @@ export class InsetLink {
                         this.#hover.detail,
                         0,
                     );
-                if (!this.#mode && this.#label)
-                    this.#schedule_fan(
-                        this.#label.viewer,
-                        this.#label.detail,
-                        0,
-                    );
             }
             return false;
         }
@@ -319,7 +282,6 @@ export class InsetLink {
         if (!this.#mode) {
             this.#clear_timers();
             this.session.close_previews();
-            this.#close_fan(false);
         }
     }
 
@@ -343,17 +305,12 @@ export class InsetLink {
                 KiCanvasProbeEvent.type,
                 (event) => this.#on_probe(viewer, event.detail),
             );
-            const label_listener = viewer.addEventListener(
-                SchematicLabelProbeEvent.type,
-                (event) => this.#on_label_probe(viewer, event.detail),
-            );
             const intercept = () => this.#on_click(viewer);
             viewer.click_interceptor = intercept;
             this.#listeners.set(viewer, {
                 kind,
                 dispose: () => {
                     listener.dispose();
-                    label_listener.dispose();
                     if (viewer.click_interceptor === intercept)
                         viewer.click_interceptor = null;
                 },
@@ -468,21 +425,6 @@ export class InsetLink {
 
     /** In inset mode (or a peek), a click on a pin or pad pins its inset. */
     #on_click(viewer: Viewer): boolean {
-        if (
-            (this.#mode || this.#peeking) &&
-            this.#label?.viewer === viewer &&
-            this.host.net_instances
-        ) {
-            // A click keeps the label's insets open; inside the hover delay
-            // it opens them now.
-            const uuid = this.#label.detail.uuid;
-            if (this.#fan?.uuid === uuid) this.#fan.kept = true;
-            else
-                void this.#open_fan(viewer, this.#label.detail).then(() => {
-                    if (this.#fan?.uuid === uuid) this.#fan.kept = true;
-                });
-            return true;
-        }
         if (!this.#peer || (!this.#mode && !this.#peeking)) return false;
         const hover = this.#hover;
         if (!hover || hover.viewer !== viewer) return false;
@@ -511,82 +453,6 @@ export class InsetLink {
             if (preview) this.session.pin(preview);
         });
         return true;
-    }
-
-    // --- Net insets: a label opens its net's other instances ---------
-
-    #on_label_probe(viewer: Viewer, detail: SchematicLabelProbeDetail) {
-        if (detail.phase === "hover") {
-            this.#label = { viewer, detail };
-            if (this.#fan_close_timer !== null)
-                clearTimeout(this.#fan_close_timer);
-            this.#fan_close_timer = null;
-            if (!this.#mode && !this.#peeking) return;
-            if (this.#fan?.uuid === detail.uuid) return;
-            this.#schedule_fan(viewer, detail, HOVER_OPEN_DELAY_MS);
-            return;
-        }
-        this.#label = null;
-        if (this.#fan_timer !== null) clearTimeout(this.#fan_timer);
-        this.#fan_timer = null;
-        if (this.#fan_close_timer !== null) clearTimeout(this.#fan_close_timer);
-        this.#fan_close_timer = window.setTimeout(() => {
-            this.#fan_close_timer = null;
-            // The pointer reached one of the insets: leave them for pinning.
-            const hovered = this.session.hovered;
-            if (hovered && this.#fan?.insets.includes(hovered)) return;
-            this.#close_fan(false);
-        }, HOVER_CLOSE_DELAY_MS);
-    }
-
-    #schedule_fan(viewer: Viewer, detail: LabelHover, delay: number) {
-        if (this.#fan_timer !== null) clearTimeout(this.#fan_timer);
-        this.#fan_timer = window.setTimeout(() => {
-            this.#fan_timer = null;
-            void this.#open_fan(viewer, detail);
-        }, delay);
-    }
-
-    async #open_fan(viewer: Viewer, detail: LabelHover) {
-        const entry = this.#listeners.get(viewer);
-        if (!entry || !this.host.net_instances) return;
-        if (this.#fan?.uuid === detail.uuid) return;
-        this.#close_fan(false);
-        const parent = this.host.overlay_parent();
-        if (parent) this.session.mount(parent);
-        const fan = { uuid: detail.uuid, insets: [] as Inset[], kept: false };
-        this.#fan = fan;
-        const color = this.session.next_color();
-        const anchor = new Vec2(detail.anchor.x, detail.anchor.y);
-        const found = this.host
-            .net_instances(detail.page, detail.uuid)
-            .slice(0, MAX_NET_INSETS);
-        for (const instance of found) {
-            const inset = await this.session.open({
-                kind: "sch",
-                reference: detail.name,
-                number: "",
-                item: instance,
-                source: entry.source,
-                source_anchor: anchor,
-                preview: false,
-                color,
-            });
-            // Another label took over while this one was opening.
-            if (this.#fan !== fan) {
-                if (inset) this.session.close(inset);
-                return;
-            }
-            if (inset) fan.insets.push(inset);
-        }
-    }
-
-    /** Close the label's insets; `kept` ones only when `force`. */
-    #close_fan(force: boolean) {
-        const fan = this.#fan;
-        if (!fan || (fan.kept && !force)) return;
-        this.#fan = null;
-        for (const inset of fan.insets) this.session.close(inset);
     }
 
     // --- Chained insets (M5) -----------------------------------------
@@ -679,9 +545,5 @@ export class InsetLink {
         if (this.#retry_timer !== null) clearTimeout(this.#retry_timer);
         this.#retry_timer = null;
         this.#pin_when_ready = null;
-        if (this.#fan_timer !== null) clearTimeout(this.#fan_timer);
-        if (this.#fan_close_timer !== null) clearTimeout(this.#fan_close_timer);
-        this.#fan_timer = null;
-        this.#fan_close_timer = null;
     }
 }

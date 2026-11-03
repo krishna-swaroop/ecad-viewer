@@ -1,10 +1,6 @@
 import { later } from "../base/async";
-import { NetMap } from "./insets/net-map";
-import {
-    net_instance_at,
-    net_instances,
-    type NetInstancePage,
-} from "./insets/net-instances";
+import { WorldView } from "./insets/world-view";
+import { net_instance_at, type NetInstancePage } from "./insets/net-instances";
 import type { SchematicNetMembers } from "../viewers/schematic/net-highlight";
 import { listen } from "../base/events";
 import { BBox, Vec2 } from "../base/math";
@@ -42,7 +38,7 @@ import { KCBoardAppElement } from "../kicanvas/elements/kc-board/app";
 import { KCSchematicAppElement } from "../kicanvas/elements/kc-schematic/app";
 import { BomApp } from "../kicanvas/elements/bom/app";
 import { KicadPCB, KicadSch } from "../kicad";
-import type { SchematicInstanceContext } from "../kicad/schematic";
+import { Label, type SchematicInstanceContext } from "../kicad/schematic";
 
 import { is_3d_model, is_kicad, TabHeaderElement } from "./tab_header";
 import {
@@ -582,10 +578,15 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.addDisposable(
             listen(window, "keyup", (event) => {
                 this.#inset_link?.key_up(event as KeyboardEvent);
+                if ((event as KeyboardEvent).code === "Backquote")
+                    this.#tilde_held = false;
             }),
         );
         this.addDisposable(
-            listen(window, "blur", () => this.#inset_link?.key_up(null)),
+            listen(window, "blur", () => {
+                this.#inset_link?.key_up(null);
+                this.#tilde_held = false;
+            }),
         );
     }
 
@@ -2611,24 +2612,23 @@ export class ECadViewer extends KCUIElement implements InputContainer {
      * the members (the viewer has no netlist); an empty list clears it.
      */
     /**
-     * Net map: every sheet the schematic's highlighted nets reach, side by
-     * side over the schematic, with curves where the net crosses between
-     * them. A click on a sheet opens it. Resolves false when nothing is
-     * highlighted. `N` toggles it on the schematic, Escape closes it.
+     * World view: every sheet the net of a label or sheet entry reaches, laid
+     * out on one canvas that pans and zooms like a sheet, with animated lines
+     * between the instances. A double-click on a sheet opens it there.
      */
-    public async showNetMap(): Promise<boolean> {
+    public async showWorldView(page: string, uuid: string): Promise<boolean> {
         await this.ready;
         const viewer = this.#safe_schematic_viewer();
         const provider = this.insetProvider(
             "sch",
         ) as SchematicInsetProvider | null;
-        const nets = viewer?.highlighted_nets ?? [];
-        if (!viewer || !provider || !nets.length) return false;
-        provider.set_highlighted_nets(nets);
-        this.#net_map ??= new NetMap({
+        if (!viewer || !provider) return false;
+        const from = net_instance_at(this.#net_instance_pages(), page, uuid);
+        if (!from) return false;
+        this.#world_view ??= new WorldView({
             container: () => {
                 // The canvas sits in the viewer element's shadow root; the
-                // map is absolutely placed against that element.
+                // view is absolutely placed against that element.
                 const parent = this.#safe_schematic_viewer()?.canvas.parentNode;
                 const host =
                     parent instanceof ShadowRoot
@@ -2643,16 +2643,50 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             },
             pages: () => this.#net_instance_pages(),
             page_view: (key) => provider.page_view(key),
-            open_page: (key) => void this.showPage(key),
+            open_page: (key, item) => void this.#open_world_page(key, item),
             background: () =>
                 this.#safe_schematic_viewer()?.renderer.background_color.to_css() ??
                 "#000",
+            navigation: () => this.#safe_schematic_viewer()?.navigation_options,
+            insets: () =>
+                this.#safe_schematic_viewer()?.viewport?.camera.fit_insets ??
+                null,
         });
-        return this.#net_map.show(nets);
+        return this.#world_view.show(from);
     }
 
-    public hideNetMap() {
-        this.#net_map?.close();
+    public hideWorldView() {
+        this.#world_view?.close();
+    }
+
+    async #open_world_page(page: string, uuid?: string) {
+        await this.showPage(page);
+        if (uuid) this.#safe_schematic_viewer()?.zoom_fit_item(uuid);
+    }
+
+    /**
+     * `~` on the selected label: a local label joins its namesakes on the
+     * sheet; a global or hierarchical label or a sheet entry opens the world
+     * view. Returns whether anything was shown.
+     */
+    #trace_label(label: { page: string; uuid: string }): boolean {
+        const viewer = this.#safe_schematic_viewer();
+        if (!viewer) return false;
+        const at = net_instance_at(
+            this.#net_instance_pages(),
+            label.page,
+            label.uuid,
+        );
+        if (!at) return false;
+        if (at.kind === "local") {
+            viewer.show_local_trace(
+                viewer.local_trace === at.name ? null : at.name,
+            );
+            return true;
+        }
+        if (this.#world_view?.open) this.hideWorldView();
+        else void this.showWorldView(label.page, label.uuid);
+        return true;
     }
 
     public async setSchematicHighlightedNets(
@@ -3329,25 +3363,23 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             return;
         }
         if (!this.has_sch) return;
+        if (event.key === "Escape" && this.#world_view?.open) {
+            this.hideWorldView();
+            event.preventDefault();
+            return;
+        }
         if (
-            (event.key === "n" ||
-                event.key === "N" ||
-                event.key === "Escape") &&
+            event.code === "Backquote" &&
             !event.metaKey &&
             !event.ctrlKey &&
             !event.altKey &&
-            !event.repeat &&
             this.#active_tab === TabKind.sch
         ) {
-            if (event.key === "Escape") {
-                if (this.#net_map?.open) {
-                    this.hideNetMap();
-                    event.preventDefault();
-                }
-                return;
+            if (!event.repeat) {
+                this.#tilde_held = true;
+                if (this.#selected_label)
+                    this.#trace_label(this.#selected_label);
             }
-            if (this.#net_map?.open) this.hideNetMap();
-            else void this.showNetMap();
             event.preventDefault();
             return;
         }
@@ -4337,7 +4369,10 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     #inset_link: InsetLink | null = null;
-    #net_map: NetMap | null = null;
+    #world_view: WorldView | null = null;
+    /** The last label or sheet entry selected on the schematic, for `~`. */
+    #selected_label: { page: string; uuid: string } | null = null;
+    #tilde_held = false;
 
     /**
      * Link this element to the one holding the other document (schematic ↔
@@ -4394,11 +4429,6 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                 if (on) this.setMeasureMode(false);
                 this.#inset_link?.peer?.syncInsetMode?.(on);
                 this.#emit_inset_mode(on);
-            },
-            net_instances: (page, uuid) => {
-                const pages = this.#net_instance_pages();
-                const from = net_instance_at(pages, page, uuid);
-                return from ? net_instances(pages, from) : [];
             },
         });
         this.#inset_link.sync();
@@ -4698,6 +4728,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         // A click on empty canvas: tell the host so it can deselect, rather than
         // swallowing it and leaving the previous selection stuck.
         if (!item) {
+            this.#selected_label = null;
             this.dispatchEvent(
                 new EcadSemanticSelectionEvent({
                     sourceContext: "SCH",
@@ -4715,6 +4746,17 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             viewer?.instance_context,
         );
         if (!detail) return;
+        // `~` acts on the selected label or sheet entry: held while
+        // clicking, or pressed after the click.
+        this.#selected_label =
+            item instanceof Label && item.uuid && viewer?.instance_context
+                ? {
+                      page: viewer.instance_context.project_path,
+                      uuid: item.uuid,
+                  }
+                : null;
+        if (this.#tilde_held && this.#selected_label)
+            this.#trace_label(this.#selected_label);
         this.#attach_item_bounds_sch(detail, item, viewer!);
         detail.operation = select.detail.operation ?? "replace";
         if (select.detail.modifiers) detail.modifiers = select.detail.modifiers;

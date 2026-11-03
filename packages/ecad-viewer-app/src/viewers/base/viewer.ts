@@ -177,6 +177,11 @@ export abstract class Viewer extends EventTarget {
         this.interaction = resolve_viewer_interaction(interaction);
     }
 
+    /** How this viewer pans and zooms, for views that should match it. */
+    get navigation_options(): ViewerNavigationOptions {
+        return this.interaction.navigation;
+    }
+
     protected readonly interaction: {
         selectable: boolean;
         navigation: ViewerNavigationOptions;

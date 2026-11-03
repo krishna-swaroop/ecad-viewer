@@ -2,8 +2,10 @@ import { expect } from "@esm-bundle/chai";
 import { SchematicParser } from "kicad-parser";
 
 import { BBox } from "../src/base/math";
+import { world_layout } from "../src/ecad-viewer/insets/world-view";
 import { normalize_schematic_selection } from "../src/ecad-viewer/host-adapter";
 import {
+    net_closure,
     net_instance_at,
     net_instances,
     type NetInstancePage,
@@ -214,6 +216,47 @@ suite("local label lines", () => {
         expect((line as { points: number[][] }).points).to.deep.equal([
             [12, 10],
             [82, 40],
+        ]);
+    });
+});
+
+suite("world view", () => {
+    test("a sheet entry's reach points outward, a hop deeper each time", () => {
+        const pages = hierarchy();
+        const closure = net_closure(
+            pages,
+            net_instance_at(pages, "root", ENTRY)!,
+        );
+        expect(closure.links.map(([a, b]) => [a.uuid, b.uuid])).to.deep.equal([
+            [ENTRY, CHILD_LABEL],
+        ]);
+        expect(closure.depth.get(`child#${CHILD_LABEL}`)).to.equal(1);
+    });
+
+    test("a global label fans out to each of its namesakes", () => {
+        const pages = hierarchy();
+        const closure = net_closure(
+            pages,
+            net_instance_at(pages, "root", GLOBAL_A)!,
+        );
+        expect(closure.links.map(([a, b]) => [a.uuid, b.uuid])).to.deep.equal([
+            [GLOBAL_A, GLOBAL_B],
+        ]);
+    });
+
+    test("sheets are laid out in rows with a gap", () => {
+        const offsets = world_layout(
+            [
+                new BBox(0, 0, 100, 50),
+                new BBox(0, 0, 80, 70),
+                new BBox(0, 0, 60, 40),
+            ],
+            10,
+        );
+        expect(offsets.map((v) => [v.x, v.y])).to.deep.equal([
+            [0, 0],
+            [110, 0],
+            [0, 80],
         ]);
     });
 });

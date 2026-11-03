@@ -5,8 +5,10 @@
 */
 
 import {
+    LOCAL_TRACE_CHANNEL,
     NET_HIGHLIGHT_CHANNEL,
     NET_HIGHLIGHT_DIM,
+    local_trace_scene,
     net_highlight_scene,
     type SchematicNetMembers,
 } from "./net-highlight";
@@ -27,7 +29,6 @@ import { DocumentViewer } from "../base/document-viewer";
 import {
     HierarchicalSheetPinClickEvent,
     KiCanvasProbeEvent,
-    SchematicLabelProbeEvent,
     KiCanvasSelectEvent,
     select_modifiers,
     LabelClickEvent,
@@ -346,7 +347,14 @@ export class SchematicViewer extends DocumentViewer<
     protected override resolve_loaded(value: boolean) {
         super.resolve_loaded(value);
 
-        if (value) this.#paint_net_highlight(false);
+        if (value) {
+            this.#paint_net_highlight(false);
+            // A trace belongs to the sheet it was drawn on.
+            if (this.#local_trace) {
+                this.#local_trace = null;
+                this.clear_overlay_scene(LOCAL_TRACE_CHANNEL);
+            }
+        }
 
         if (value && this.#focus_net_item) {
             this.zoom_fit_item(this.#focus_net_item);
@@ -366,11 +374,61 @@ export class SchematicViewer extends DocumentViewer<
      * set and redraws it for the new sheet.
      */
     set_highlighted_nets(nets: readonly SchematicNetMembers[]) {
+        const before = new Set(this.#highlighted_nets.map((net) => net.name));
         this.#highlighted_nets = [...nets];
-        this.#paint_net_highlight(true);
+        // A net that was not highlighted before flashes in.
+        if (nets.some((net) => !before.has(net.name))) this.#flash_highlight();
+        else this.#paint_net_highlight(true);
     }
 
-    #paint_net_highlight(draw: boolean) {
+    #flash_start: number | null = null;
+
+    #flash_highlight() {
+        const first = this.#flash_start === null;
+        this.#flash_start = performance.now();
+        if (!first) return;
+        const step = (now: number) => {
+            if (this.#flash_start === null || this.disposables.isDisposed)
+                return;
+            const t = Math.min(1, (now - this.#flash_start) / 650);
+            this.#paint_net_highlight(true, 1 - t * t * (3 - 2 * t));
+            if (t < 1) requestAnimationFrame(step);
+            else this.#flash_start = null;
+        };
+        requestAnimationFrame(step);
+    }
+
+    /**
+     * Join the open sheet's local labels named `name` with lines, or clear it
+     * (null). Cleared when the sheet changes.
+     */
+    show_local_trace(name: string | null) {
+        this.#local_trace = name;
+        this.#paint_local_trace();
+        this.draw();
+    }
+
+    get local_trace(): string | null {
+        return this.#local_trace;
+    }
+
+    #local_trace: string | null = null;
+
+    #paint_local_trace() {
+        if (!this.layers || !this.document) return;
+        if (!this.#local_trace) {
+            this.clear_overlay_scene(LOCAL_TRACE_CHANNEL);
+            return;
+        }
+        this.set_overlay_scene(
+            local_trace_scene(this.#local_trace, this.document, (uuid) =>
+                this.schematic_renderer.get_item_bbox(uuid),
+            ),
+            false,
+        );
+    }
+
+    #paint_net_highlight(draw: boolean, flash = 0) {
         if (!this.layers || !this.document) return;
         const nets = this.#highlighted_nets;
         this.content_dim = nets.length ? NET_HIGHLIGHT_DIM : null;
@@ -384,6 +442,7 @@ export class SchematicViewer extends DocumentViewer<
             this.#instance_context?.sheet_path ?? "",
             this.document,
             (uuid) => this.schematic_renderer.get_item_bbox(uuid),
+            flash,
         );
         this.set_overlay_scene(scene, false);
         if (draw) this.draw();
@@ -397,10 +456,6 @@ export class SchematicViewer extends DocumentViewer<
             it.item instanceof PinInstance && it.item.number.trim()
                 ? it.item
                 : null,
-        );
-        this.#update_label_probe(
-            it.item instanceof Label && it.item.uuid ? it.item : null,
-            it.bbox,
         );
 
         // An embedded hyperlink advertises itself with a pointer cursor so
@@ -441,37 +496,10 @@ export class SchematicViewer extends DocumentViewer<
 
     protected override on_pointer_leave(): void {
         this.#update_probe_hover(null);
-        this.#update_label_probe(null, null);
         this.#last_hover_bbox = null;
         this.#update_link_cursor(null);
         this.layers.overlay.clear();
         this.draw();
-    }
-
-    #last_label: Label | null = null;
-
-    #update_label_probe(label: Label | null, bbox: BBox | null) {
-        // Sheet entries are rebuilt on every read, so compare by uuid.
-        if (label?.uuid === this.#last_label?.uuid) return;
-        const had = this.#last_label;
-        this.#last_label = label;
-        if (had && !label) {
-            this.dispatchEvent(
-                new SchematicLabelProbeEvent({ phase: "leave" }),
-            );
-            return;
-        }
-        if (!label?.uuid) return;
-        const at = bbox?.center ?? label.at.position;
-        this.dispatchEvent(
-            new SchematicLabelProbeEvent({
-                phase: "hover",
-                page: this.#instance_context?.project_path ?? this.sch_name,
-                uuid: label.uuid,
-                name: label.text,
-                anchor: { x: at.x, y: at.y },
-            }),
-        );
     }
 
     #update_link_cursor(item: unknown) {
