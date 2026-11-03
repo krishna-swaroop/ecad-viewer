@@ -8,6 +8,7 @@ import {
     net_closure,
     net_instance_at,
     net_instances,
+    wired_instances,
     type NetInstancePage,
 } from "../src/ecad-viewer/insets/net-instances";
 import { KicadSch } from "../src/kicad/schematic";
@@ -249,5 +250,34 @@ suite("world view", () => {
             [110, 0],
             [0, 80],
         ]);
+    });
+});
+
+suite("wired instances", () => {
+    test("labels and entries joined by wires on one sheet are one net", () => {
+        const doc = new KicadSch(
+            "wired.kicad_sch",
+            new SchematicParser().parse(`
+(kicad_sch
+  (version 20250114)
+  (generator "eeschema")
+  (uuid "00000000-0000-0000-0000-000000000004")
+  (wire (pts (xy 10 10) (xy 30 10)) (stroke (width 0) (type default)) (uuid "00000000-0000-0000-0000-000000000201"))
+  (wire (pts (xy 30 10) (xy 30 40)) (stroke (width 0) (type default)) (uuid "00000000-0000-0000-0000-000000000202"))
+  (global_label "A" (shape input) (at 10 10 180) (effects (font (size 1.27 1.27))) (uuid "00000000-0000-0000-0000-000000000211"))
+  (global_label "B" (shape input) (at 30 40 0) (effects (font (size 1.27 1.27))) (uuid "00000000-0000-0000-0000-000000000212"))
+  (global_label "C" (shape input) (at 80 80 0) (effects (font (size 1.27 1.27))) (uuid "00000000-0000-0000-0000-000000000213"))
+)
+`),
+        );
+        const pages = [{ key: "w", name: "W", document: doc }];
+        const from = net_instance_at(
+            pages,
+            "w",
+            "00000000-0000-0000-0000-000000000211",
+        )!;
+        expect(wired_instances(pages, from).map((it) => it.name)).to.deep.equal(
+            ["B"],
+        );
     });
 });

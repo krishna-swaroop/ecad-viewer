@@ -10,6 +10,7 @@
     Names only: the viewer has no netlist. A host with one can refine this.
 */
 
+import { Vec2 } from "../../base/math";
 import {
     GlobalLabel,
     HierarchicalLabel,
@@ -176,6 +177,14 @@ export function net_closure(
     const queue = [from];
     while (queue.length) {
         const at = queue.shift()!;
+        // The same sheet's wires carry the net to other labels and entries;
+        // that hop is not drawn and does not count as a step away.
+        for (const other of wired_instances(pages, at)) {
+            if (found.has(key(other))) continue;
+            found.set(key(other), other);
+            depth.set(key(other), depth.get(key(at))!);
+            queue.unshift(other);
+        }
         if (at.kind === "local") continue;
         for (const other of net_instances(pages, at)) {
             const id = [key(at), key(other)].sort().join("|");
@@ -190,4 +199,86 @@ export function net_closure(
         }
     }
     return { instances: [...found.values()], links, depth };
+}
+
+const EPS = 0.01;
+
+const on_segment = (p: Vec2, a: Vec2, b: Vec2) => {
+    const cross = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+    if (Math.abs(cross) > EPS * Math.max(1, a.sub(b).magnitude)) return false;
+    return (
+        p.x >= Math.min(a.x, b.x) - EPS &&
+        p.x <= Math.max(a.x, b.x) + EPS &&
+        p.y >= Math.min(a.y, b.y) - EPS &&
+        p.y <= Math.max(a.y, b.y) + EPS
+    );
+};
+
+/**
+ * The labels and sheet entries on `at`'s own sheet that wires join it to:
+ * wires touching end to end, or an end on another's run, form one net.
+ */
+export function wired_instances(
+    pages: readonly NetInstancePage[],
+    at: NetInstance,
+): NetInstance[] {
+    const page = pages.find((candidate) => candidate.key === at.page);
+    if (!page) return [];
+    const doc = page.document;
+    const points: Array<{ instance: NetInstance; at: Vec2 }> = [];
+    for (const label of doc.labels) {
+        if (!label.uuid) continue;
+        const found = net_instance_at(pages, page.key, label.uuid);
+        if (found) points.push({ instance: found, at: label.at.position });
+    }
+    for (const sheet of doc.sheets)
+        for (const pin of sheet.pins)
+            if (pin.uuid)
+                points.push({
+                    instance: {
+                        page: page.key,
+                        uuid: pin.uuid,
+                        name: pin.name,
+                        kind: "sheet-pin",
+                    },
+                    at: pin.at.position,
+                });
+    const start = points.find((point) => point.instance.uuid === at.uuid);
+    if (!start) return [];
+    const segments = doc.wires.flatMap((wire) =>
+        wire.pts.slice(1).map((end, i) => [wire.pts[i]!, end] as const),
+    );
+    const touches = (p: Vec2, [a, b]: readonly [Vec2, Vec2]) =>
+        on_segment(p, a, b);
+    const reached = new Set<number>();
+    const queue: number[] = [];
+    segments.forEach((segment, i) => {
+        if (touches(start.at, segment)) {
+            reached.add(i);
+            queue.push(i);
+        }
+    });
+    while (queue.length) {
+        const [a, b] = segments[queue.shift()!]!;
+        segments.forEach((segment, i) => {
+            if (reached.has(i)) return;
+            const [c, d] = segment;
+            if (
+                touches(c, [a, b]) ||
+                touches(d, [a, b]) ||
+                touches(a, segment) ||
+                touches(b, segment)
+            ) {
+                reached.add(i);
+                queue.push(i);
+            }
+        });
+    }
+    return points
+        .filter(
+            (point) =>
+                point.instance.uuid !== at.uuid &&
+                [...reached].some((i) => touches(point.at, segments[i]!)),
+        )
+        .map((point) => point.instance);
 }
