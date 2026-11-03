@@ -578,8 +578,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.addDisposable(
             listen(window, "keyup", (event) => {
                 this.#inset_link?.key_up(event as KeyboardEvent);
-                if ((event as KeyboardEvent).code === "Backquote")
-                    this.#tilde_held = false;
+                if (is_tilde(event as KeyboardEvent)) this.#tilde_held = false;
             }),
         );
         this.addDisposable(
@@ -3369,7 +3368,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             return;
         }
         if (
-            event.code === "Backquote" &&
+            is_tilde(event) &&
             !event.metaKey &&
             !event.ctrlKey &&
             !event.altKey &&
@@ -5359,3 +5358,8 @@ class Ov3dElement extends CustomElement {
     src: string | null;
 }
 window.customElements.define("ecad-3d-source", Ov3dElement);
+
+/** The `~` key, by position (left of 1) or by the character it typed. */
+function is_tilde(event: KeyboardEvent) {
+    return event.code === "Backquote" || event.key === "`" || event.key === "~";
+}
