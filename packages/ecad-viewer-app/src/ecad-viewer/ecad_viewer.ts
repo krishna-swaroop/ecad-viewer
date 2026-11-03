@@ -546,6 +546,14 @@ export class ECadViewer extends KCUIElement implements InputContainer {
 
     constructor() {
         super();
+        // What a rail opening over the canvas must not cover: the item the
+        // last selection event named, in its own view's world space.
+        this.addEventListener(EcadSemanticSelectionEvent.type, (event) => {
+            const detail = (event as EcadSemanticSelectionEvent).detail;
+            this.#last_selection = detail?.bounds
+                ? { context: detail.sourceContext, bounds: detail.bounds }
+                : null;
+        });
         this.addDisposable(this.#project);
         this.addDisposable(this.#reference_project);
         this.provideContext("project", this.#project);
@@ -758,13 +766,24 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         this.#safe_board_viewer()?.set_variant(resolution.effective);
     }
 
+    #last_selection: {
+        context: "SCH" | "PCB";
+        bounds: [number, number, number, number];
+    } | null = null;
+
     #apply_viewport_insets(): void {
         this.#inset_link?.sync();
         // A reload may have replaced the board viewer under measure mode.
         if (this.#measure?.active) this.#measure.attach(this.#measure_viewer());
-        this.#safe_board_viewer()?.set_viewport_insets(this.#viewport_insets);
+        const reveal = this.#last_selection;
+        const box = reveal ? new BBox(...reveal.bounds) : null;
+        this.#safe_board_viewer()?.set_viewport_insets(
+            this.#viewport_insets,
+            reveal?.context === "PCB" ? box : null,
+        );
         this.#safe_schematic_viewer()?.set_viewport_insets(
             this.#viewport_insets,
+            reveal?.context === "SCH" ? box : null,
         );
     }
 
@@ -2551,6 +2570,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
      */
     public clearSelection(options: { keepHighlights?: boolean } = {}): void {
         this.#probe_generation += 1;
+        this.#last_selection = null;
         const board_viewer = this.#safe_board_viewer();
         const had_nets = (board_viewer?.highlighted_nets.size ?? 0) > 0;
         board_viewer?.clear_selection(options.keepHighlights === true);

@@ -230,12 +230,12 @@ suite("warm source replacement", () => {
         expect(viewer.paint_count).to.equal(paintCount);
     });
 
-    test("preserves the visible focal point while applying measured overlay insets", async () => {
+    test("keeps the camera still while applying measured overlay insets", async () => {
         await host.replaceSources(revision("initial", schematicFixture));
         const viewer = schematicViewer(host);
         const camera = viewer.viewport.camera;
-        const oldSafeCenter = camera.fit_viewport_center;
-        const focalPoint = camera.screen_to_world(oldSafeCenter);
+        const probe = { x: 40, y: 30 };
+        const before = camera.screen_to_world(probe);
         const paintCount = viewer.paint_count;
 
         host.setViewportInsets({ left: 180, right: 96, top: 24 });
@@ -246,9 +246,9 @@ suite("warm source replacement", () => {
             top: 24,
             bottom: 0,
         });
-        const projected = camera.world_to_screen(focalPoint);
-        expect(projected.x).to.be.closeTo(camera.fit_viewport_center.x, 0.01);
-        expect(projected.y).to.be.closeTo(camera.fit_viewport_center.y, 0.01);
+        const after = camera.screen_to_world(probe);
+        expect(after.x).to.be.closeTo(before.x, 1e-6);
+        expect(after.y).to.be.closeTo(before.y, 1e-6);
         expect(viewer.paint_count).to.equal(paintCount);
 
         await host.replaceSources(revision("next", schematicFixture));
@@ -258,6 +258,50 @@ suite("warm source replacement", () => {
             top: 24,
             bottom: 0,
         });
+    });
+
+    test("pans just enough to uncover the selection a rail would cover", async () => {
+        await host.replaceSources(revision("initial", schematicFixture));
+        const viewer = schematicViewer(host);
+        const camera = viewer.viewport.camera;
+        const width = camera.viewport_size.x;
+        const height = camera.viewport_size.y;
+        const a = camera.screen_to_world({ x: width - 60, y: height / 2 });
+        const b = camera.screen_to_world({ x: width - 20, y: height / 2 + 20 });
+        const bounds: [number, number, number, number] = [
+            Math.min(a.x, b.x),
+            Math.min(a.y, b.y),
+            Math.abs(b.x - a.x),
+            Math.abs(b.y - a.y),
+        ];
+        host.dispatchEvent(
+            new CustomEvent("ecad-viewer:selection", {
+                detail: { sourceContext: "SCH", itemType: "symbol", bounds },
+            }),
+        );
+
+        host.setViewportInsets({ right: 200 });
+
+        const right = camera.world_to_screen({
+            x: bounds[0] + bounds[2],
+            y: bounds[1],
+        }).x;
+        const left = camera.world_to_screen({ x: bounds[0], y: bounds[1] }).x;
+        // Moved left by exactly the covered part, no further.
+        expect(right).to.be.closeTo(width - 200, 0.01);
+        expect(left).to.be.closeTo(width - 240, 0.01);
+
+        // Nothing selected: a rail never moves the camera.
+        host.setViewportInsets(null);
+        host.dispatchEvent(
+            new CustomEvent("ecad-viewer:selection", {
+                detail: { sourceContext: "SCH", itemType: "" },
+            }),
+        );
+        const probe = camera.screen_to_world({ x: width - 30, y: 10 });
+        host.setViewportInsets({ right: 200 });
+        const after = camera.screen_to_world({ x: width - 30, y: 10 });
+        expect(after.x).to.be.closeTo(probe.x, 1e-6);
     });
 
     test("fits focused bounds inside the unobscured viewport", async () => {

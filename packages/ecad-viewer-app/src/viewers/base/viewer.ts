@@ -427,11 +427,14 @@ export abstract class Viewer extends EventTarget {
 
     /**
      * Reserve screen-space edges for host-owned overlay rails without
-     * changing the canvas layout box. The current visible focal point is kept
-     * centered in the remaining safe area and the retained scene is redrawn.
+     * changing the canvas layout box. Fits and zooms use the remaining safe
+     * area from then on, but the camera stays where it is: a rail sliding in
+     * does not move the drawing. Only `reveal`, when given and covered by the
+     * new insets, is nudged back into the safe area by the smallest pan.
      */
     public set_viewport_insets(
         insets: Partial<CameraViewportInsets> | null,
+        reveal?: BBox | null,
     ): void {
         const camera = this.viewport?.camera;
         if (!camera) return;
@@ -450,26 +453,58 @@ export abstract class Viewer extends EventTarget {
         ) {
             return;
         }
-        const viewport = camera.viewport_size;
-        const can_preserve =
-            viewport.x > 0 &&
-            viewport.y > 0 &&
-            Number.isFinite(camera.zoom) &&
-            camera.zoom > 0;
-        const focal = can_preserve
-            ? camera.screen_to_world(camera.fit_viewport_center)
-            : null;
-
         camera.fit_insets = normalized;
-        if (focal) {
-            const safe_center = camera.fit_viewport_center;
-            camera.center.set(
-                focal.x + (viewport.x / 2 - safe_center.x) / camera.zoom,
-                focal.y + (viewport.y / 2 - safe_center.y) / camera.zoom,
-            );
+        if (reveal && this.#reveal_in_safe_area(reveal)) this.draw();
+    }
+
+    /**
+     * Pan the least needed to bring `box` (world) inside the safe area; a box
+     * larger than the area on an axis is centred on that axis instead. True
+     * when the camera moved.
+     */
+    #reveal_in_safe_area(box: BBox): boolean {
+        const camera = this.viewport?.camera;
+        const viewport = camera?.viewport_size;
+        if (!camera || !viewport || viewport.x <= 0 || viewport.y <= 0) {
+            return false;
         }
-        this.#cached_rect = null;
-        this.draw();
+        const corners = [
+            new Vec2(box.x, box.y),
+            new Vec2(box.x2, box.y),
+            new Vec2(box.x, box.y2),
+            new Vec2(box.x2, box.y2),
+        ].map((corner) => camera.world_to_screen(corner));
+        const xs = corners.map((corner) => corner.x);
+        const ys = corners.map((corner) => corner.y);
+        const insets = camera.fit_insets;
+        const shift = (lo: number, hi: number, min: number, max: number) => {
+            if (hi - lo > max - min) return (min + max) / 2 - (lo + hi) / 2;
+            if (lo < min) return min - lo;
+            if (hi > max) return max - hi;
+            return 0;
+        };
+        const dx = shift(
+            Math.min(...xs),
+            Math.max(...xs),
+            insets.left,
+            viewport.x - insets.right,
+        );
+        const dy = shift(
+            Math.min(...ys),
+            Math.max(...ys),
+            insets.top,
+            viewport.y - insets.bottom,
+        );
+        if (!dx && !dy) return false;
+        // Screen deltas to world through the camera, so rotation and a
+        // flipped board view pan the right way.
+        const origin = camera.screen_to_world(new Vec2(0, 0));
+        const moved = camera.screen_to_world(new Vec2(dx, dy));
+        camera.center.set(
+            camera.center.x - (moved.x - origin.x),
+            camera.center.y - (moved.y - origin.y),
+        );
+        return true;
     }
 
     #cached_rect: DOMRect | null = null;
