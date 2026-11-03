@@ -99,9 +99,16 @@ const LINE_MS = 480;
 /** A press that moves further than this is a drag, not a click. */
 const CLICK_SLOP = 4;
 /** The flowing pattern: a dash, a space, the name, a space (CSS pixels). */
-const DASH = 14;
+const DASH = 10;
 const SPACE = 6;
+/** The dashes between two names: three dashes and their spaces. */
+const RUN = 3 * DASH + 2 * SPACE;
 const FLOW_SPEED = 1 / 35;
+const NAME_FONT = "600 10px ui-monospace, SFMono-Regular, Menlo, monospace";
+const CAPSULE_H = 14;
+const CAPSULE_PAD = 6;
+/** Dark text on the line's colour reads on light and dark sheets alike. */
+const CAPSULE_INK = "#0f172a";
 
 const ease = (t: number) => 1 - Math.pow(1 - Math.min(1, Math.max(0, t)), 3);
 
@@ -190,7 +197,11 @@ class Curve {
     }
 
     /** Trace the part between `from` and `to` (arc lengths) into the current path. */
-    trace(ctx: CanvasRenderingContext2D, from: number, to: number) {
+    trace(
+        ctx: Pick<CanvasRenderingContext2D, "moveTo" | "lineTo">,
+        from: number,
+        to: number,
+    ) {
         const s0 = Math.max(0, from);
         const s1 = Math.min(this.length, to);
         if (s1 <= s0) return;
@@ -633,9 +644,10 @@ export class WorldView {
     }
 
     /**
-     * One connection: a soft glow, then the line. While growing it is solid
-     * up to its tip; once grown it flows outward as dashes alternating with
-     * the net's name, set along the curve.
+     * One connection. While growing it is a solid line up to its tip; once
+     * grown it flows outward: runs of dashes, then the net's name in a
+     * capsule of the line's colour, repeating along the curve. A soft glow
+     * follows the dashes, never the name.
      */
     #draw_connection(
         ctx: CanvasRenderingContext2D,
@@ -648,39 +660,46 @@ export class WorldView {
         const reach = curve.length * grow;
         ctx.save();
         ctx.strokeStyle = color;
-        ctx.globalAlpha = 0.22;
-        ctx.lineWidth = 9;
-        ctx.beginPath();
-        curve.trace(ctx, 0, reach);
-        ctx.stroke();
-        ctx.globalAlpha = 0.95;
-        ctx.lineWidth = 2.5;
         if (grow < 1) {
+            ctx.globalAlpha = 0.22;
+            ctx.lineWidth = 9;
+            ctx.beginPath();
+            curve.trace(ctx, 0, reach);
+            ctx.stroke();
+            ctx.globalAlpha = 0.95;
+            ctx.lineWidth = 2.5;
             ctx.beginPath();
             curve.trace(ctx, 0, reach);
             ctx.stroke();
             ctx.restore();
             return;
         }
-        ctx.font = `600 10px ui-monospace, SFMono-Regular, Menlo, monospace`;
-        const text = ctx.measureText(name).width;
-        const period = DASH + SPACE + text + SPACE;
-        // Too short for the name: plain flowing dashes.
-        const named = curve.length > period * 1.5;
-        const step = named ? period : DASH + SPACE * 1.4;
-        ctx.beginPath();
-        for (const s of flow_starts(curve.length, step, now * FLOW_SPEED))
-            curve.trace(ctx, s, s + DASH);
-        ctx.stroke();
+        const label = overbar_text(name);
+        ctx.font = NAME_FONT;
+        const text = ctx.measureText(label.text).width;
+        const capsule = text + 2 * CAPSULE_PAD;
+        const period = RUN + SPACE + capsule + SPACE;
+        // Too short for the name: dashes only.
+        const named = curve.length > period * 1.4;
+        const step = named ? period : DASH + SPACE;
+        const starts = flow_starts(curve.length, step, now * FLOW_SPEED);
+        const dashes = new Path2D();
+        for (const s of starts) {
+            const run = named ? RUN : DASH;
+            for (let d = 0; d + DASH <= run + 0.01; d += DASH + SPACE)
+                curve.trace(dashes, s + d, s + d + DASH);
+        }
+        ctx.globalAlpha = 0.22;
+        ctx.lineWidth = 9;
+        ctx.stroke(dashes);
+        ctx.globalAlpha = 0.95;
+        ctx.lineWidth = 2.5;
+        ctx.stroke(dashes);
         if (named) {
-            ctx.textAlign = "center";
-            ctx.textBaseline = "middle";
-            ctx.lineWidth = 3;
-            ctx.strokeStyle = this.host.background();
-            ctx.fillStyle = color;
-            for (const s of flow_starts(curve.length, step, now * FLOW_SPEED)) {
-                const mid = s + DASH + SPACE + text / 2;
-                if (mid - text / 2 < 0 || mid + text / 2 > curve.length)
+            ctx.globalAlpha = 1;
+            for (const s of starts) {
+                const mid = s + RUN + SPACE + capsule / 2;
+                if (mid - capsule / 2 < 0 || mid + capsule / 2 > curve.length)
                     continue;
                 const { point, angle } = curve.at(mid);
                 // Keep the name upright whichever way the line runs.
@@ -688,8 +707,35 @@ export class WorldView {
                 ctx.save();
                 ctx.translate(point.x, point.y);
                 ctx.rotate(upright);
-                ctx.strokeText(name, 0, 0.5);
-                ctx.fillText(name, 0, 0.5);
+                ctx.fillStyle = color;
+                ctx.beginPath();
+                ctx.roundRect(
+                    -capsule / 2,
+                    -CAPSULE_H / 2,
+                    capsule,
+                    CAPSULE_H,
+                    CAPSULE_H / 2,
+                );
+                ctx.fill();
+                ctx.fillStyle = CAPSULE_INK;
+                ctx.font = NAME_FONT;
+                ctx.textAlign = "left";
+                ctx.textBaseline = "middle";
+                const left = -text / 2;
+                ctx.fillText(label.text, left, 0.5);
+                // KiCad's ~{…}: a line over the inverted part.
+                ctx.strokeStyle = CAPSULE_INK;
+                ctx.lineWidth = 1;
+                for (const [from, to] of label.over) {
+                    const x0 =
+                        left + ctx.measureText(label.text.slice(0, from)).width;
+                    const x1 =
+                        left + ctx.measureText(label.text.slice(0, to)).width;
+                    ctx.beginPath();
+                    ctx.moveTo(x0, -4.5);
+                    ctx.lineTo(x1, -4.5);
+                    ctx.stroke();
+                }
                 ctx.restore();
             }
         }
@@ -835,4 +881,27 @@ function read_tokens(el: HTMLElement): Tokens {
         muted: read("--inset-muted", "#64748b"),
         font: read("--inset-font", "system-ui, sans-serif"),
     };
+}
+
+/**
+ * A net name as drawn: KiCad's `~{…}` overbar markup removed, with the
+ * character ranges the bar spans.
+ */
+export function overbar_text(name: string): {
+    text: string;
+    over: Array<[number, number]>;
+} {
+    let text = "";
+    const over: Array<[number, number]> = [];
+    const pattern = /~\{([^}]*)\}/g;
+    let last = 0;
+    for (const match of name.matchAll(pattern)) {
+        text += name.slice(last, match.index);
+        const start = text.length;
+        text += match[1];
+        over.push([start, text.length]);
+        last = match.index! + match[0].length;
+    }
+    text += name.slice(last);
+    return { text, over };
 }

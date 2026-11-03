@@ -4,6 +4,7 @@ import { SchematicParser } from "kicad-parser";
 import { BBox, Vec2 } from "../src/base/math";
 import {
     flow_starts,
+    overbar_text,
     world_layout,
 } from "../src/ecad-viewer/insets/world-view";
 import { normalize_schematic_selection } from "../src/ecad-viewer/host-adapter";
@@ -305,6 +306,18 @@ suite("world view flow", () => {
             first.map((v) => [v.x, v.y]),
         );
         expect([more[2]!.x, more[2]!.y]).to.deep.equal([0, 80]);
+    });
+
+    test("KiCad overbar markup becomes a bar over the inverted part", () => {
+        expect(overbar_text("~{FPGA_SELF_PROGRAM}")).to.deep.equal({
+            text: "FPGA_SELF_PROGRAM",
+            over: [[0, 17]],
+        });
+        expect(overbar_text("RX_~{EN}")).to.deep.equal({
+            text: "RX_EN",
+            over: [[3, 5]],
+        });
+        expect(overbar_text("SDA").over).to.deep.equal([]);
     });
 
     test("the dash and name pattern repeats along the run and moves with time", () => {
