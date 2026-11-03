@@ -80,8 +80,11 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
         this.viewer.addEventListener(
             HierarchicalSheetPinClickEvent.type,
             (e) => {
+                // A click on a sheet entry selects it; it does not open the
+                // instance menu (sheet entries are indexed as net instances
+                // for hosts, which navigate between them themselves).
                 const it = this.project.find_net_item(e.detail.uuid);
-                if (!it) return;
+                if (!it || it.kind === "sheet-pin") return;
                 this.pop_up_label_ref_menu([it], e.detail.uuid);
             },
         );

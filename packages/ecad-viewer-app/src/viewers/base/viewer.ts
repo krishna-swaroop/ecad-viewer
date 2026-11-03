@@ -736,7 +736,8 @@ export abstract class Viewer extends EventTarget {
                     this.content_dim !== null &&
                     this.layers.is_content_layer(layer)
                 ) {
-                    alpha = Math.min(alpha, this.content_dim);
+                    // Schematic layers leave opacity unset.
+                    alpha = Math.min(alpha ?? 1, this.content_dim);
                 }
 
                 if (gl) {
