@@ -4809,7 +4809,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         // A click on empty canvas: tell the host so it can deselect, rather than
         // swallowing it and leaving the previous selection stuck.
         if (!item) {
-            this.#selected_label = null;
+            // While the world view is open, selection there is what `~`
+            // acts on; the main view underneath does not reset it.
+            if (!this.#world_view?.open) this.#selected_label = null;
             this.dispatchEvent(
                 new EcadSemanticSelectionEvent({
                     sourceContext: "SCH",
@@ -4829,16 +4831,17 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         if (!detail) return;
         // `~` acts on the selected label or sheet entry: held while
         // clicking, or pressed after the click.
-        this.#selected_label =
-            (item instanceof Label || item instanceof Wire) &&
-            item.uuid &&
-            viewer?.instance_context
-                ? {
-                      page: viewer.instance_context.project_path,
-                      uuid: item.uuid,
-                  }
-                : null;
-        if (this.#tilde_held && this.#selected_label)
+        if (!this.#world_view?.open)
+            this.#selected_label =
+                (item instanceof Label || item instanceof Wire) &&
+                item.uuid &&
+                viewer?.instance_context
+                    ? {
+                          page: viewer.instance_context.project_path,
+                          uuid: item.uuid,
+                      }
+                    : null;
+        if (this.#tilde_held && this.#selected_label && !this.#world_view?.open)
             this.#trace_label(this.#selected_label);
         this.#attach_item_bounds_sch(detail, item, viewer!);
         detail.operation = select.detail.operation ?? "replace";
