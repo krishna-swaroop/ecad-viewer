@@ -2627,11 +2627,19 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         provider.set_highlighted_nets(nets);
         this.#net_map ??= new NetMap({
             container: () => {
-                const parent = this.#safe_schematic_viewer()?.canvas
-                    .parentElement as HTMLElement | null;
-                if (parent && getComputedStyle(parent).position === "static")
-                    parent.style.position = "relative";
-                return parent;
+                // The canvas sits in the viewer element's shadow root; the
+                // map is absolutely placed against that element.
+                const parent = this.#safe_schematic_viewer()?.canvas.parentNode;
+                const host =
+                    parent instanceof ShadowRoot
+                        ? parent.host
+                        : (parent as HTMLElement | null);
+                if (
+                    host instanceof HTMLElement &&
+                    getComputedStyle(host).position === "static"
+                )
+                    host.style.position = "relative";
+                return parent ?? null;
             },
             pages: () => this.#net_instance_pages(),
             page_view: (key) => provider.page_view(key),

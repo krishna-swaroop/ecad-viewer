@@ -27,8 +27,8 @@ import type { SchematicPageView } from "./schematic-provider";
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 export interface NetMapHost {
-    /** Where the map mounts: over the schematic, in the element's shadow root. */
-    container(): HTMLElement | null;
+    /** Where the map mounts: beside the schematic canvas, positioned over it. */
+    container(): Node | null;
     pages(): NetInstancePage[];
     page_view(key: string): Promise<SchematicPageView | null>;
     /** Show `page` in the main view (a tile was clicked). */
