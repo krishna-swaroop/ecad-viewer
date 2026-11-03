@@ -1,6 +1,7 @@
 import { later } from "../base/async";
 import { WorldView } from "./insets/world-view";
 import {
+    is_power,
     net_instance_at,
     wire_instance,
     type NetInstancePage,
@@ -5469,9 +5470,5 @@ function traceable_uuid(item: unknown): string | null {
             : item instanceof SchematicSymbol
               ? item
               : null;
-    try {
-        return symbol?.lib_symbol?.power ? symbol.uuid : null;
-    } catch {
-        return null;
-    }
+    return symbol && is_power(symbol) ? symbol.uuid : null;
 }

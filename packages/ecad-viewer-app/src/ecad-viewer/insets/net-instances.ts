@@ -371,12 +371,27 @@ export function wire_instance(
     return found.find((it) => it.kind !== "local") ?? found[0] ?? null;
 }
 
-function is_power(symbol: SchematicSymbol) {
+/**
+ * A power symbol that names a rail. KiCad's PWR_FLAG is a power symbol too,
+ * but it only tells ERC a rail is driven and sits on many rails at once, so
+ * it names no net and joins nothing.
+ */
+export function is_power(symbol: SchematicSymbol) {
     try {
-        return symbol.lib_symbol?.power === true;
+        if (symbol.lib_symbol?.power !== true) return false;
     } catch {
         return false;
     }
+    return !is_pwr_flag(symbol);
+}
+
+function is_pwr_flag(symbol: SchematicSymbol) {
+    const lib = symbol.lib_name ?? symbol.lib_id ?? "";
+    return (
+        lib === "PWR_FLAG" ||
+        lib.endsWith(":PWR_FLAG") ||
+        symbol.value === "PWR_FLAG"
+    );
 }
 
 function power_symbols(page: NetInstancePage): SchematicSymbol[] {

@@ -406,3 +406,99 @@ suite("power rails", () => {
         ]);
     });
 });
+
+const lib_power = (name: string) => `
+    (symbol "power:${name}" (power) (pin_names (offset 0)) (exclude_from_sim no) (in_bom yes) (on_board yes)
+      (property "Reference" "#PWR" (at 0 -3.81 0) (effects (font (size 1.27 1.27)) (hide yes)))
+      (property "Value" "${name}" (at 0 3.556 0) (effects (font (size 1.27 1.27))))
+      (symbol "${name}_0_1" (polyline (pts (xy 0 0) (xy 0 2.54)) (stroke (width 0) (type default)) (fill (type none))))
+      (symbol "${name}_1_1" (pin power_in line (at 0 0 90) (length 0) (hide yes)
+        (name "${name}" (effects (font (size 1.27 1.27)))) (number "1" (effects (font (size 1.27 1.27)))))))`;
+
+const placed = (name: string, uuid: string, x: number, y: number) => `
+  (symbol (lib_id "power:${name}") (at ${x} ${y} 0) (unit 1) (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no)
+    (uuid "${uuid}")
+    (property "Reference" "#PWR${x}${y}" (at ${x} ${y + 4} 0) (effects (font (size 1.27 1.27)) (hide yes)))
+    (property "Value" "${name}" (at ${x} ${y - 4} 0) (effects (font (size 1.27 1.27)))))`;
+
+const flagged_sheet = (uuid: string, body: string) => `
+(kicad_sch
+  (version 20250114)
+  (generator "eeschema")
+  (uuid "${uuid}")
+  (lib_symbols ${lib_power("+5V")} ${lib_power("GND")} ${lib_power("PWR_FLAG")})
+${body}
+)
+`;
+
+suite("PWR_FLAG", () => {
+    test("a PWR_FLAG on a rail joins no other rail to it", () => {
+        const parser = new SchematicParser();
+        const pages: NetInstancePage[] = [
+            {
+                key: "a",
+                name: "A",
+                document: new KicadSch(
+                    "a.kicad_sch",
+                    parser.parse(
+                        flagged_sheet(
+                            "00000000-0000-0000-0000-000000000401",
+                            [
+                                placed(
+                                    "+5V",
+                                    "00000000-0000-0000-0000-000000000411",
+                                    10,
+                                    10,
+                                ),
+                                placed(
+                                    "PWR_FLAG",
+                                    "00000000-0000-0000-0000-000000000412",
+                                    30,
+                                    10,
+                                ),
+                                `  (wire (pts (xy 10 10) (xy 30 10)) (stroke (width 0) (type default)) (uuid "00000000-0000-0000-0000-000000000413"))`,
+                            ].join("\n"),
+                        ),
+                    ),
+                ),
+            },
+            {
+                key: "b",
+                name: "B",
+                document: new KicadSch(
+                    "b.kicad_sch",
+                    parser.parse(
+                        flagged_sheet(
+                            "00000000-0000-0000-0000-000000000402",
+                            [
+                                placed(
+                                    "GND",
+                                    "00000000-0000-0000-0000-000000000421",
+                                    50,
+                                    50,
+                                ),
+                                placed(
+                                    "PWR_FLAG",
+                                    "00000000-0000-0000-0000-000000000422",
+                                    70,
+                                    50,
+                                ),
+                                `  (wire (pts (xy 50 50) (xy 70 50)) (stroke (width 0) (type default)) (uuid "00000000-0000-0000-0000-000000000423"))`,
+                            ].join("\n"),
+                        ),
+                    ),
+                ),
+            },
+        ];
+        const from = net_instance_at(
+            pages,
+            "a",
+            "00000000-0000-0000-0000-000000000411",
+        )!;
+        const closure = net_closure(pages, from);
+        expect(closure.instances.map((it) => it.name)).to.deep.equal(["+5V"]);
+        expect(
+            net_instance_at(pages, "a", "00000000-0000-0000-0000-000000000412"),
+        ).to.equal(null);
+    });
+});
