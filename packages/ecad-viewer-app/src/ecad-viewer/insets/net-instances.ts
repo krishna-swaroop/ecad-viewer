@@ -24,6 +24,8 @@ export interface NetInstancePage {
     /** The page this one was instantiated from, and by which sheet symbol. */
     parent_key?: string;
     sheet_uuid?: string;
+    /** The instance path (`/root/sheet`), as hosts name sheets in net members. */
+    sheet_path?: string;
 }
 
 export type NetInstanceKind = "global" | "hierarchical" | "sheet-pin" | "local";

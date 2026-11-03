@@ -58,6 +58,16 @@ interface Scene {
     used: number;
 }
 
+/** One page instance's scene, drawn by the caller (the net map). */
+export interface SchematicPageView {
+    key: string;
+    name: string;
+    bounds: BBox;
+    item_bbox(uuid: string): BBox | undefined;
+    render(canvas: HTMLCanvasElement, camera: InsetCamera): void;
+    release(): void;
+}
+
 const DEFAULT_CAP = 4;
 
 const center = (box: BBox) => new Vec2(box.x + box.w / 2, box.y + box.h / 2);
@@ -185,6 +195,38 @@ export class SchematicInsetProvider implements InsetProvider {
         };
         this.#targets.set(target, scene.key);
         return target;
+    }
+
+    /**
+     * A whole page instance as a scene the caller draws through its own
+     * camera (the net map's tiles). Held until `release`.
+     */
+    async page_view(page_key: string): Promise<SchematicPageView | null> {
+        const page = this.host.pages().find((p) => p.key === page_key);
+        if (!page) return null;
+        const scene = this.#acquire(page);
+        await scene.ready;
+        if (!this.#scenes.has(scene.key)) return null;
+        const renderer = scene.viewer.schematic_renderer;
+        let released = false;
+        return {
+            key: page.key,
+            name: page.name,
+            bounds: renderer.scene_bbox,
+            item_bbox: (uuid) => renderer.get_item_bbox(uuid),
+            render: (canvas, camera) => {
+                scene.used = ++this.#clock;
+                scene.viewer.render_view(canvas, (w, h) =>
+                    inset_matrix(camera, w, h),
+                );
+            },
+            release: () => {
+                if (released) return;
+                released = true;
+                scene.refs = Math.max(0, scene.refs - 1);
+                this.#evict();
+            },
+        };
     }
 
     /** The main view's highlighted nets: every scene draws them too. */

@@ -1,4 +1,5 @@
 import { later } from "../base/async";
+import { NetMap } from "./insets/net-map";
 import {
     net_instance_at,
     net_instances,
@@ -2609,6 +2610,43 @@ export class ECadViewer extends KCUIElement implements InputContainer {
      * members are drawn over it, on whichever sheet is open. The host supplies
      * the members (the viewer has no netlist); an empty list clears it.
      */
+    /**
+     * Net map: every sheet the schematic's highlighted nets reach, side by
+     * side over the schematic, with curves where the net crosses between
+     * them. A click on a sheet opens it. Resolves false when nothing is
+     * highlighted. `N` toggles it on the schematic, Escape closes it.
+     */
+    public async showNetMap(): Promise<boolean> {
+        await this.ready;
+        const viewer = this.#safe_schematic_viewer();
+        const provider = this.insetProvider(
+            "sch",
+        ) as SchematicInsetProvider | null;
+        const nets = viewer?.highlighted_nets ?? [];
+        if (!viewer || !provider || !nets.length) return false;
+        provider.set_highlighted_nets(nets);
+        this.#net_map ??= new NetMap({
+            container: () => {
+                const parent = this.#safe_schematic_viewer()?.canvas
+                    .parentElement as HTMLElement | null;
+                if (parent && getComputedStyle(parent).position === "static")
+                    parent.style.position = "relative";
+                return parent;
+            },
+            pages: () => this.#net_instance_pages(),
+            page_view: (key) => provider.page_view(key),
+            open_page: (key) => void this.showPage(key),
+            background: () =>
+                this.#safe_schematic_viewer()?.renderer.background_color.to_css() ??
+                "#000",
+        });
+        return this.#net_map.show(nets);
+    }
+
+    public hideNetMap() {
+        this.#net_map?.close();
+    }
+
     public async setSchematicHighlightedNets(
         nets: readonly SchematicNetMembers[],
     ): Promise<void> {
@@ -3283,6 +3321,28 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             return;
         }
         if (!this.has_sch) return;
+        if (
+            (event.key === "n" ||
+                event.key === "N" ||
+                event.key === "Escape") &&
+            !event.metaKey &&
+            !event.ctrlKey &&
+            !event.altKey &&
+            !event.repeat &&
+            this.#active_tab === TabKind.sch
+        ) {
+            if (event.key === "Escape") {
+                if (this.#net_map?.open) {
+                    this.hideNetMap();
+                    event.preventDefault();
+                }
+                return;
+            }
+            if (this.#net_map?.open) this.hideNetMap();
+            else void this.showNetMap();
+            event.preventDefault();
+            return;
+        }
 
         const direction =
             event.key === "[" || event.code === "BracketLeft"
@@ -4269,6 +4329,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     #inset_link: InsetLink | null = null;
+    #net_map: NetMap | null = null;
 
     /**
      * Link this element to the one holding the other document (schematic ↔
@@ -4305,6 +4366,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                           document,
                           parent_key: page.parent_project_path,
                           sheet_uuid: page.sheet_uuid,
+                          sheet_path: page.sheet_path,
                       },
                   ]
                 : [];
@@ -4490,7 +4552,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             return this.#board_inset_provider;
         }
         if (!this.has_sch) return null;
-        this.#schematic_inset_provider ??= new SchematicInsetProvider({
+        if (this.#schematic_inset_provider)
+            return this.#schematic_inset_provider;
+        this.#schematic_inset_provider = new SchematicInsetProvider({
             pages: () =>
                 this.#project.pages.flatMap((page) => {
                     const document = page.document;
@@ -4511,6 +4575,9 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             container: () => this.shadowRoot ?? document.body,
             variant: () => this.getVariant(),
         });
+        this.#schematic_inset_provider.set_highlighted_nets(
+            this.#safe_schematic_viewer()?.highlighted_nets ?? [],
+        );
         return this.#schematic_inset_provider;
     }
 
