@@ -3,6 +3,7 @@ import { SchematicParser } from "kicad-parser";
 
 import { BBox, Vec2 } from "../src/base/math";
 import {
+    blend_pose,
     flow_starts,
     overbar_text,
     world_layout,
@@ -562,6 +563,21 @@ suite("highlight motion", () => {
             1,
             0,
             true,
+        ]);
+    });
+});
+
+suite("world view camera", () => {
+    test("eases between poses, zooming on a log scale", () => {
+        const a = { center: new Vec2(0, 0), zoom: 1 };
+        const b = { center: new Vec2(100, 50), zoom: 4 };
+        expect(blend_pose(a, b, 0)).to.deep.equal(a);
+        const mid = blend_pose(a, b, 0.5);
+        expect([mid.center.x, mid.center.y]).to.deep.equal([50, 25]);
+        expect(mid.zoom).to.be.closeTo(2, 1e-9);
+        const end = blend_pose(a, b, 1);
+        expect([end.center.x, end.center.y, end.zoom]).to.deep.equal([
+            100, 50, 4,
         ]);
     });
 });
