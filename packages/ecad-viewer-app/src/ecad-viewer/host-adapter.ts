@@ -9,6 +9,7 @@ import {
 import {
     GlobalLabel,
     HierarchicalLabel,
+    HierarchicalSheetPin,
     Junction,
     Label,
     NoConnect,
@@ -172,6 +173,11 @@ export function normalize_schematic_selection(
     if (item instanceof Wire) return { ...base, itemType: "wire" };
     if (item instanceof GlobalLabel) {
         return { ...base, itemType: "global-label", net: item.text };
+    }
+    // Before HierarchicalLabel: a sheet entry is drawn as one but is the
+    // sheet's pin, and hosts treat it as such.
+    if (item instanceof HierarchicalSheetPin) {
+        return { ...base, itemType: "sheet-pin", net: item.text };
     }
     if (item instanceof HierarchicalLabel) {
         return { ...base, itemType: "hierarchical-label", net: item.text };

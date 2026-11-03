@@ -560,6 +560,13 @@ export abstract class Viewer extends EventTarget {
         return this.viewport?.camera.zoom ?? 1;
     }
 
+    /**
+     * Opacity for every document layer while something is drawn over them
+     * (a schematic net highlight), or null to draw them as they are. Overlay,
+     * selection and extension layers are never dimmed.
+     */
+    public content_dim: number | null = null;
+
     public set_overlay_scene(
         scene: EcadOverlayScene,
         draw = true,
@@ -724,6 +731,12 @@ export abstract class Viewer extends EventTarget {
 
                 if (should_dim && !layer.highlighted) {
                     alpha = 0.25;
+                }
+                if (
+                    this.content_dim !== null &&
+                    this.layers.is_content_layer(layer)
+                ) {
+                    alpha = Math.min(alpha, this.content_dim);
                 }
 
                 if (gl) {

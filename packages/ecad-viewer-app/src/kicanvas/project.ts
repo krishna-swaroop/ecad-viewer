@@ -951,6 +951,24 @@ export class Project extends EventTarget implements IDisposable {
                     this._label_name_refs.get(it.text)!.push(ref);
                 }
             }
+
+            // A sheet entry carries the net into its child sheet, so it is an
+            // instance of that net like a label is.
+            for (const sheet of doc.sheets) {
+                for (const pin of sheet.pins) {
+                    if (!pin.uuid) continue;
+                    const ref = new NetRef(
+                        doc.filename,
+                        pin.name,
+                        pin.uuid,
+                        "sheet-pin",
+                    );
+                    this._net_item_refs.set(pin.uuid, ref);
+                    if (!this._label_name_refs.has(pin.name))
+                        this._label_name_refs.set(pin.name, []);
+                    this._label_name_refs.get(pin.name)!.push(ref);
+                }
+            }
         }
         this._files_by_name.set(filename, doc);
         // A board or schematic is fully parsed by now and is never re-read

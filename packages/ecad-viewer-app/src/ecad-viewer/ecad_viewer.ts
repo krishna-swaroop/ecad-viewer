@@ -1,4 +1,5 @@
 import { later } from "../base/async";
+import type { SchematicNetMembers } from "../viewers/schematic/net-highlight";
 import { listen } from "../base/events";
 import { BBox, Vec2 } from "../base/math";
 import {
@@ -18,7 +19,7 @@ import {
     normalize_variant_name,
     resolve_variant_request,
 } from "../kicanvas/project";
-import type { NetRef } from "../kicad/net_ref";
+import type { LabelKind, NetRef } from "../kicad/net_ref";
 import {
     EcadHighlightChangeEvent,
     resolve_board_net,
@@ -119,6 +120,7 @@ export type {
     EcadSourceUpdate,
 } from "./host-adapter";
 export type { EcadNetRef, EcadHighlightChangeDetail } from "./highlight";
+export type { SchematicNetMembers } from "../viewers/schematic/net-highlight";
 export { EcadHighlightChangeEvent } from "./highlight";
 export type { NetStatistics, NetStatisticsRef } from "../kicad/net_statistics";
 export {
@@ -2597,6 +2599,18 @@ export class ECadViewer extends KCUIElement implements InputContainer {
     }
 
     /** Fit the board camera to the highlighted copper. False when empty. */
+    /**
+     * Highlight nets on the schematic: every sheet dims and each net's
+     * members are drawn over it, on whichever sheet is open. The host supplies
+     * the members (the viewer has no netlist); an empty list clears it.
+     */
+    public async setSchematicHighlightedNets(
+        nets: readonly SchematicNetMembers[],
+    ): Promise<void> {
+        await this.ready;
+        this.#safe_schematic_viewer()?.set_highlighted_nets(nets);
+    }
+
     public focusHighlightedNets(): boolean {
         return this.#safe_board_viewer()?.focus_highlighted_nets() ?? false;
     }
@@ -2802,7 +2816,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         uuid: string;
         sheet: string;
         name: string;
-        kind?: "global" | "net" | "hierarchical";
+        kind?: LabelKind;
     }> {
         const candidates = [name];
         if (name.includes("/")) {

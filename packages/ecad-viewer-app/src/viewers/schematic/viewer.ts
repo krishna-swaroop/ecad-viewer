@@ -4,6 +4,12 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
+import {
+    NET_HIGHLIGHT_CHANNEL,
+    NET_HIGHLIGHT_DIM,
+    net_highlight_scene,
+    type SchematicNetMembers,
+} from "./net-highlight";
 import { BBox, Matrix3, Vec2 } from "../../base/math";
 import { Color, Polygon, Polyline, Renderer } from "../../graphics";
 import { Canvas2DRenderer } from "../../graphics/canvas2d";
@@ -103,6 +109,7 @@ export class SchematicViewer extends DocumentViewer<
      * `active_variant`, `null` is the default design.
      */
     #variant: string | null | undefined = undefined;
+    #highlighted_nets: SchematicNetMembers[] = [];
 
     get instance_context(): SchematicInstanceContext | undefined {
         return this.#instance_context;
@@ -338,11 +345,47 @@ export class SchematicViewer extends DocumentViewer<
     protected override resolve_loaded(value: boolean) {
         super.resolve_loaded(value);
 
+        if (value) this.#paint_net_highlight(false);
+
         if (value && this.#focus_net_item) {
             this.zoom_fit_item(this.#focus_net_item);
         }
 
         this.#focus_net_item = undefined;
+    }
+
+    /** The nets drawn over the schematic, on every sheet; see net-highlight.ts. */
+    get highlighted_nets(): readonly SchematicNetMembers[] {
+        return this.#highlighted_nets;
+    }
+
+    /**
+     * Replace the highlighted nets. Every document layer dims and each net's
+     * members on the open sheet are drawn over it; switching sheets keeps the
+     * set and redraws it for the new sheet.
+     */
+    set_highlighted_nets(nets: readonly SchematicNetMembers[]) {
+        this.#highlighted_nets = [...nets];
+        this.#paint_net_highlight(true);
+    }
+
+    #paint_net_highlight(draw: boolean) {
+        if (!this.layers || !this.document) return;
+        const nets = this.#highlighted_nets;
+        this.content_dim = nets.length ? NET_HIGHLIGHT_DIM : null;
+        if (!nets.length) {
+            this.clear_overlay_scene(NET_HIGHLIGHT_CHANNEL);
+            if (draw) this.draw();
+            return;
+        }
+        const scene = net_highlight_scene(
+            nets,
+            this.#instance_context?.sheet_path ?? "",
+            this.document,
+            (uuid) => this.schematic_renderer.get_item_bbox(uuid),
+        );
+        this.set_overlay_scene(scene, false);
+        if (draw) this.draw();
     }
 
     override on_hover(pos: Vec2): void {
