@@ -4,6 +4,7 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
+import { HighlightMotion } from "./highlight-motion";
 import {
     LOCAL_TRACE_CHANNEL,
     NET_HIGHLIGHT_CHANNEL,
@@ -11,7 +12,9 @@ import {
     local_trace_scene,
     net_highlight_scene,
     type SchematicNetMembers,
+    type SheetGeometry,
 } from "./net-highlight";
+import { pin_stem } from "./painters/pin";
 import { BBox, Matrix3, Vec2 } from "../../base/math";
 import { Color, Polygon, Polyline, Renderer } from "../../graphics";
 import { Canvas2DRenderer } from "../../graphics/canvas2d";
@@ -111,7 +114,6 @@ export class SchematicViewer extends DocumentViewer<
      * `active_variant`, `null` is the default design.
      */
     #variant: string | null | undefined = undefined;
-    #highlighted_nets: SchematicNetMembers[] = [];
 
     get instance_context(): SchematicInstanceContext | undefined {
         return this.#instance_context;
@@ -348,12 +350,12 @@ export class SchematicViewer extends DocumentViewer<
         super.resolve_loaded(value);
 
         if (value) {
-            this.#paint_net_highlight(false);
-            // A trace belongs to the sheet it was drawn on.
-            if (this.#local_trace) {
-                this.#local_trace = null;
-                this.clear_overlay_scene(LOCAL_TRACE_CHANNEL);
-            }
+            // A new sheet: its own pins, and a trace belongs to the sheet it
+            // was drawn on.
+            this.#pins_by_uuid = null;
+            this.#local_trace = null;
+            this.#traced_name = null;
+            this.#paint_overlays(performance.now());
         }
 
         if (value && this.#focus_net_item) {
@@ -369,33 +371,31 @@ export class SchematicViewer extends DocumentViewer<
     }
 
     /**
-     * Replace the highlighted nets. Every document layer dims and each net's
-     * members on the open sheet are drawn over it; switching sheets keeps the
-     * set and redraws it for the new sheet.
+     * Whether highlights and traces ease in and out. Off for headless scenes
+     * (insets, the world view), which are redrawn only when told.
+     */
+    set highlight_motion(on: boolean) {
+        this.#highlight_motion.animate = on;
+        this.#trace_motion.animate = on;
+    }
+
+    /**
+     * Replace the highlighted nets. The sheet dims and each net's members on
+     * the open sheet are lit over it; switching sheets keeps the set and
+     * lights it on the new sheet. The change eases in or out, and a net that
+     * joins swells briefly.
      */
     set_highlighted_nets(nets: readonly SchematicNetMembers[]) {
         const before = new Set(this.#highlighted_nets.map((net) => net.name));
         this.#highlighted_nets = [...nets];
-        // A net that was not highlighted before flashes in.
-        if (nets.some((net) => !before.has(net.name))) this.#flash_highlight();
-        else this.#paint_net_highlight(true);
-    }
-
-    #flash_start: number | null = null;
-
-    #flash_highlight() {
-        const first = this.#flash_start === null;
-        this.#flash_start = performance.now();
-        if (!first) return;
-        const step = (now: number) => {
-            if (this.#flash_start === null || this.disposables.isDisposed)
-                return;
-            const t = Math.min(1, (now - this.#flash_start) / 650);
-            this.#paint_net_highlight(true, 1 - t * t * (3 - 2 * t));
-            if (t < 1) requestAnimationFrame(step);
-            else this.#flash_start = null;
-        };
-        requestAnimationFrame(step);
+        // While fading out, the last lit set stays drawn until it is dark.
+        if (nets.length) this.#lit_nets = this.#highlighted_nets;
+        this.#highlight_motion.retarget(
+            nets.length > 0,
+            nets.map((net) => net.name).filter((name) => !before.has(name)),
+            performance.now(),
+        );
+        this.#animate_overlays();
     }
 
     /**
@@ -403,49 +403,103 @@ export class SchematicViewer extends DocumentViewer<
      * (null). Cleared when the sheet changes.
      */
     show_local_trace(name: string | null) {
+        if (name) this.#traced_name = name;
         this.#local_trace = name;
-        this.#paint_local_trace();
-        this.draw();
+        this.#trace_motion.retarget(!!name, [], performance.now());
+        this.#animate_overlays();
     }
 
     get local_trace(): string | null {
         return this.#local_trace;
     }
 
+    #highlighted_nets: SchematicNetMembers[] = [];
+    /** What is drawn: the highlighted set, or the last one while it fades. */
+    #lit_nets: SchematicNetMembers[] = [];
+    #highlight_motion = new HighlightMotion();
     #local_trace: string | null = null;
+    #traced_name: string | null = null;
+    #trace_motion = new HighlightMotion();
+    #overlay_frame: number | null = null;
 
-    #paint_local_trace() {
-        if (!this.layers || !this.document) return;
-        if (!this.#local_trace) {
-            this.clear_overlay_scene(LOCAL_TRACE_CHANNEL);
-            return;
-        }
-        this.set_overlay_scene(
-            local_trace_scene(this.#local_trace, this.document, (uuid) =>
-                this.schematic_renderer.get_item_bbox(uuid),
-            ),
-            false,
-        );
+    /** Paint the overlays now and keep painting while they move. */
+    #animate_overlays() {
+        const settled = this.#paint_overlays(performance.now());
+        this.draw();
+        if (settled || this.#overlay_frame !== null) return;
+        const step = (now: number) => {
+            this.#overlay_frame = null;
+            if (this.disposables.isDisposed) return;
+            const done = this.#paint_overlays(now);
+            this.draw();
+            if (!done) this.#overlay_frame = requestAnimationFrame(step);
+        };
+        this.#overlay_frame = requestAnimationFrame(step);
     }
 
-    #paint_net_highlight(draw: boolean, flash = 0) {
-        if (!this.layers || !this.document) return;
-        const nets = this.#highlighted_nets;
-        this.content_dim = nets.length ? NET_HIGHLIGHT_DIM : null;
-        if (!nets.length) {
+    /** Paint both overlays as of `now`; true once nothing is moving. */
+    #paint_overlays(now: number): boolean {
+        if (!this.layers || !this.document) return true;
+        const sheet: SheetGeometry = {
+            bbox: (uuid) => this.schematic_renderer.get_item_bbox(uuid),
+            pin_stem: (uuid) => this.#pin_stem(uuid),
+        };
+
+        const lit = this.#highlight_motion.sample(now);
+        this.content_dim =
+            lit.intensity > 0
+                ? 1 - (1 - NET_HIGHLIGHT_DIM) * lit.intensity
+                : null;
+        if (lit.intensity > 0 && this.#lit_nets.length) {
+            this.set_overlay_scene(
+                net_highlight_scene(
+                    this.#lit_nets,
+                    this.#instance_context?.sheet_path ?? "",
+                    this.document,
+                    sheet,
+                    lit,
+                ),
+                false,
+            );
+        } else {
             this.clear_overlay_scene(NET_HIGHLIGHT_CHANNEL);
-            if (draw) this.draw();
-            return;
+            if (lit.settled) this.#lit_nets = [];
         }
-        const scene = net_highlight_scene(
-            nets,
-            this.#instance_context?.sheet_path ?? "",
-            this.document,
-            (uuid) => this.schematic_renderer.get_item_bbox(uuid),
-            flash,
-        );
-        this.set_overlay_scene(scene, false);
-        if (draw) this.draw();
+
+        const traced = this.#trace_motion.sample(now);
+        if (traced.intensity > 0 && this.#traced_name) {
+            this.set_overlay_scene(
+                local_trace_scene(
+                    this.#traced_name,
+                    this.document,
+                    sheet,
+                    traced.intensity,
+                ),
+                false,
+            );
+        } else {
+            this.clear_overlay_scene(LOCAL_TRACE_CHANNEL);
+            if (traced.settled) this.#traced_name = null;
+        }
+        return lit.settled && traced.settled;
+    }
+
+    /** The line of the pin `uuid` on this sheet, if it is one. */
+    #pin_stem(uuid: string): [Vec2, Vec2] | undefined {
+        this.#pins_by_uuid ??= this.#index_pins();
+        const pin = this.#pins_by_uuid.get(uuid);
+        return pin ? pin_stem(pin) : undefined;
+    }
+
+    #pins_by_uuid: Map<string, PinInstance> | null = null;
+
+    #index_pins() {
+        const pins = new Map<string, PinInstance>();
+        for (const symbol of this.schematic.symbols.values())
+            for (const pin of this.#instance_context?.unit_pins(symbol) ??
+                symbol.unit_pins)
+                if (pin.uuid) pins.set(pin.uuid, pin);
+        return pins;
     }
 
     override on_hover(pos: Vec2): void {

@@ -1,13 +1,22 @@
 /*
-    Where a schematic label leads: the other places its net shows up.
+    The schematic's net graph, as far as names and wires tell it: where a
+    label, sheet entry or power symbol leads.
 
-    A global label leads to every global label of the same name on every
-    sheet instance. A hierarchical label leads up, to the entry on the sheet
-    symbol that instantiates its page; an entry leads down, to the matching
-    hierarchical label inside each page it instantiates. A local label leads
-    to the labels of the same name on its own page.
+    One hop (`net_instances`):
+    - a global label leads to every global label of its name, on every sheet
+      instance;
+    - a hierarchical label leads up, to the entry on the sheet symbol that
+      instantiates its page; an entry leads down, to the matching
+      hierarchical label in each page it instantiates;
+    - a power symbol leads to one symbol of its rail on each other sheet (a
+      rail is on most sheets many times over); PWR_FLAG names no rail;
+    - a local label leads to its namesakes on its own sheet.
 
-    Names only: the viewer has no netlist. A host with one can refine this.
+    On one sheet, wires join labels, entries and power symbols into one net
+    (`wired_instances`), and `net_closure` walks both until nothing new turns
+    up: the reach the world view draws.
+
+    The viewer has no netlist; a host with one can refine membership.
 */
 
 import { Vec2 } from "../../base/math";

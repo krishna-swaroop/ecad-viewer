@@ -6,7 +6,7 @@ import {
     flow_starts,
     overbar_text,
     world_layout,
-} from "../src/ecad-viewer/insets/world-view";
+} from "../src/ecad-viewer/net-tracking/geometry";
 import { normalize_schematic_selection } from "../src/ecad-viewer/host-adapter";
 import {
     net_closure,
@@ -15,8 +15,9 @@ import {
     wire_instance,
     wired_instances,
     type NetInstancePage,
-} from "../src/ecad-viewer/insets/net-instances";
+} from "../src/ecad-viewer/net-tracking/net-graph";
 import { KicadSch } from "../src/kicad/schematic";
+import { HighlightMotion } from "../src/viewers/schematic/highlight-motion";
 import {
     NET_HIGHLIGHT_CHANNEL,
     local_trace_scene,
@@ -73,7 +74,7 @@ suite("schematic net tracking", () => {
         expect(members_on_page(nets, "/nowhere")).to.deep.equal([]);
     });
 
-    test("wires glow, junctions are dots and other members are outlined", () => {
+    test("wires are lit, junctions are dots and labels or entries are outlined", () => {
         const doc = root();
         const scene = net_highlight_scene(
             [
@@ -86,16 +87,23 @@ suite("schematic net tracking", () => {
             ],
             "/root",
             doc,
-            (uuid) => (uuid === ENTRY ? new BBox(38, 9, 4, 2) : undefined),
+            {
+                bbox: (uuid) =>
+                    uuid === ENTRY ? new BBox(38, 9, 4, 2) : undefined,
+                pin_stem: () => undefined,
+            },
         );
         expect(scene.channelId).to.equal(NET_HIGHLIGHT_CHANNEL);
         expect(scene.visible).to.equal(true);
         const ids = scene.primitives.map((primitive) => primitive.id);
         expect(ids).to.deep.equal([
+            `halo:${WIRE}`,
             `glow:${WIRE}`,
-            `wire:${WIRE}`,
-            `junction:${JUNCTION}`,
-            `item:${ENTRY}`,
+            `core:${WIRE}`,
+            `halo:${JUNCTION}`,
+            `dot:${JUNCTION}`,
+            `wash:${ENTRY}`,
+            `edge:${ENTRY}`,
         ]);
         expect(ids.some((id) => id.includes(OTHER_WIRE))).to.equal(false);
     });
@@ -110,7 +118,7 @@ suite("schematic net tracking", () => {
             ],
             "/root",
             root(),
-            () => undefined,
+            { bbox: () => undefined, pin_stem: () => undefined },
         );
         expect(scene.visible).to.equal(false);
         expect(scene.primitives).to.deep.equal([]);
@@ -207,7 +215,9 @@ suite("local trace", () => {
             "00000000-0000-0000-0000-000000000101": new BBox(10, 9, 4, 2),
             "00000000-0000-0000-0000-000000000102": new BBox(80, 39, 4, 2),
         };
-        const scene = local_trace_scene("CLK", doc, (uuid) => boxes[uuid]);
+        const scene = local_trace_scene("CLK", doc, {
+            bbox: (uuid) => boxes[uuid],
+        });
         const line = scene.primitives.find((p) => p.id.startsWith("line:"));
         expect(line?.kind).to.equal("polyline");
         expect((line as { points: number[][] }).points).to.deep.equal([
@@ -500,5 +510,58 @@ suite("PWR_FLAG", () => {
         expect(
             net_instance_at(pages, "a", "00000000-0000-0000-0000-000000000412"),
         ).to.equal(null);
+    });
+});
+
+suite("highlight motion", () => {
+    test("a net's pins are lit along their line, and a faded scene is not drawn", () => {
+        const doc = root();
+        const stem: [Vec2, Vec2] = [new Vec2(0, 0), new Vec2(2.54, 0)];
+        const nets = [
+            { name: "SDA", pages: [{ sheetPath: "/root", uuids: ["pin-1"] }] },
+        ];
+        const sheet = {
+            bbox: () => undefined,
+            pin_stem: (uuid: string) => (uuid === "pin-1" ? stem : undefined),
+        };
+        const lit = net_highlight_scene(nets, "/root", doc, sheet);
+        expect(lit.primitives.map((p) => p.id)).to.deep.equal([
+            "halo:pin-1",
+            "glow:pin-1",
+            "core:pin-1",
+        ]);
+        const dark = net_highlight_scene(nets, "/root", doc, sheet, {
+            intensity: 0,
+        });
+        expect(dark.visible).to.equal(false);
+    });
+
+    test("lighting eases in, a new net swells once, and both settle", () => {
+        const motion = new HighlightMotion();
+        motion.retarget(true, ["SDA"], 0);
+        const start = motion.sample(0);
+        expect(start.intensity).to.equal(0);
+        expect(start.swell.get("SDA")).to.equal(1);
+        const mid = motion.sample(110);
+        expect(mid.intensity).to.be.within(0.5, 1);
+        const end = motion.sample(2000);
+        expect([end.intensity, end.swell.size, end.settled]).to.deep.equal([
+            1,
+            0,
+            true,
+        ]);
+        motion.retarget(false, [], 2000);
+        expect(motion.sample(2000 + 400).intensity).to.equal(0);
+    });
+
+    test("without motion every change lands at once", () => {
+        const motion = new HighlightMotion(false);
+        motion.retarget(true, ["SDA"], 0);
+        const now = motion.sample(0);
+        expect([now.intensity, now.swell.size, now.settled]).to.deep.equal([
+            1,
+            0,
+            true,
+        ]);
     });
 });

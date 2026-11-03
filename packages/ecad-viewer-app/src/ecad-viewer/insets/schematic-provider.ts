@@ -319,6 +319,8 @@ export class SchematicInsetProvider implements InsetProvider {
                 this.host.theme(),
             );
             viewer.show_drawing_sheet = this.drawing_sheet;
+            // Scenes are drawn when asked, so their highlights land at once.
+            viewer.highlight_motion = false;
             const ready = (async () => {
                 await viewer.setup();
                 if (page.context) viewer.set_instance_context(page.context);
