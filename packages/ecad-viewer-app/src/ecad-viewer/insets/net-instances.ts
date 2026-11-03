@@ -16,6 +16,8 @@ import {
     HierarchicalLabel,
     NetLabel,
     type KicadSch,
+    type SchematicInstanceContext,
+    type SchematicSymbol,
 } from "../../kicad/schematic";
 
 export interface NetInstancePage {
@@ -27,9 +29,16 @@ export interface NetInstancePage {
     sheet_uuid?: string;
     /** The instance path (`/root/sheet`), as hosts name sheets in net members. */
     sheet_path?: string;
+    /** Per-instance values (a power symbol's rail name). */
+    context?: SchematicInstanceContext;
 }
 
-export type NetInstanceKind = "global" | "hierarchical" | "sheet-pin" | "local";
+export type NetInstanceKind =
+    | "global"
+    | "hierarchical"
+    | "sheet-pin"
+    | "local"
+    | "power";
 
 export interface NetInstance {
     page: string;
@@ -58,6 +67,14 @@ export function net_instance_at(
                     : null;
         return kind ? { page: page_key, uuid, name: label.text, kind } : null;
     }
+    const symbol = page.document.symbols.get(uuid);
+    if (symbol && is_power(symbol))
+        return {
+            page: page_key,
+            uuid,
+            name: power_name(symbol, page),
+            kind: "power",
+        };
     for (const sheet of page.document.sheets) {
         for (const pin of sheet.pins) {
             if (pin.uuid === uuid)
@@ -88,7 +105,23 @@ export function net_instances(
             (label) => label instanceof type && label.text === from.name,
         );
 
-    if (from.kind === "global") {
+    if (from.kind === "power") {
+        // A rail is on most sheets many times over: one symbol per other
+        // sheet stands for it there.
+        for (const candidate of pages) {
+            if (candidate.key === from.page) continue;
+            const symbol = power_symbols(candidate).find(
+                (it) => power_name(it, candidate) === from.name,
+            );
+            if (symbol)
+                found.push({
+                    page: candidate.key,
+                    uuid: symbol.uuid,
+                    name: from.name,
+                    kind: "power",
+                });
+        }
+    } else if (from.kind === "global") {
         for (const candidate of pages)
             for (const label of labels(candidate, GlobalLabel))
                 if (
@@ -175,6 +208,7 @@ export function net_closure(
     const links: Array<[NetInstance, NetInstance]> = [];
     const linked = new Set<string>();
     const queue = [from];
+    const rails = new Set<string>();
     while (queue.length) {
         const at = queue.shift()!;
         // The same sheet's wires carry the net to other labels and entries;
@@ -186,6 +220,12 @@ export function net_closure(
             queue.unshift(other);
         }
         if (at.kind === "local") continue;
+        // A rail fans out once, from the first of its symbols reached: the
+        // symbols it reaches on other sheets are already that rail.
+        if (at.kind === "power") {
+            if (rails.has(at.name)) continue;
+            rails.add(at.name);
+        }
         for (const other of net_instances(pages, at)) {
             const id = [key(at), key(other)].sort().join("|");
             if (found.has(key(other))) continue;
@@ -225,6 +265,17 @@ function connection_points(
         const found = net_instance_at(pages, page.key, label.uuid);
         if (found) points.push({ instance: found, at: label.at.position });
     }
+    // A power symbol's one pin sits at the symbol's origin.
+    for (const symbol of power_symbols(page))
+        points.push({
+            instance: {
+                page: page.key,
+                uuid: symbol.uuid,
+                name: power_name(symbol, page),
+                kind: "power",
+            },
+            at: symbol.at.position,
+        });
     for (const sheet of page.document.sheets)
         for (const pin of sheet.pins)
             if (pin.uuid)
@@ -250,12 +301,10 @@ function wired_from(
     seed: (segment: readonly [Vec2, Vec2], wire: string) => boolean,
 ): NetInstance[] {
     const segments = page.document.wires.flatMap((wire) =>
-        wire.pts
-            .slice(1)
-            .map((end, i) => ({
-                ends: [wire.pts[i]!, end] as const,
-                wire: wire.uuid,
-            })),
+        wire.pts.slice(1).map((end, i) => ({
+            ends: [wire.pts[i]!, end] as const,
+            wire: wire.uuid,
+        })),
     );
     const touches = (p: Vec2, [a, b]: readonly [Vec2, Vec2]) =>
         on_segment(p, a, b);
@@ -320,4 +369,21 @@ export function wire_instance(
     if (!page) return null;
     const found = wired_from(pages, page, (_ends, wire) => wire === wire_uuid);
     return found.find((it) => it.kind !== "local") ?? found[0] ?? null;
+}
+
+function is_power(symbol: SchematicSymbol) {
+    try {
+        return symbol.lib_symbol?.power === true;
+    } catch {
+        return false;
+    }
+}
+
+function power_symbols(page: NetInstancePage): SchematicSymbol[] {
+    return [...page.document.symbols.values()].filter(is_power);
+}
+
+/** The rail a power symbol names: its value on this sheet instance. */
+function power_name(symbol: SchematicSymbol, page: NetInstancePage) {
+    return page.context?.value(symbol) ?? symbol.value;
 }

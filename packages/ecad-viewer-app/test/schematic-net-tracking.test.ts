@@ -331,3 +331,78 @@ suite("world view flow", () => {
         expect(flow_starts(100, 40, 10)).to.deep.equal([-30, 10, 50, 90]);
     });
 });
+
+const power_sheet = (uuid: string, symbols: Array<[string, number]>) => `
+(kicad_sch
+  (version 20250114)
+  (generator "eeschema")
+  (uuid "${uuid}")
+  (lib_symbols
+    (symbol "power:+5V" (power) (pin_names (offset 0)) (exclude_from_sim no) (in_bom yes) (on_board yes)
+      (property "Reference" "#PWR" (at 0 -3.81 0) (effects (font (size 1.27 1.27)) (hide yes)))
+      (property "Value" "+5V" (at 0 3.556 0) (effects (font (size 1.27 1.27))))
+      (symbol "+5V_0_1" (polyline (pts (xy 0 0) (xy 0 2.54)) (stroke (width 0) (type default)) (fill (type none))))
+      (symbol "+5V_1_1" (pin power_in line (at 0 0 90) (length 0) (hide yes)
+        (name "+5V" (effects (font (size 1.27 1.27)))) (number "1" (effects (font (size 1.27 1.27))))))
+    )
+  )
+${symbols
+    .map(
+        ([
+            id,
+            x,
+        ]) => `  (symbol (lib_id "power:+5V") (at ${x} 10 0) (unit 1) (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no)
+    (uuid "${id}")
+    (property "Reference" "#PWR0${x}" (at ${x} 14 0) (effects (font (size 1.27 1.27)) (hide yes)))
+    (property "Value" "+5V" (at ${x} 6 0) (effects (font (size 1.27 1.27)))))`,
+    )
+    .join("\n")}
+)
+`;
+
+suite("power rails", () => {
+    test("a power symbol leads to one symbol of its rail on each other sheet", () => {
+        const parser = new SchematicParser();
+        const pages: NetInstancePage[] = [
+            {
+                key: "a",
+                name: "A",
+                document: new KicadSch(
+                    "a.kicad_sch",
+                    parser.parse(
+                        power_sheet("00000000-0000-0000-0000-000000000301", [
+                            ["00000000-0000-0000-0000-000000000311", 10],
+                        ]),
+                    ),
+                ),
+            },
+            {
+                key: "b",
+                name: "B",
+                document: new KicadSch(
+                    "b.kicad_sch",
+                    parser.parse(
+                        power_sheet("00000000-0000-0000-0000-000000000302", [
+                            ["00000000-0000-0000-0000-000000000321", 20],
+                            ["00000000-0000-0000-0000-000000000322", 30],
+                            ["00000000-0000-0000-0000-000000000323", 40],
+                        ]),
+                    ),
+                ),
+            },
+        ];
+        const from = net_instance_at(
+            pages,
+            "a",
+            "00000000-0000-0000-0000-000000000311",
+        )!;
+        expect([from.kind, from.name]).to.deep.equal(["power", "+5V"]);
+        const reached = net_instances(pages, from);
+        expect(reached.map((it) => it.page)).to.deep.equal(["b"]);
+        // The view links the rail once into each other sheet.
+        const closure = net_closure(pages, from);
+        expect(closure.links.map(([a, b]) => [a.page, b.page])).to.deep.equal([
+            ["a", "b"],
+        ]);
+    });
+});

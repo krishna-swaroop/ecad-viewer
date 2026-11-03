@@ -102,13 +102,15 @@ const CLICK_SLOP = 4;
 const DASH = 10;
 const SPACE = 6;
 const FLOW_SPEED = 1 / 35;
-/** The name follows the sheet's text size (mm) up to a dash's own size. */
-const NAME_MM = 1.27;
-const MAX_NAME_PX = 9;
+/** The line is as wide as a trace this many mm across, never under 2.5 px. */
+const LINE_MM = 0.8;
+const MIN_LINE_PX = 2.5;
+/** The name is this fraction of the line's width, like a net name on a trace. */
+const NAME_SCALE = 0.72;
 /** Below this many pixels the name is not drawn: the dashes are plain. */
 const MIN_NAME_PX = 5;
-const NAME_GAP = 12;
 const NAME_FAMILY = "ui-monospace, SFMono-Regular, Menlo, monospace";
+const NAME_INK = "rgba(255, 255, 255, 0.88)";
 
 const ease = (t: number) => 1 - Math.pow(1 - Math.min(1, Math.max(0, t)), 3);
 
@@ -606,7 +608,13 @@ export class WorldView {
                 if (grow < 1) continue;
                 arrived.add(instance_key(to));
                 const end = curve.at(curve.length);
-                draw_arrowhead(ctx, end.point, end.angle, chain.color);
+                draw_arrowhead(
+                    ctx,
+                    end.point,
+                    end.angle,
+                    chain.color,
+                    Math.max(10, LINE_MM * this.#camera.zoom * 2.4),
+                );
             }
             for (const at of [chain.from, ...chain.links.map(([, to]) => to)]) {
                 const start = at === chain.from;
@@ -644,11 +652,11 @@ export class WorldView {
     }
 
     /**
-     * One connection: a soft glow along the curve and the line itself. While
-     * growing the line is solid up to its tip; once grown it flows outward.
-     * Zoomed in far enough, the flowing dashes are the net's name, small
-     * white text outlined in the line's colour; further out they are plain
-     * dashes.
+     * One connection: a soft glow along the curve and the line itself, as
+     * wide as a trace so it thickens as the view zooms in. While growing the
+     * line is solid up to its tip; once grown it flows outward in dashes.
+     * Zoomed in far enough, each dash is as long as the net's name and the
+     * name is written on it, the way a net name sits on a board trace.
      */
     #draw_connection(
         ctx: CanvasRenderingContext2D,
@@ -658,17 +666,19 @@ export class WorldView {
         grow: number,
         now: number,
     ) {
+        const width = Math.max(MIN_LINE_PX, LINE_MM * this.#camera.zoom);
+        const font_px = width * NAME_SCALE;
         const reach = curve.length * grow;
         ctx.save();
         ctx.strokeStyle = color;
         ctx.lineCap = "round";
         ctx.globalAlpha = 0.22;
-        ctx.lineWidth = 9;
+        ctx.lineWidth = width + 6;
         ctx.beginPath();
         curve.trace(ctx, 0, reach);
         ctx.stroke();
         ctx.globalAlpha = 0.95;
-        ctx.lineWidth = 2.5;
+        ctx.lineWidth = width;
         if (grow < 1) {
             ctx.beginPath();
             curve.trace(ctx, 0, reach);
@@ -676,63 +686,52 @@ export class WorldView {
             ctx.restore();
             return;
         }
-        const font_px = Math.min(MAX_NAME_PX, NAME_MM * this.#camera.zoom);
-        if (font_px < MIN_NAME_PX) {
-            const dashes = new Path2D();
-            for (const s of flow_starts(
-                curve.length,
-                DASH + SPACE,
-                now * FLOW_SPEED,
-            ))
-                curve.trace(dashes, s, s + DASH);
-            ctx.stroke(dashes);
-            ctx.restore();
-            return;
-        }
         const label = overbar_text(name);
+        const named = font_px >= MIN_NAME_PX;
         ctx.font = `600 ${font_px}px ${NAME_FAMILY}`;
-        const text = ctx.measureText(label.text).width;
-        ctx.globalAlpha = 1;
-        ctx.textAlign = "left";
-        ctx.textBaseline = "middle";
-        ctx.lineJoin = "round";
-        for (const s of flow_starts(
+        const text = named ? ctx.measureText(label.text).width : 0;
+        // The round caps add half a width at each end; the name sits between.
+        const dash = named ? text : DASH;
+        const space = named ? Math.max(SPACE, width * 1.6) : SPACE;
+        const starts = flow_starts(
             curve.length,
-            text + NAME_GAP,
+            dash + space,
             now * FLOW_SPEED,
-        )) {
-            // Only whole names: a cut one reads as noise.
-            if (s < 0 || s + text > curve.length) continue;
-            const { point, angle } = curve.at(s + text / 2);
-            // Keep the name upright whichever way the line runs.
-            const upright = Math.cos(angle) < 0 ? angle + Math.PI : angle;
-            ctx.save();
-            ctx.translate(point.x, point.y);
-            ctx.rotate(upright);
-            const left = -text / 2;
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 3;
-            ctx.strokeText(label.text, left, 0.5);
-            ctx.fillStyle = "#ffffff";
-            ctx.fillText(label.text, left, 0.5);
-            // KiCad's ~{…}: a line over the inverted part.
-            for (const [from, to] of label.over) {
-                const x0 =
-                    left + ctx.measureText(label.text.slice(0, from)).width;
-                const x1 =
-                    left + ctx.measureText(label.text.slice(0, to)).width;
-                const y = -font_px * 0.55;
-                ctx.lineWidth = 2.5;
-                ctx.strokeStyle = color;
-                ctx.beginPath();
-                ctx.moveTo(x0, y);
-                ctx.lineTo(x1, y);
-                ctx.stroke();
-                ctx.lineWidth = 1;
-                ctx.strokeStyle = "#ffffff";
-                ctx.stroke();
+        );
+        const dashes = new Path2D();
+        for (const s of starts) curve.trace(dashes, s, s + dash);
+        ctx.stroke(dashes);
+        if (named) {
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = NAME_INK;
+            ctx.strokeStyle = NAME_INK;
+            ctx.lineWidth = Math.max(0.6, font_px / 12);
+            ctx.textAlign = "left";
+            ctx.textBaseline = "middle";
+            for (const s of starts) {
+                // Only whole dashes carry the name.
+                if (s < 0 || s + dash > curve.length) continue;
+                const { point, angle } = curve.at(s + dash / 2);
+                // Keep the name upright whichever way the line runs.
+                const upright = Math.cos(angle) < 0 ? angle + Math.PI : angle;
+                ctx.save();
+                ctx.translate(point.x, point.y);
+                ctx.rotate(upright);
+                const left = -text / 2;
+                ctx.fillText(label.text, left, font_px * 0.06);
+                // KiCad's ~{…}: a line over the inverted part.
+                for (const [from, to] of label.over) {
+                    const x0 =
+                        left + ctx.measureText(label.text.slice(0, from)).width;
+                    const x1 =
+                        left + ctx.measureText(label.text.slice(0, to)).width;
+                    ctx.beginPath();
+                    ctx.moveTo(x0, -font_px * 0.5);
+                    ctx.lineTo(x1, -font_px * 0.5);
+                    ctx.stroke();
+                }
+                ctx.restore();
             }
-            ctx.restore();
         }
         ctx.restore();
     }
@@ -848,8 +847,8 @@ function draw_arrowhead(
     tip: Vec2,
     angle: number,
     color: string,
+    size = 10,
 ) {
-    const size = 10;
     ctx.beginPath();
     ctx.moveTo(tip.x, tip.y);
     ctx.lineTo(

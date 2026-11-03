@@ -42,7 +42,13 @@ import { KCBoardAppElement } from "../kicanvas/elements/kc-board/app";
 import { KCSchematicAppElement } from "../kicanvas/elements/kc-schematic/app";
 import { BomApp } from "../kicanvas/elements/bom/app";
 import { KicadPCB, KicadSch } from "../kicad";
-import { Label, Wire, type SchematicInstanceContext } from "../kicad/schematic";
+import {
+    Label,
+    PinInstance,
+    SchematicSymbol,
+    Wire,
+    type SchematicInstanceContext,
+} from "../kicad/schematic";
 
 import { is_3d_model, is_kicad, TabHeaderElement } from "./tab_header";
 import {
@@ -2686,10 +2692,8 @@ export class ECadViewer extends KCUIElement implements InputContainer {
         );
         if (!detail) return;
         detail.operation = modifiers.shift ? "toggle" : "replace";
-        this.#selected_label =
-            (item instanceof Label || item instanceof Wire) && item.uuid
-                ? { page: view.key, uuid: item.uuid }
-                : null;
+        const traced = traceable_uuid(item);
+        this.#selected_label = traced ? { page: view.key, uuid: traced } : null;
         this.dispatchEvent(new EcadSemanticSelectionEvent(detail));
         if (this.#tilde_held && this.#selected_label)
             this.#trace_label(this.#selected_label);
@@ -4466,6 +4470,7 @@ export class ECadViewer extends KCUIElement implements InputContainer {
                           parent_key: page.parent_project_path,
                           sheet_uuid: page.sheet_uuid,
                           sheet_path: page.sheet_path,
+                          context: page.schematic_context,
                       },
                   ]
                 : [];
@@ -4829,18 +4834,18 @@ export class ECadViewer extends KCUIElement implements InputContainer {
             viewer?.instance_context,
         );
         if (!detail) return;
-        // `~` acts on the selected label or sheet entry: held while
-        // clicking, or pressed after the click.
-        if (!this.#world_view?.open)
+        // `~` acts on the selected label, sheet entry, wire or power
+        // symbol: held while clicking, or pressed after the click.
+        if (!this.#world_view?.open) {
+            const traced = traceable_uuid(item);
             this.#selected_label =
-                (item instanceof Label || item instanceof Wire) &&
-                item.uuid &&
-                viewer?.instance_context
+                traced && viewer?.instance_context
                     ? {
                           page: viewer.instance_context.project_path,
-                          uuid: item.uuid,
+                          uuid: traced,
                       }
                     : null;
+        }
         if (this.#tilde_held && this.#selected_label && !this.#world_view?.open)
             this.#trace_label(this.#selected_label);
         this.#attach_item_bounds_sch(detail, item, viewer!);
@@ -5449,4 +5454,24 @@ window.customElements.define("ecad-3d-source", Ov3dElement);
 /** The `~` key, by position (left of 1) or by the character it typed. */
 function is_tilde(event: KeyboardEvent) {
     return event.code === "Backquote" || event.key === "`" || event.key === "~";
+}
+
+/**
+ * What `~` traces from a selected item: a label, sheet entry or wire, or a
+ * power symbol (clicked on the symbol or on its pin). Null otherwise.
+ */
+function traceable_uuid(item: unknown): string | null {
+    if ((item instanceof Label || item instanceof Wire) && item.uuid)
+        return item.uuid;
+    const symbol =
+        item instanceof PinInstance
+            ? item.parent
+            : item instanceof SchematicSymbol
+              ? item
+              : null;
+    try {
+        return symbol?.lib_symbol?.power ? symbol.uuid : null;
+    } catch {
+        return null;
+    }
 }
