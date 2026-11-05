@@ -1008,7 +1008,8 @@ export class Footprint implements BoardNode {
         this.autoplace_cost180 = data.autoplace_cost180;
         this.solder_mask_margin = data.solder_mask_margin;
         this.solder_paste_margin = data.solder_paste_margin;
-        this.solder_paste_ratio = data.solder_paste_ratio;
+        this.solder_paste_ratio =
+            data.solder_paste_margin_ratio ?? data.solder_paste_ratio;
         this.clearance = data.clearance;
         this.zone_connect = data.zone_connect;
         this.thermal_width = data.thermal_width;

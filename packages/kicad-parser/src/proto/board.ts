@@ -274,6 +274,7 @@ export interface I_Footprint {
     solder_mask_margin: number;
     solder_paste_margin: number;
     solder_paste_ratio: number;
+    solder_paste_margin_ratio?: number;
     clearance: number;
     zone_connect: number;
     thermal_width: number;
