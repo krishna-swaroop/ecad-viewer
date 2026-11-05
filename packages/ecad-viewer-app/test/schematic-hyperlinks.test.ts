@@ -231,6 +231,12 @@ suite("embedded schematic hyperlinks", () => {
 
         const [bbox] = viewer.layers.query_item_bboxes(datasheet);
         expect(bbox, "datasheet field is painted and pickable").to.exist;
+        expect(
+            viewer.layers
+                .by_name(LayerNames.symbol_field)!
+                .bboxes.get(datasheet),
+            "datasheet field is drawn",
+        ).to.exist;
 
         let link_url: string | undefined;
         viewer.addEventListener(LinkClickEvent.type, (e) => {
