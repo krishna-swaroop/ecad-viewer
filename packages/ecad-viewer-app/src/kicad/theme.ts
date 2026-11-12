@@ -29,6 +29,12 @@ export interface BoardTheme extends BaseTheme {
     b_paste: Color;
     b_silks: Color;
     background: Color;
+    /**
+     * The board body inside Edge.Cuts. Its own key so the body can be themed
+     * apart from the canvas, pad holes and the highlight dim pass, which all
+     * use `background`.
+     */
+    board_substrate: Color;
     cmts_user: Color;
     copper: {
         b: Color;

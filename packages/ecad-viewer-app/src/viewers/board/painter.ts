@@ -14,7 +14,7 @@ import { Angle, Arc, BBox, Matrix3, Vec2 } from "../../base/math";
 import { Circle, Color, Polygon, Polyline, Renderer } from "../../graphics";
 import * as board_items from "../../kicad/board";
 import { EDAText, StrokeFont } from "../../kicad/text";
-import { DocumentPainter } from "../base/painter";
+import { DocumentPainter, type PaintableDocument } from "../base/painter";
 import {
     diff_status_color,
     type EcadDiffPaintStatus,
@@ -34,6 +34,7 @@ import {
     LineInteractiveItem,
     type BoardInteractiveItem,
 } from "../../kicad/board_bbox_visitor";
+import { BoardSubstrate } from "./board-substrate";
 import { FootprintPainter } from "./footprint-painter";
 import { BoardItemPainter } from "./painter-base";
 import { PadPainter } from "./pad-painter";
@@ -667,6 +668,21 @@ class DimensionPainter extends BoardItemPainter {
     }
 }
 
+class BoardSubstratePainter extends BoardItemPainter {
+    classes = [BoardSubstrate];
+
+    layers_for(_item: BoardSubstrate) {
+        return [LayerNames.board_substrate];
+    }
+
+    paint(layer: ViewLayer, s: BoardSubstrate) {
+        if (!s.triangles.length) return;
+        this.gfx.polygon(
+            Polygon.from_triangles(s.triangles, s.bbox, layer.color),
+        );
+    }
+}
+
 /** Alpha of the dim pass drawn over the board while nets are highlighted. */
 export const HIGHLIGHT_DIM_OPACITY = 0.72;
 
@@ -698,7 +714,24 @@ export class BoardPainter extends DocumentPainter {
             new GrTextPainter(this, gfx),
             new FpTextPainter(this, gfx),
             new DimensionPainter(this, gfx),
+            new BoardSubstratePainter(this, gfx),
         ];
+    }
+
+    /**
+     * The board's own items plus its body. A comparison scene is drawn in
+     * diff colours over a neutral canvas, so it gets no body.
+     */
+    protected override *items_for(
+        document: PaintableDocument,
+    ): Generator<unknown, void, void> {
+        yield* document.items();
+        if (
+            !this.diff_presentation &&
+            document instanceof board_items.KicadPCB
+        ) {
+            yield BoardSubstrate.for_board(document);
+        }
     }
 
     /**

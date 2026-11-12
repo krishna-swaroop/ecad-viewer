@@ -20,6 +20,7 @@ const theme: Theme = {
         b_paste: Color.from_css("rgba(167, 234, 255, 0.502)"),
         b_silks: Color.from_css("rgb(136, 100, 203)"),
         background: Color.from_css("rgb(19, 18, 24)"),
+        board_substrate: Color.from_css("rgb(38, 35, 50)"),
         cmts_user: Color.from_css("rgb(129, 255, 190)"),
         copper: {
             b: Color.from_css("rgb(111, 204, 219)"),
