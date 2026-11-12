@@ -238,6 +238,43 @@ export function* copper_layers_between(
 }
 
 /**
+ * Names KiCad itself writes as a layer's user name. They are not
+ * user customisations, so hosts keep showing the canonical name for them.
+ */
+const KICAD_DEFAULT_LAYER_USER_NAMES: Readonly<Record<string, string>> = {
+    [LayerNames.f_adhes]: "F.Adhesive",
+    [LayerNames.b_adhes]: "B.Adhesive",
+    [LayerNames.f_silks]: "F.Silkscreen",
+    [LayerNames.b_silks]: "B.Silkscreen",
+    [LayerNames.dwgs_user]: "User.Drawings",
+    [LayerNames.cmts_user]: "User.Comments",
+    [LayerNames.eco1_user]: "User.Eco1",
+    [LayerNames.eco2_user]: "User.Eco2",
+    [LayerNames.f_crtyd]: "F.Courtyard",
+    [LayerNames.b_crtyd]: "B.Courtyard",
+};
+
+/**
+ * Map canonical layer name to the custom name a board gives it, e.g.
+ * `(55 "User.9" user "Script.Cobre")` yields `User.9 -> Script.Cobre`.
+ * Layers without a user name, or with KiCad's default one, are omitted.
+ */
+export function custom_layer_names(
+    layers: Iterable<{ canonical_name: string; user_name?: string }>,
+): Map<string, string> {
+    const names = new Map<string, string>();
+    for (const { canonical_name, user_name } of layers) {
+        if (
+            user_name &&
+            user_name !== canonical_name &&
+            user_name !== KICAD_DEFAULT_LAYER_USER_NAMES[canonical_name]
+        )
+            names.set(canonical_name, user_name);
+    }
+    return names;
+}
+
+/**
  * Board view layer set
  */
 export class LayerSet extends BaseLayerSet {
