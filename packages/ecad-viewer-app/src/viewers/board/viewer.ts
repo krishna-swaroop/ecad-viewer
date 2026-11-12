@@ -32,7 +32,7 @@ import type {
     EcadOverlayAnchor,
     ResolvedOverlayAnchor,
 } from "../base/overlay-scene";
-import { LayerNames, LayerSet, ViewLayer } from "./layers";
+import { custom_layer_names, LayerNames, LayerSet, ViewLayer } from "./layers";
 import type { SnapItem } from "./measure";
 import { NetLabelLayers, type LabelCamera } from "./net-label-layers";
 import {
@@ -783,13 +783,20 @@ export class BoardViewer extends DocumentViewer<
             items.next().value?.opacity ?? 1;
         const any_visible = (items: Generator<ViewLayer>) =>
             Array.from(items).some((layer) => (layer.opacity ?? 1) > 0);
+        // `name` stays the canonical key for highlight, visibility and
+        // presets; `userName` is only for display.
+        const user_names = custom_layer_names(this.board?.layers ?? []);
         return {
-            layers: Array.from(layers.in_ui_order()).map((layer) => ({
-                name: layer.name,
-                color: layer.color.to_css(),
-                visible: layer.visible,
-                highlighted: layer.highlighted,
-            })),
+            layers: Array.from(layers.in_ui_order()).map((layer) => {
+                const userName = user_names.get(layer.name);
+                return {
+                    name: layer.name,
+                    ...(userName ? { userName } : {}),
+                    color: layer.color.to_css(),
+                    visible: layer.visible,
+                    highlighted: layer.highlighted,
+                };
+            }),
             objectOpacity: {
                 tracks: first_opacity(layers.copper_layers()),
                 vias: first_opacity(layers.via_layers()),

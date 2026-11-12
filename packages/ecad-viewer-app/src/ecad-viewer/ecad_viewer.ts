@@ -197,7 +197,10 @@ export interface EcadComparisonSchematicPages {
 }
 
 export interface EcadPcbLayerState {
+    /** Canonical KiCad layer name (e.g. "User.9"); the key for host calls. */
     name: string;
+    /** The board's custom layer name, present only when it differs. */
+    userName?: string;
     color: string;
     visible: boolean;
     highlighted: boolean;
