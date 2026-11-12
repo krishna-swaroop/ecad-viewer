@@ -11,3 +11,4 @@ export * from "./camera2";
 export * from "./matrix3";
 export * from "./vec2";
 export * from "./bezier";
+export * from "./polygon";

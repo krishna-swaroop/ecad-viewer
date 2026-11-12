@@ -109,6 +109,12 @@ export enum LayerNames {
     b_paste = "B.Paste",
     b_crtyd = "B.CrtYd",
     b_fab = "B.Fab",
+    /**
+     * The board body inside Edge.Cuts. Last of the board layers, so it is
+     * painted under everything on the board but above the grid and drawing
+     * sheet. It follows Edge.Cuts visibility and is never a click target.
+     */
+    board_substrate = ":Board:Substrate",
     drawing_sheet = BaseLayerNames.drawing_sheet,
     grid = BaseLayerNames.grid,
 }
@@ -281,6 +287,21 @@ export class LayerSet extends BaseLayerSet {
                 continue;
             }
 
+            if (layer_name === LayerNames.board_substrate) {
+                this.add(
+                    new ViewLayer(
+                        this,
+                        layer_name,
+                        () =>
+                            this.by_name(LayerNames.edge_cuts)?.visible ??
+                            false,
+                        false,
+                        this.substrate_color(),
+                    ),
+                );
+                continue;
+            }
+
             // These virtual layers require at least one visible copper layer to be shown.
             if (HoleLayerNames.includes(layer_name)) {
                 visible = () => this.is_any_copper_layer_visible();
@@ -426,6 +447,20 @@ export class LayerSet extends BaseLayerSet {
         }
 
         return color;
+    }
+
+    /**
+     * The board body: the theme's own substrate colour, dark like KiCad's
+     * canvas so the board reads as a physical object on a lighter canvas.
+     * Opaque, since everything on the board is drawn over it. A host theme
+     * without the key falls back to the PCB background.
+     */
+    substrate_color(): Color {
+        const color =
+            (this.theme["board_substrate"] as Color | undefined) ??
+            (this.theme["background"] as Color | undefined) ??
+            Color.black;
+        return color.with_alpha(1);
     }
 
     /**
