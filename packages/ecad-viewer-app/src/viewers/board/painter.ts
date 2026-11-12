@@ -108,6 +108,18 @@ class PolyPainter extends BoardItemPainter {
     }
 }
 
+class CurvePainter extends BoardItemPainter {
+    classes = [board_items.GrCurve, board_items.FpCurve];
+
+    layers_for(item: board_items.GrCurve | board_items.FpCurve) {
+        return [item.layer];
+    }
+
+    paint(layer: ViewLayer, c: board_items.GrCurve | board_items.FpCurve) {
+        this.gfx.line(new Polyline(c.points, c.width, layer.color));
+    }
+}
+
 class ArcPainter extends BoardItemPainter {
     classes = [board_items.GrArc, board_items.FpArc];
 
@@ -675,6 +687,7 @@ export class BoardPainter extends DocumentPainter {
             new RectPainter(this, gfx),
             new PolyPainter(this, gfx),
             new ArcPainter(this, gfx),
+            new CurvePainter(this, gfx),
             new CirclePainter(this, gfx),
             new TraceSegmentPainter(this, gfx),
             new TraceArcPainter(this, gfx),

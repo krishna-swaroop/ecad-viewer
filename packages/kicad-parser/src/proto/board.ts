@@ -133,6 +133,15 @@ export interface I_Poly extends I_GraphicItem {
     stroke: I_Stroke;
 }
 
+/** A cubic Bezier: `gr_curve` / `fp_curve`, four control points. */
+export interface I_Curve extends I_GraphicItem {
+    /** Tells a curve apart from a polygon, which also has `pts`. */
+    shape: "curve";
+    pts: { x: number; y: number }[];
+    width: number;
+    stroke: I_Stroke;
+}
+
 export interface I_Rect extends I_GraphicItem {
     start: { x: number; y: number };
     end: { x: number; y: number };
@@ -293,7 +302,7 @@ export interface I_Footprint {
     /** Per-variant overrides, in file order; absent when the footprint has none. */
     variants?: I_FootprintVariant[];
     properties: Record<string, string>;
-    drawings: (I_Line | I_Circle | I_Arc | I_Poly | I_Rect)[];
+    drawings: (I_Line | I_Circle | I_Arc | I_Poly | I_Rect | I_Curve)[];
     fp_texts: I_FpText[];
     zones: I_Zone[];
     models: I_Model[];
@@ -501,6 +510,7 @@ export interface I_KicadPCB {
         | I_Arc
         | I_Poly
         | I_Rect
+        | I_Curve
         | I_GrText
         | I_Dimension
     )[];
