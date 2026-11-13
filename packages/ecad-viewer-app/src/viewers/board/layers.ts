@@ -215,8 +215,29 @@ function is_virtual_for(physical_layer: string, layer_name: string) {
     );
 }
 
-function is_copper(name: string) {
+export function is_copper(name: string) {
     return name.endsWith(".Cu");
+}
+
+export function pad_has_copper(pad: { layers: readonly string[] }) {
+    return pad.layers.some(is_copper);
+}
+
+export type PasteMaskRole = "paste" | "mask";
+
+export function paste_mask_role(layer: string): PasteMaskRole | null {
+    switch (layer) {
+        case "*.Paste":
+        case LayerNames.f_paste:
+        case LayerNames.b_paste:
+            return "paste";
+        case "*.Mask":
+        case LayerNames.f_mask:
+        case LayerNames.b_mask:
+            return "mask";
+        default:
+            return null;
+    }
 }
 
 export function* copper_layers_between(

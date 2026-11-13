@@ -664,10 +664,10 @@ export class Layer implements BoardNode {
 export class Setup implements BoardNode {
     // stackup: Stackup;
     typeId: BoardNodeType = "Setup";
-    pad_to_mask_clearance: number;
+    pad_to_mask_clearance?: number;
     solder_mask_min_width: number;
-    pad_to_paste_clearance: number;
-    pad_to_paste_clearance_ratio: number;
+    pad_to_paste_clearance?: number;
+    pad_to_paste_clearance_ratio?: number;
     aux_axis_origin: Vec2;
     grid_origin: Vec2;
     pcbplotparams: PCBPlotParams;
@@ -937,9 +937,9 @@ export class Footprint implements BoardNode {
     path: string;
     autoplace_cost90: number;
     autoplace_cost180: number;
-    solder_mask_margin: number;
-    solder_paste_margin: number;
-    solder_paste_ratio: number;
+    solder_mask_margin?: number;
+    solder_paste_margin?: number;
+    solder_paste_margin_ratio?: number;
     clearance: number;
     zone_connect: number;
     thermal_width: number;
@@ -1008,8 +1008,7 @@ export class Footprint implements BoardNode {
         this.autoplace_cost180 = data.autoplace_cost180;
         this.solder_mask_margin = data.solder_mask_margin;
         this.solder_paste_margin = data.solder_paste_margin;
-        this.solder_paste_ratio =
-            data.solder_paste_margin_ratio ?? data.solder_paste_ratio;
+        this.solder_paste_margin_ratio = data.solder_paste_margin_ratio;
         this.clearance = data.clearance;
         this.zone_connect = data.zone_connect;
         this.thermal_width = data.thermal_width;
@@ -1934,9 +1933,9 @@ export class Pad implements CrossHightAble, BoardNode {
     };
     pinfunction: string;
     pintype: string;
-    solder_mask_margin: number;
-    solder_paste_margin: number;
-    solder_paste_margin_ratio: number;
+    solder_mask_margin?: number;
+    solder_paste_margin?: number;
+    solder_paste_margin_ratio?: number;
     clearance: number;
     thermal_width: number;
     thermal_gap: number;
