@@ -26,6 +26,7 @@ import {
     LayerSet,
     ViewLayer,
     copper_layers_between,
+    is_copper,
     virtual_layer_for,
 } from "./layers";
 import type { BoardTheme } from "../../kicad";
@@ -834,8 +835,7 @@ export class BoardPainter extends DocumentPainter {
         const any_copper_visible = (layers: string[]) =>
             layers.some(
                 (name) =>
-                    name === "*.Cu" ||
-                    (name.endsWith(".Cu") && layer_visible(name)),
+                    is_copper(name) && (name === "*.Cu" || layer_visible(name)),
             );
 
         // Dim pass: one board-sized quad. Its opacity is the layer's, so the

@@ -77,10 +77,10 @@ export interface I_PCBPlotParams {
 }
 
 export interface I_Setup {
-    pad_to_mask_clearance: number;
+    pad_to_mask_clearance?: number;
     solder_mask_min_width: number;
-    pad_to_paste_clearance: number;
-    pad_to_paste_clearance_ratio: number;
+    pad_to_paste_clearance?: number;
+    pad_to_paste_clearance_ratio?: number;
     aux_axis_origin: { x: number; y: number };
     grid_origin: { x: number; y: number };
     pcbplotparams: I_PCBPlotParams;
@@ -200,9 +200,9 @@ export interface I_Pad {
     };
     pinfunction: string;
     pintype: string;
-    solder_mask_margin: number;
-    solder_paste_margin: number;
-    solder_paste_margin_ratio: number;
+    solder_mask_margin?: number;
+    solder_paste_margin?: number;
+    solder_paste_margin_ratio?: number;
     clearance: number;
     thermal_width: number;
     thermal_gap: number;
@@ -271,9 +271,9 @@ export interface I_Footprint {
     path: string;
     autoplace_cost90: number;
     autoplace_cost180: number;
-    solder_mask_margin: number;
-    solder_paste_margin: number;
-    solder_paste_ratio: number;
+    solder_mask_margin?: number;
+    solder_paste_margin?: number;
+    solder_paste_margin_ratio?: number;
     clearance: number;
     zone_connect: number;
     thermal_width: number;

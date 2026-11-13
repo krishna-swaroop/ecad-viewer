@@ -5,8 +5,11 @@ import * as board_items from "../../kicad/board";
 import {
     CopperVirtualLayerNames,
     LayerNames,
+    pad_has_copper,
+    paste_mask_role,
     ViewLayer,
     virtual_layer_for,
+    type PasteMaskRole,
 } from "./layers";
 import { BoardItemPainter } from "./painter-base";
 
@@ -21,6 +24,72 @@ function pad_copper_layer(pad: board_items.Pad): string {
     return LayerNames.f_cu;
 }
 
+/**
+ * How far a pad's opening on a paste or mask layer extends past its copper,
+ * per axis, or null on any other layer.
+ *
+ * Mirrors KiCad's PAD::GetSolderPasteMargin and ::GetSolderMaskExpansion: a
+ * value set on the pad wins, then one set on its footprint, then the board's
+ * setup. Paste adds a ratio of the pad size. Neither can shrink the opening
+ * below nothing, except paste on a custom pad, which KiCad leaves unclamped.
+ * A pad with no copper keeps its own shape.
+ */
+export function pad_layer_margin(
+    pad: board_items.Pad,
+    layer: string,
+): Vec2 | null {
+    const role = paste_mask_role(layer);
+    if (!role) {
+        return null;
+    }
+
+    if (!pad_has_copper(pad)) {
+        return new Vec2(0, 0);
+    }
+
+    const footprint = pad.parent;
+    const setup = footprint?.parent?.setup;
+
+    if (role == "mask") {
+        let margin =
+            pad.solder_mask_margin ??
+            footprint?.solder_mask_margin ??
+            setup?.pad_to_mask_clearance ??
+            0;
+        margin = Math.max(margin, -Math.min(pad.size.x, pad.size.y) / 2);
+        return new Vec2(margin, margin);
+    }
+
+    const margin =
+        pad.solder_paste_margin ??
+        footprint?.solder_paste_margin ??
+        setup?.pad_to_paste_clearance ??
+        0;
+    const ratio =
+        pad.solder_paste_margin_ratio ??
+        footprint?.solder_paste_margin_ratio ??
+        setup?.pad_to_paste_clearance_ratio ??
+        0;
+    const paste = new Vec2(
+        margin + pad.size.x * ratio,
+        margin + pad.size.y * ratio,
+    );
+
+    if (pad.shape == "custom") {
+        return paste;
+    }
+
+    return new Vec2(
+        Math.max(paste.x, -pad.size.x / 2),
+        Math.max(paste.y, -pad.size.y / 2),
+    );
+}
+
+const both_sides: Record<PasteMaskRole, LayerNames[]> = {
+    paste: [LayerNames.f_paste, LayerNames.b_paste],
+    mask: [LayerNames.f_mask, LayerNames.b_mask],
+};
+
 export class PadPainter extends BoardItemPainter {
     classes = [board_items.Pad];
 
@@ -29,22 +98,11 @@ export class PadPainter extends BoardItemPainter {
         const layers: string[] = [];
 
         for (const layer of pad.layers) {
-            if (layer == "*.Mask") {
-                layers.push(LayerNames.f_mask);
-                layers.push(LayerNames.b_mask);
-            } else if (layer == "*.Paste") {
-                layers.push(LayerNames.f_paste);
-                layers.push(LayerNames.b_paste);
-            } else if (
-                layer == LayerNames.f_mask ||
-                layer == LayerNames.b_mask
-            ) {
-                layers.push(layer);
-            } else if (
-                layer == LayerNames.f_paste ||
-                layer == LayerNames.b_paste
-            ) {
-                layers.push(layer);
+            const role = paste_mask_role(layer);
+            if (role) {
+                layers.push(
+                    ...(layer.startsWith("*.") ? both_sides[role] : [layer]),
+                );
             } else if (
                 layer == LayerNames.f_silks ||
                 layer == LayerNames.b_silks ||
@@ -86,6 +144,18 @@ export class PadPainter extends BoardItemPainter {
     }
 
     paint(layer: ViewLayer, pad: board_items.Pad) {
+        const margin =
+            pad.shape == "custom" ? null : pad_layer_margin(pad, layer.name);
+
+        // A margin that eats the whole pad leaves no opening, which KiCad
+        // does not draw (an imported "no paste" pad, say).
+        if (
+            margin &&
+            (pad.size.x + 2 * margin.x <= 0 || pad.size.y + 2 * margin.y <= 0)
+        ) {
+            return;
+        }
+
         const color = this.emphasis_color(layer, pad_copper_layer(pad));
 
         const position_mat = Matrix3.translation(
@@ -148,21 +218,13 @@ export class PadPainter extends BoardItemPainter {
                 );
             }
 
+            const size = margin ? pad.size.add(margin.multiply(2)) : pad.size;
+
             switch (shape) {
                 case "circle":
-                    this.gfx.circle(new Circle(center, pad.size.x / 2, color));
+                    this.gfx.circle(new Circle(center, size.x / 2, color));
                     break;
                 case "rect":
-                    {
-                        const rect_points = [
-                            new Vec2(-pad.size.x / 2, -pad.size.y / 2),
-                            new Vec2(pad.size.x / 2, -pad.size.y / 2),
-                            new Vec2(pad.size.x / 2, pad.size.y / 2),
-                            new Vec2(-pad.size.x / 2, pad.size.y / 2),
-                        ];
-                        this.gfx.polygon(new Polygon(rect_points, color));
-                    }
-                    break;
                 case "roundrect":
                 case "trapezoid":
                     // KiCAD approximates rounded rectangle using four line segments
@@ -170,13 +232,25 @@ export class PadPainter extends BoardItemPainter {
                     // Since our polylines aren't filled, we'll add both a polygon
                     // and a polyline.
                     {
-                        const rounding =
-                            Math.min(pad.size.x, pad.size.y) *
-                            (pad.roundrect_rratio ?? 0);
-                        let half_size = new Vec2(
-                            pad.size.x / 2,
-                            pad.size.y / 2,
-                        );
+                        // A uniform margin grows the outline, so its
+                        // corners round off by the margin. KiCad sizes a
+                        // per-axis one as a pad of the new size instead.
+                        const radius =
+                            shape == "roundrect"
+                                ? Math.min(pad.size.x, pad.size.y) *
+                                  (pad.roundrect_rratio ?? 0)
+                                : 0;
+                        const rounding = !margin
+                            ? radius
+                            : Math.max(
+                                  margin.x == margin.y
+                                      ? radius + margin.x
+                                      : shape == "roundrect"
+                                        ? radius + Math.max(margin.x, margin.y)
+                                        : 0,
+                                  0,
+                              );
+                        let half_size = new Vec2(size.x / 2, size.y / 2);
                         half_size = half_size.sub(new Vec2(rounding, rounding));
 
                         let trap_delta = pad.rect_delta
@@ -205,23 +279,22 @@ export class PadPainter extends BoardItemPainter {
 
                         // this.gfx.push_transform(offset_mat);
                         this.gfx.polygon(new Polygon(rect_points, color));
-                        this.gfx.line(
-                            new Polyline(
-                                [...rect_points, rect_points[0]!],
-                                rounding * 2,
-                                color,
-                            ),
-                        );
+                        if (rounding > 0) {
+                            this.gfx.line(
+                                new Polyline(
+                                    [...rect_points, rect_points[0]!],
+                                    rounding * 2,
+                                    color,
+                                ),
+                            );
+                        }
                         // this.gfx.pop_transform();
                     }
                     break;
 
                 case "oval":
                     {
-                        const half_size = new Vec2(
-                            pad.size.x / 2,
-                            pad.size.y / 2,
-                        );
+                        const half_size = new Vec2(size.x / 2, size.y / 2);
                         const half_width = Math.min(half_size.x, half_size.y);
                         const half_len = new Vec2(
                             half_size.x - half_width,

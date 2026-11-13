@@ -218,7 +218,7 @@ export class KCBoardPropertiesPanelElement extends KCUIElement {
             )}
             ${this.entry(
                 "Solderpaste margin ratio",
-                itm.solder_paste_ratio ?? 0,
+                itm.solder_paste_margin_ratio ?? 0,
             )}
             ${this.entry("Zone connection", itm.zone_connect ?? "inherited")}
         `;

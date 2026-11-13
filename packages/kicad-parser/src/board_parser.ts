@@ -674,7 +674,9 @@ function parseFootprint(expr: Parseable): B.I_Footprint {
         P.pair("autoplace_cost180", T.number),
         P.pair("solder_mask_margin", T.number),
         P.pair("solder_paste_margin", T.number),
-        P.pair("solder_paste_ratio", T.number),
+        P.pair("solder_paste_margin_ratio", T.number, {
+            legacy: ["solder_paste_ratio"],
+        }),
         P.pair("clearance", T.number),
         P.pair("zone_connect", T.number),
         P.pair("thermal_width", T.number),
