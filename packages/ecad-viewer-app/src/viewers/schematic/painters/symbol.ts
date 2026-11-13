@@ -72,7 +72,9 @@ export class LibSymbolPainter extends SchematicItemPainter {
     }
 }
 
-const visible_properties = new Set(["Reference", "Value"]);
+export function is_painted_on_its_own(p: schematic_items.Property) {
+    return !!p.hyperlink && p.is_visible;
+}
 
 export class SchematicSymbolPainter extends SchematicItemPainter {
     classes = [schematic_items.SchematicSymbol];
@@ -133,7 +135,10 @@ export class SchematicSymbolPainter extends SchematicItemPainter {
             layer.name == LayerNames.interactive
         ) {
             for (const [_, p] of si.properties) {
-                if (!visible_properties.has(p.name)) {
+                // A linked field is painted as an item of its own (see
+                // SchematicPainter.items_for); here it would widen the
+                // symbol's bbox over the link.
+                if (is_painted_on_its_own(p)) {
                     continue;
                 }
 
