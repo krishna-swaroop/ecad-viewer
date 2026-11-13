@@ -30,7 +30,11 @@ import {
     NetLabelPainter,
 } from "./painters/label";
 import { PinPainter } from "./painters/pin";
-import { LibSymbolPainter, SchematicSymbolPainter } from "./painters/symbol";
+import {
+    is_painted_on_its_own,
+    LibSymbolPainter,
+    SchematicSymbolPainter,
+} from "./painters/symbol";
 import {
     get_symbol_transform,
     type SymbolTransform,
@@ -434,7 +438,7 @@ class PropertyPainter extends SchematicItemPainter {
         // effects object has its own hide flag for other text primitives, but
         // checking only that flag makes hidden symbol fields (notably #PWR
         // references) visible.
-        if (p.hide || p.effects.hide || !p.text) {
+        if (!p.is_visible) {
             return;
         }
 
@@ -901,7 +905,7 @@ export class SchematicPainter extends BaseSchematicPainter {
         // ones — a hidden field has nothing to click.
         for (const symbol of document.symbols.values()) {
             for (const property of symbol.properties.values()) {
-                if (property.hyperlink && !property.hide) {
+                if (is_painted_on_its_own(property)) {
                     yield property;
                 }
             }

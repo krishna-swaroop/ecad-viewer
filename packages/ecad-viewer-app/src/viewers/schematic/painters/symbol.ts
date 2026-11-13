@@ -72,6 +72,10 @@ export class LibSymbolPainter extends SchematicItemPainter {
     }
 }
 
+export function is_painted_on_its_own(p: schematic_items.Property) {
+    return !!p.hyperlink && p.is_visible;
+}
+
 export class SchematicSymbolPainter extends SchematicItemPainter {
     classes = [schematic_items.SchematicSymbol];
 
@@ -134,7 +138,7 @@ export class SchematicSymbolPainter extends SchematicItemPainter {
                 // A linked field is painted as an item of its own (see
                 // SchematicPainter.items_for); here it would widen the
                 // symbol's bbox over the link.
-                if (p.hyperlink) {
+                if (is_painted_on_its_own(p)) {
                     continue;
                 }
 
