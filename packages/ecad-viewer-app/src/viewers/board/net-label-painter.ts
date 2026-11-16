@@ -21,6 +21,7 @@ import { StrokeFont, TextAttributes } from "../../kicad/text";
 import {
     CopperVirtualLayerNames,
     LayerNames,
+    is_copper,
     virtual_layer_for,
 } from "./layers";
 
@@ -108,9 +109,7 @@ export type PadNetLabelLayer =
  * labelled on that layer so it hides and dims with it.
  */
 export function pad_label_layer(pad: board_items.Pad): PadNetLabelLayer | null {
-    const copper = pad.layers.filter(
-        (layer) => layer.endsWith(".Cu") || layer === "*.Cu",
-    );
+    const copper = pad.layers.filter(is_copper);
     if (copper.length === 0) return null;
     if (pad.type === "thru_hole" || pad.type === "np_thru_hole") {
         return LayerNames.pad_netnames;

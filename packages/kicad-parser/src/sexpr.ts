@@ -132,11 +132,15 @@ export const P = {
             fn: typefn,
         };
     },
-    pair(name: string, typefn: TypeProcessor = T.any): PropertyDefinition {
+    pair(
+        name: string,
+        typefn: TypeProcessor = T.any,
+        { legacy = [] }: { legacy?: string[] } = {},
+    ): PropertyDefinition {
         return {
             kind: Kind.pair,
             name: name,
-            accepts: [name],
+            accepts: [name, ...legacy],
             fn: (obj: Obj, name: string, e: ListOrAtom) => {
                 return typefn(obj, name, (e as any[])[1]);
             },
