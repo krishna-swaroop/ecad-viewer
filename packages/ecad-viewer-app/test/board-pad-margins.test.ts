@@ -226,6 +226,34 @@ suite("pad paste and mask margins", () => {
         expect(outlines[0]!.width).to.be.closeTo(0.2, 1e-9);
     });
 
+    test("roundrect paste radii follow the resized opening for per-axis and negative margins", () => {
+        for (const [margin, width, height] of [
+            ["(solder_paste_margin 0) (solder_paste_margin_ratio 0.5)", 8, 4],
+            ["(solder_paste_margin -0.5) (solder_paste_margin_ratio 0)", 3, 1],
+        ] as const) {
+            const source = BOARD.replace(
+                '(pad "1" smd rect (at 0 0) (size 4 2)',
+                '(pad "1" smd roundrect (at 0 0) (size 4 2) (roundrect_rratio 0.25) ' +
+                    margin,
+            );
+            const outline = shapes_on(LayerNames.f_paste, source).find(
+                (shape): shape is Polyline =>
+                    shape instanceof Polyline &&
+                    shape.points.every((point) => point.x > 25),
+            )!;
+            const xs = outline.points.map((point) => point.x);
+            const ys = outline.points.map((point) => point.y);
+
+            expect(outline.width).to.be.closeTo(height * 0.5, 1e-9);
+            expect(
+                Math.max(...xs) - Math.min(...xs) + outline.width,
+            ).to.be.closeTo(width, 1e-9);
+            expect(
+                Math.max(...ys) - Math.min(...ys) + outline.width,
+            ).to.be.closeTo(height, 1e-9);
+        }
+    });
+
     test("a custom pad keeps its copper outline, unclamped", () => {
         const custom = pad(board(SHAPES), "11");
         expect(pad_layer_margin(custom, LayerNames.f_paste)!.x).to.equal(-1000);

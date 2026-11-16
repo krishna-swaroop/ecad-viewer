@@ -232,26 +232,23 @@ export class PadPainter extends BoardItemPainter {
                     // Since our polylines aren't filled, we'll add both a polygon
                     // and a polyline.
                     {
-                        // A uniform margin grows the outline, so its
-                        // corners round off by the margin. KiCad sizes a
-                        // per-axis one as a pad of the new size instead.
+                        // KiCad resizes the pad for negative or per-axis
+                        // margins and derives the radius from that new size.
+                        // A uniform positive margin offsets the copper outline.
+                        const expansion =
+                            margin && margin.x > 0 && margin.x === margin.y
+                                ? margin.x
+                                : 0;
                         const radius =
                             shape == "roundrect"
-                                ? Math.min(pad.size.x, pad.size.y) *
+                                ? (Math.min(size.x, size.y) - 2 * expansion) *
                                   (pad.roundrect_rratio ?? 0)
                                 : 0;
-                        const rounding = !margin
-                            ? radius
-                            : Math.max(
-                                  margin.x == margin.y
-                                      ? radius + margin.x
-                                      : shape == "roundrect"
-                                        ? radius + Math.max(margin.x, margin.y)
-                                        : 0,
-                                  0,
-                              );
-                        let half_size = new Vec2(size.x / 2, size.y / 2);
-                        half_size = half_size.sub(new Vec2(rounding, rounding));
+                        const rounding = radius + expansion;
+                        const half_size = new Vec2(
+                            size.x / 2 - rounding,
+                            size.y / 2 - rounding,
+                        );
 
                         let trap_delta = pad.rect_delta
                             ? pad.rect_delta.copy()
