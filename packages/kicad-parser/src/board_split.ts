@@ -31,6 +31,7 @@ const BULK = new Set([
     "gr_arc",
     "gr_poly",
     "gr_rect",
+    "gr_curve",
     "gr_text",
     "dimension",
     "group",

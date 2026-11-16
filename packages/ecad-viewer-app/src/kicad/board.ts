@@ -5,7 +5,14 @@
 */
 
 import type { CrossHightAble } from "../base/cross_highlight_able";
-import { Angle, BBox, Arc as MathArc, Matrix3, Vec2 } from "../base/math";
+import {
+    Angle,
+    BBox,
+    BezierCurve,
+    Arc as MathArc,
+    Matrix3,
+    Vec2,
+} from "../base/math";
 import { Color } from "../graphics";
 import { LayerNames } from "../viewers/board/layers";
 import {
@@ -39,6 +46,7 @@ export type Drawing =
     | GrArc
     | GrPoly
     | GrRect
+    | GrCurve
     | GrText
     | Dimension;
 
@@ -190,7 +198,9 @@ export class KicadPCB implements BoardNode {
                 // I_Rect has start, end.
                 // I_GrText has text, at.
                 // I_Dimension has type, layer, ...
-                if ("format" in d) {
+                if ("shape" in d && d.shape === "curve") {
+                    this.drawings.push(new GrCurve(d, this));
+                } else if ("format" in d) {
                     this.drawings.push(new Dimension(d as B.I_Dimension, this));
                 } else if ("text" in d) {
                     this.drawings.push(new GrText(d as B.I_GrText, this));
@@ -917,7 +927,7 @@ export class DimensionStyle implements BoardNode {
     }
 }
 
-type FootprintDrawings = FpLine | FpCircle | FpArc | FpPoly | FpRect;
+type FootprintDrawings = FpLine | FpCircle | FpArc | FpPoly | FpRect | FpCurve;
 
 export class Footprint implements BoardNode {
     typeId: BoardNodeType = "Footprint";
@@ -1020,7 +1030,9 @@ export class Footprint implements BoardNode {
         this.drawings = [];
         if (data.drawings) {
             for (const d of data.drawings) {
-                if ("center" in d) {
+                if ("shape" in d && d.shape === "curve") {
+                    this.drawings.push(new FpCurve(d, this));
+                } else if ("center" in d) {
                     this.drawings.push(new FpCircle(d as B.I_Circle, this));
                 } else if ("mid" in d) {
                     this.drawings.push(new FpArc(d as B.I_Arc, this));
@@ -1697,6 +1709,61 @@ export class GrRect extends Rect {
 
 export class FpRect extends Rect {
     static override expr_start = "fp_rect";
+}
+
+/** A cubic Bezier through four control points. */
+export class Curve extends GraphicItem {
+    static expr_start = "unset";
+
+    curve: BezierCurve;
+    width: number;
+    stroke: Stroke;
+    uuid?: string;
+
+    constructor(
+        data: B.I_Curve,
+        public override parent?: Footprint | Pad | Dimension | KicadPCB,
+    ) {
+        super();
+        this.locked = data.locked;
+        this.layer = data.layer;
+        this.uuid = data.uuid;
+        this.width = data.width;
+        this.tstamp = data.tstamp ?? "";
+        this.stroke = new Stroke(data.stroke);
+        this.width ??= this.stroke?.width || 0;
+
+        const pts = (data.pts ?? []).map((p) => new Vec2(p.x, p.y));
+        // KiCad always writes four; pad a short list so a damaged file still
+        // loads, as a straight segment.
+        while (pts.length < 4) pts.push(pts[pts.length - 1] ?? new Vec2(0, 0));
+        this.curve = new BezierCurve(pts.slice(0, 4));
+    }
+
+    get start() {
+        return this.curve.controlPoints[0]!;
+    }
+
+    get end() {
+        return this.curve.controlPoints[3]!;
+    }
+
+    /** The curve as a polyline from start to end. */
+    get points(): Vec2[] {
+        return this.curve.toPolyline();
+    }
+
+    override get bbox(): BBox {
+        return BBox.from_points(this.points);
+    }
+}
+
+export class GrCurve extends Curve {
+    static override expr_start = "gr_curve";
+}
+
+export class FpCurve extends Curve {
+    static override expr_start = "fp_curve";
 }
 
 export class TextRenderCache implements BoardNode {

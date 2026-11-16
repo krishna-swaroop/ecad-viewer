@@ -261,6 +261,29 @@ function parse_fp_poly(expr: Parseable) {
     return parsePoly(expr, "fp_poly");
 }
 
+function parseCurve(expr: Parseable, start: string): B.I_Curve {
+    const parsed = parse_expr(
+        expr,
+        P.start(start),
+        P.pair("layer", T.string),
+        P.pair("tstamp", T.string),
+        P.pair("uuid", T.string),
+        P.atom("locked"),
+        P.list("pts", T.vec2),
+        P.pair("width", T.number),
+        P.item("stroke", parseStroke),
+    ) as unknown as B.I_Curve;
+    return { ...parsed, shape: "curve" };
+}
+
+function parse_gr_curve(expr: Parseable) {
+    return parseCurve(expr, "gr_curve");
+}
+
+function parse_fp_curve(expr: Parseable) {
+    return parseCurve(expr, "fp_curve");
+}
+
 function parse_polygon(expr: Parseable) {
     return parsePoly(expr, "polygon");
 }
@@ -705,6 +728,7 @@ function parseFootprint(expr: Parseable): B.I_Footprint {
         P.collection("drawings", "fp_arc", T.item(parse_fp_Arc)),
         P.collection("drawings", "fp_poly", T.item(parse_fp_poly)),
         P.collection("drawings", "fp_rect", T.item(parse_fp_Rect)),
+        P.collection("drawings", "fp_curve", T.item(parse_fp_curve)),
         P.collection("fp_texts", "fp_text", T.item(parseFpText)),
         P.collection("zones", "zone", T.item(parseZone)),
         P.collection("models", "model", T.item(parseModel)),
@@ -838,6 +862,7 @@ export class BoardParser {
             P.collection("drawings", "gr_arc", T.item(parse_gr_Arc)),
             P.collection("drawings", "gr_poly", T.item(parse_gr_poly)),
             P.collection("drawings", "gr_rect", T.item(parse_gr_Rect)),
+            P.collection("drawings", "gr_curve", T.item(parse_gr_curve)),
             P.collection("drawings", "gr_text", T.item(parseGrText)),
             P.collection("drawings", "dimension", T.item(parseDimension)),
             P.collection("groups", "group", T.item(parseGroup)),
