@@ -118,6 +118,38 @@ export function triangulate(points: Vec2[]): Float32Array {
 }
 
 /**
+ * Triangulate an outline with holes into interleaved xy vertex positions.
+ * Earcut bridges each hole into the outline itself, checking that the bridge
+ * stays inside, so the holes need no pre-processing; their winding does not
+ * matter. Always the JS earcut: the wasm build takes a single ring only.
+ */
+export function triangulate_with_holes(
+    outline: readonly Vec2[],
+    holes: readonly (readonly Vec2[])[],
+): Float32Array {
+    const coords: number[] = [];
+    const hole_starts: number[] = [];
+    for (const p of outline) coords.push(p.x, p.y);
+    for (const hole of holes) {
+        if (hole.length < 3) continue;
+        hole_starts.push(coords.length / 2);
+        for (const p of hole) coords.push(p.x, p.y);
+    }
+    if (outline.length < 3) return new Float32Array(0);
+
+    const indexes = earcut(
+        coords,
+        hole_starts.length ? hole_starts : undefined,
+    );
+    const vertices = new Float32Array(indexes.length * 2);
+    for (let i = 0; i < indexes.length; i++) {
+        vertices[i * 2] = coords[indexes[i]! * 2]!;
+        vertices[i * 2 + 1] = coords[indexes[i]! * 2 + 1]!;
+    }
+    return vertices;
+}
+
+/**
  * `triangulate` on a ring given as interleaved xy, for callers that already
  * hold flat coordinates -- the parser worker, which triangulates large zone
  * fills off the main thread.

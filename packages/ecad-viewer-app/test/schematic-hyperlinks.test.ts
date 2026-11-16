@@ -71,6 +71,11 @@ const WITH_LINKED_FIELD = `
 )
 `;
 
+const WITH_HIDDEN_LINKED_FIELD = WITH_LINKED_FIELD.replace(
+    "(href",
+    "(hide yes) (href",
+);
+
 function load(fixture: string) {
     return new KicadSch(
         "links.kicad_sch",
@@ -206,17 +211,17 @@ suite("embedded schematic hyperlinks", () => {
         expect(canvas.style.cursor).to.equal("");
     });
 
-    test("a visible linked field is a click target", async () => {
+    const show_datasheet_field = async (fixture: string) => {
         viewer.dispose();
         canvas.remove();
 
-        const field_sch = load(WITH_LINKED_FIELD);
-        const field_canvas = document.createElement("canvas");
-        field_canvas.style.width = "800px";
-        field_canvas.style.height = "600px";
-        document.body.append(field_canvas);
+        const field_sch = load(fixture);
+        canvas = document.createElement("canvas");
+        canvas.style.width = "800px";
+        canvas.style.height = "600px";
+        document.body.append(canvas);
         viewer = new SchematicViewer(
-            field_canvas,
+            canvas,
             true,
             kicad_default_theme.schematic,
         );
@@ -224,13 +229,23 @@ suite("embedded schematic hyperlinks", () => {
         await viewer.load(field_sch);
 
         const symbol = field_sch.symbols.values().next().value!;
-        const datasheet = [...symbol.properties.values()].find(
+        return [...symbol.properties.values()].find(
             (p) => p.name === "Datasheet",
         )!;
+    };
+
+    test("a visible linked field is a click target", async () => {
+        const datasheet = await show_datasheet_field(WITH_LINKED_FIELD);
         expect(item_hyperlink(datasheet)).to.equal("https://example.com/ds/R");
 
         const [bbox] = viewer.layers.query_item_bboxes(datasheet);
         expect(bbox, "datasheet field is painted and pickable").to.exist;
+        expect(
+            viewer.layers
+                .by_name(LayerNames.symbol_field)!
+                .bboxes.get(datasheet),
+            "datasheet field is drawn",
+        ).to.exist;
 
         let link_url: string | undefined;
         viewer.addEventListener(LinkClickEvent.type, (e) => {
@@ -239,5 +254,14 @@ suite("embedded schematic hyperlinks", () => {
 
         viewer.on_click(bbox!.center.copy());
         expect(link_url).to.equal("https://example.com/ds/R");
+    });
+
+    test("a linked field hidden through its effects is not a click target", async () => {
+        const datasheet = await show_datasheet_field(WITH_HIDDEN_LINKED_FIELD);
+        expect(item_hyperlink(datasheet)).to.equal("https://example.com/ds/R");
+        expect(datasheet.hide).to.be.false;
+        expect(datasheet.effects.hide).to.be.true;
+
+        expect([...viewer.layers.query_item_bboxes(datasheet)]).to.be.empty;
     });
 });

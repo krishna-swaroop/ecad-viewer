@@ -109,6 +109,12 @@ export enum LayerNames {
     b_paste = "B.Paste",
     b_crtyd = "B.CrtYd",
     b_fab = "B.Fab",
+    /**
+     * The board body inside Edge.Cuts. Last of the board layers, so it is
+     * painted under everything on the board but above the grid and drawing
+     * sheet. It follows Edge.Cuts visibility and is never a click target.
+     */
+    board_substrate = ":Board:Substrate",
     drawing_sheet = BaseLayerNames.drawing_sheet,
     grid = BaseLayerNames.grid,
 }
@@ -259,6 +265,43 @@ export function* copper_layers_between(
 }
 
 /**
+ * Names KiCad itself writes as a layer's user name. They are not
+ * user customisations, so hosts keep showing the canonical name for them.
+ */
+const KICAD_DEFAULT_LAYER_USER_NAMES: Readonly<Record<string, string>> = {
+    [LayerNames.f_adhes]: "F.Adhesive",
+    [LayerNames.b_adhes]: "B.Adhesive",
+    [LayerNames.f_silks]: "F.Silkscreen",
+    [LayerNames.b_silks]: "B.Silkscreen",
+    [LayerNames.dwgs_user]: "User.Drawings",
+    [LayerNames.cmts_user]: "User.Comments",
+    [LayerNames.eco1_user]: "User.Eco1",
+    [LayerNames.eco2_user]: "User.Eco2",
+    [LayerNames.f_crtyd]: "F.Courtyard",
+    [LayerNames.b_crtyd]: "B.Courtyard",
+};
+
+/**
+ * Map canonical layer name to the custom name a board gives it, e.g.
+ * `(55 "User.9" user "Script.Cobre")` yields `User.9 -> Script.Cobre`.
+ * Layers without a user name, or with KiCad's default one, are omitted.
+ */
+export function custom_layer_names(
+    layers: Iterable<{ canonical_name: string; user_name?: string }>,
+): Map<string, string> {
+    const names = new Map<string, string>();
+    for (const { canonical_name, user_name } of layers) {
+        if (
+            user_name &&
+            user_name !== canonical_name &&
+            user_name !== KICAD_DEFAULT_LAYER_USER_NAMES[canonical_name]
+        )
+            names.set(canonical_name, user_name);
+    }
+    return names;
+}
+
+/**
  * Board view layer set
  */
 export class LayerSet extends BaseLayerSet {
@@ -299,6 +342,21 @@ export class LayerSet extends BaseLayerSet {
                 );
                 layer.opacity = DNP_HATCH_OPACITY;
                 this.add(layer);
+                continue;
+            }
+
+            if (layer_name === LayerNames.board_substrate) {
+                this.add(
+                    new ViewLayer(
+                        this,
+                        layer_name,
+                        () =>
+                            this.by_name(LayerNames.edge_cuts)?.visible ??
+                            false,
+                        false,
+                        this.substrate_color(),
+                    ),
+                );
                 continue;
             }
 
@@ -447,6 +505,20 @@ export class LayerSet extends BaseLayerSet {
         }
 
         return color;
+    }
+
+    /**
+     * The board body: the theme's own substrate colour, dark like KiCad's
+     * canvas so the board reads as a physical object on a lighter canvas.
+     * Opaque, since everything on the board is drawn over it. A host theme
+     * without the key falls back to the PCB background.
+     */
+    substrate_color(): Color {
+        const color =
+            (this.theme["board_substrate"] as Color | undefined) ??
+            (this.theme["background"] as Color | undefined) ??
+            Color.black;
+        return color.with_alpha(1);
     }
 
     /**

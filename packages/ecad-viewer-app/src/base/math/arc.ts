@@ -134,36 +134,30 @@ export class Arc {
     }
 
     /**
-     * Approximate the Arc using a polyline
+     * Approximate the Arc using a polyline, from the start point to the end
+     * point. The sweep keeps its sign, so a clockwise arc is walked clockwise
+     * and a chain of arcs and lines can be joined end to end.
      */
     to_polyline(): Vec2[] {
-        const points: Vec2[] = [];
-        let start = this.start_angle.radians;
-        let end = this.end_angle.radians;
-
-        if (start > end) {
-            [end, start] = [start, end];
-        }
+        const start = this.start_angle.radians;
+        const sweep = this.end_angle.radians - start;
 
         // TODO: Pull KiCAD's logic for this, since it adds more segments the
         // larger the arc is.
-        for (let theta = start; theta < end; theta += Math.PI / 32) {
+        const segments = Math.max(
+            1,
+            Math.ceil(Math.abs(sweep) / (Math.PI / 32) - 1e-9),
+        );
+
+        const points: Vec2[] = [];
+        for (let i = 0; i <= segments; i++) {
+            const theta = start + (sweep * i) / segments;
             points.push(
                 new Vec2(
                     this.center.x + Math.cos(theta) * this.radius,
                     this.center.y + Math.sin(theta) * this.radius,
                 ),
             );
-        }
-
-        // Add the last point if needed.
-        const last_point = new Vec2(
-            this.center.x + Math.cos(end) * this.radius,
-            this.center.y + Math.sin(end) * this.radius,
-        );
-
-        if (!last_point.equals(points[points.length - 1])) {
-            points.push(last_point);
         }
 
         return points;

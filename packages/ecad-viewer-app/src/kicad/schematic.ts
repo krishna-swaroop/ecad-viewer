@@ -1513,6 +1513,10 @@ export class Property {
         return expand_text_vars(this.text, this.parent);
     }
 
+    get is_visible() {
+        return !this.hide && !this.effects?.hide && !!this.text;
+    }
+
     /** Embedded hyperlink target authored on this field's text, if any. */
     get hyperlink(): string | undefined {
         return this.effects?.hyperlink;
