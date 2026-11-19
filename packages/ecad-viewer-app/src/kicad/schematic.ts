@@ -1360,9 +1360,12 @@ export class LibSymbol {
         if (this.has_pin(number)) {
             return this.#pins_by_number.get(number)!;
         }
+        // Style 0 on either side matches everything, as in KiCad: a child of
+        // style 0 is common to all body styles, and a placement of style 0
+        // (KiCad writes it for remote-library symbols) asks for no filtering.
         for (const child of this.children) {
             if (
-                (child.style == 0 || child.style == style) &&
+                (style == 0 || child.style == 0 || child.style == style) &&
                 child.has_pin(number)
             ) {
                 return child.pin_by_number(number);

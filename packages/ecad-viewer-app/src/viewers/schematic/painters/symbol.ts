@@ -61,7 +61,8 @@ export class LibSymbolPainter extends SchematicItemPainter {
         body_style = 1,
     ) {
         for (const sym of unit) {
-            if (sym.style > 0 && body_style != sym.style) {
+            // Body style 0 on the placement means no filtering, as in KiCad.
+            if (sym.style > 0 && body_style > 0 && body_style != sym.style) {
                 continue;
             }
 
