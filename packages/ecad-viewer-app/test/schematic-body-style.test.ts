@@ -156,3 +156,73 @@ suite("schematic De Morgan body styles", () => {
         expect(style_2.length).to.be.closeTo(5.08, 0.001);
     });
 });
+
+/**
+ * Issue #1198: KiCad 10 writes `(body_style 0)` when it places a symbol from
+ * a remote library. KiCad reads 0 as "no body-style filtering". The viewer
+ * looked for children of style 0 only, found no pin 1 and threw, and the
+ * painter skipped every style 1 subsymbol, so the body vanished too.
+ */
+const BODY_STYLE_ZERO_FIXTURE = `
+(kicad_sch
+  (version 20250114)
+  (generator "eeschema")
+  (uuid "00000000-0000-0000-0000-000000000002")
+  (lib_symbols
+    (symbol "remote_device:R"
+      (pin_numbers (hide yes))
+      (pin_names (offset 0) (hide yes))
+      (exclude_from_sim no) (in_bom yes) (on_board yes)
+      (symbol "R_0_1"
+        (rectangle (start -1.016 -2.54) (end 1.016 2.54)
+          (stroke (width 0.254) (type default))
+          (fill (type none))
+        )
+      )
+      (symbol "R_1_1"
+        (pin passive line (at 0 3.81 270) (length 1.27)
+          (name "~" (effects (font (size 1.27 1.27))))
+          (number "1" (effects (font (size 1.27 1.27))))
+        )
+        (pin passive line (at 0 -3.81 90) (length 1.27)
+          (name "~" (effects (font (size 1.27 1.27))))
+          (number "2" (effects (font (size 1.27 1.27))))
+        )
+      )
+    )
+  )
+  (symbol
+    (lib_id "remote_device:R")
+    (at 100 100 0)
+    (unit 1) (body_style 0) (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no)
+    (uuid "00000000-0000-0000-0000-0000000000b1")
+    (property "Reference" "R1" (at 102 98 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "10k" (at 102 102 0) (effects (font (size 1.27 1.27))))
+    (pin "1" (uuid "00000000-0000-0000-0000-0000000000q1"))
+    (pin "2" (uuid "00000000-0000-0000-0000-0000000000q2"))
+  )
+)
+`;
+
+suite("schematic body style 0", () => {
+    test("resolves pins on a (body_style 0) placement", () => {
+        const r1 = symbol_by_reference(load(BODY_STYLE_ZERO_FIXTURE), "R1");
+
+        expect(r1.convert).to.equal(0);
+        const [pin_1, pin_2] = r1.pins.map((p) => p.definition);
+        expect(pin_1!.number.text).to.equal("1");
+        expect(pin_1!.at.position.y).to.be.closeTo(3.81, 0.001);
+        expect(pin_2!.at.position.y).to.be.closeTo(-3.81, 0.001);
+    });
+
+    test("paints the body of a (body_style 0) placement", () => {
+        const r1 = symbol_by_reference(load(BODY_STYLE_ZERO_FIXTURE), "R1");
+
+        const body = measure_symbol_bboxes(theme, r1).body;
+        // A 2.032 x 5.08 rectangle plus its stroke. Before the fix the
+        // painter skipped the style 1 subsymbol and this measured 0 x 0.
+        expect(body.w).to.be.closeTo(2.54, 0.05);
+        expect(body.h).to.be.closeTo(5.588, 0.05);
+        expect(body.center.x).to.be.closeTo(100, 0.5);
+    });
+});
